@@ -8,13 +8,15 @@ GstRecording::~GstRecording() {
     recordings.clear();
 }
 
-bool GstRecording::startRecording(const std::string& outputPath) {
+bool GstRecording::startRecording(const std::string& outputPath,
+                                int top, int bottom, int left, int right,
+                                const std::string& flip_mode) {
     std::lock_guard<std::mutex> lock(mutex);
     if (recordings.count(outputPath)) {
         std::cerr << "Recording already in progress for: " << outputPath << std::endl;
         return false;
     }
-    return createPipeline(outputPath);
+    return createPipeline(outputPath, top, bottom, left, right, flip_mode);
 }
 
 bool GstRecording::stopRecording(const std::string& outputPath) {
@@ -39,12 +41,20 @@ bool GstRecording::stopRecording(const std::string& outputPath) {
     return true;
 }
 
-bool GstRecording::createPipeline(const std::string& outputPath) {
+bool GstRecording::createPipeline(const std::string& outputPath,
+                                int top, int bottom, int left, int right,
+                                const std::string& flip_mode) {
+    const std::unordered_map<std::string, int> flip_methods = {
+        {"none", 0}, {"horizontal", 1}, {"vertical", 2}, 
+        {"clockwise", 3}, {"counterclockwise", 4}};
+
     RecordingSession session;
     session.pipeline = gst_pipeline_new("recording-pipeline");
     
     GstElement* video_src = gst_element_factory_make("avfvideosrc", "video_src");
     GstElement* video_convert = gst_element_factory_make("videoconvert", "video_convert");
+    session.video_crop = gst_element_factory_make("videocrop", "video_crop");
+    session.video_flip = gst_element_factory_make("videoflip", "video_flip");
     GstElement* video_encoder = gst_element_factory_make("x264enc", "video_encoder");
     GstElement* video_queue = gst_element_factory_make("queue", "video_queue");
     
@@ -57,8 +67,9 @@ bool GstRecording::createPipeline(const std::string& outputPath) {
     GstElement* muxer = gst_element_factory_make("mp4mux", "muxer");
     session.filesink = gst_element_factory_make("filesink", "filesink");
     
-    if (!video_src || !video_convert || !video_encoder || !session.audio_src || 
-        !audio_convert || !audio_resample || !audio_encoder || !muxer || !session.filesink) {
+    if (!video_src || !video_convert || !session.video_crop || !session.video_flip || 
+        !video_encoder || !session.audio_src || !audio_convert || !audio_resample ||
+        !audio_encoder || !muxer || !session.filesink) {
         return false;
     }
     
@@ -68,16 +79,23 @@ bool GstRecording::createPipeline(const std::string& outputPath) {
     g_object_set(muxer, "streamable", TRUE, "faststart", TRUE, NULL);
     g_object_set(session.filesink, "location", outputPath.c_str(), "sync", FALSE, NULL);
     
-    gst_bin_add_many(GST_BIN(session.pipeline), 
-        video_src, video_convert, video_encoder, video_queue, 
-        session.audio_src, audio_convert, audio_resample, audio_encoder, 
-        audio_queue, muxer, session.filesink, NULL);
+    g_object_set(session.video_crop, "top", top, "bottom", bottom, "left", left, "right", right, NULL);
+    if (flip_methods.count(flip_mode)) {
+        g_object_set(session.video_flip, "method", flip_methods.at(flip_mode), NULL);
+    }
     
-    if (!gst_element_link_many(video_src, video_convert, video_encoder, video_queue, NULL)) {
+    gst_bin_add_many(GST_BIN(session.pipeline), 
+        video_src, video_convert, session.video_crop, session.video_flip, 
+        video_encoder, video_queue, session.audio_src, audio_convert, 
+        audio_resample, audio_encoder, audio_queue, muxer, session.filesink, NULL);
+    
+    if (!gst_element_link_many(video_src, video_convert, session.video_crop, 
+                             session.video_flip, video_encoder, video_queue, NULL)) {
         return false;
     }
     
-    if (!gst_element_link_many(session.audio_src, audio_convert, audio_resample, audio_encoder, audio_queue, NULL)) {
+    if (!gst_element_link_many(session.audio_src, audio_convert, audio_resample,
+                             audio_encoder, audio_queue, NULL)) {
         return false;
     }
     

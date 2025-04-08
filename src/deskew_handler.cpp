@@ -219,30 +219,36 @@ bool DeskewHandler::setupPipeline() {
 }
 
 void DeskewHandler::updateSettings(const std::vector<std::pair<double, double>>& points, 
-                                 const std::string& flip_mode) {
+    const std::string& flip_mode) {
     if (points.size() != 4) {
         std::cerr << "Need exactly 4 points for perspective transform" << std::endl;
         return;
     }
 
-    // Compute perspective transform matrix using OpenCV
-    std::vector<cv::Point2f> src_points = {
-        cv::Point2f(points[0].first, points[0].second),
-        cv::Point2f(points[1].first, points[1].second),
-        cv::Point2f(points[2].first, points[2].second),
-        cv::Point2f(points[3].first, points[3].second)
-    };
-    
+    const int output_width = 1280;
+    const int output_height = 720;
+
+    // Destination points - these should be the coordinates you want to map TO
+    // (the smaller region in your case)
     std::vector<cv::Point2f> dst_points = {
-        cv::Point2f(0.0f, 0.0f),
-        cv::Point2f(1.0f, 0.0f),
-        cv::Point2f(1.0f, 1.0f),
-        cv::Point2f(0.0f, 1.0f)
+        cv::Point2f(static_cast<float>(points[0].first), static_cast<float>(points[0].second)),
+        cv::Point2f(static_cast<float>(points[1].first), static_cast<float>(points[1].second)),
+        cv::Point2f(static_cast<float>(points[2].first), static_cast<float>(points[2].second)),
+        cv::Point2f(static_cast<float>(points[3].first), static_cast<float>(points[3].second))
     };
-    
+
+    // Source points - these should be the full frame coordinates you're mapping FROM
+    std::vector<cv::Point2f> src_points = {
+        cv::Point2f(0.0f, 0.0f),
+        cv::Point2f(static_cast<float>(output_width - 1), 0.0f),
+        cv::Point2f(static_cast<float>(output_width - 1), static_cast<float>(output_height - 1)),
+        cv::Point2f(0.0f, static_cast<float>(output_height - 1))
+    };
+
+    // Get the transformation matrix (now going from full frame to your region)
     cv::Mat transform = cv::getPerspectiveTransform(src_points, dst_points);
 
-    // Create GValueArray for matrix data
+    // Rest of your code remains the same...
     GValueArray *matrix_array = g_value_array_new(9);
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
@@ -254,14 +260,20 @@ void DeskewHandler::updateSettings(const std::vector<std::pair<double, double>>&
         }
     }
 
-    // Set the matrix property
     if (perspective) {
         g_object_set(G_OBJECT(perspective), "matrix", matrix_array, NULL);
         std::cout << "Updated perspective transform matrix" << std::endl;
+
+        std::cout << "Perspective matrix:" << std::endl;
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                std::cout << transform.at<double>(i, j) << " ";
+            }
+            std::cout << std::endl;
+        }
     }
     g_value_array_free(matrix_array);
 
-    // Update flip method if needed
     if (flip && flip_methods.count(flip_mode)) {
         g_object_set(flip, "method", flip_methods.at(flip_mode), NULL);
         std::cout << "Updated flip method to: " << flip_mode << std::endl;

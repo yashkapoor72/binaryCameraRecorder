@@ -108,6 +108,6 @@ install(TARGETS opencvperspective DESTINATION lib/gstreamer-1.0)
 # Post-build verification
 add_custom_command(TARGET recording_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "Verifying plugin registration..."
-    COMMAND sh -c "GST_DEBUG=2 ./recording_app --gst-plugin-path=${GST_PLUGIN_PATH} --gst-disable-registry-fork --version"
+    COMMAND sh -c "GST_DEBUG=3 ./recording_app --gst-plugin-path=${GST_PLUGIN_PATH} --gst-disable-registry-fork --version"
     COMMENT "Running basic plugin verification"
 )

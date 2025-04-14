@@ -48,6 +48,21 @@
         "variant": "cpp",
         "vector": "cpp",
         "map": "cpp",
-        "__config": "cpp"
+        "__config": "cpp",
+        "__tree": "cpp",
+        "condition_variable": "cpp",
+        "algorithm": "cpp",
+        "atomic": "cpp",
+        "compare": "cpp",
+        "concepts": "cpp",
+        "exception": "cpp",
+        "functional": "cpp",
+        "iterator": "cpp",
+        "memory_resource": "cpp",
+        "system_error": "cpp",
+        "type_traits": "cpp",
+        "utility": "cpp",
+        "format": "cpp",
+        "thread": "cpp"
     }
 }

@@ -3,12 +3,10 @@
 
 #include <gst/gst.h>
 #include <string>
-#include <vector>
-#include <utility> // for std::pair
 #include <map>
 #include <mutex>
-#include <unordered_map>
-#include <iostream> // for std::cerr
+#include <vector>
+#include <utility> // for std::pair
 
 class GstRecording {
 public:
@@ -18,40 +16,56 @@ public:
     bool startRecording(const std::string& outputPath,
                       const std::vector<std::pair<double, double>>& points,
                       const std::string& flip_mode = "none");
+    
     bool stopRecording(const std::string& outputPath);
 
 private:
-    struct RecordingSession {
-        GstElement* pipeline = nullptr;
-        GstElement* filesink = nullptr;
-        GstElement* perspective = nullptr;
-        GstElement* video_flip = nullptr;
-        GstElement* audio_src = nullptr;
-        GstElement* audio_convert = nullptr;
-        GstElement* audio_encoder = nullptr;
-        
-        // Rule of Five
-        RecordingSession() = default;
-        RecordingSession(const RecordingSession&) = delete;
-        RecordingSession& operator=(const RecordingSession&) = delete;
-        RecordingSession(RecordingSession&& other) noexcept;
-        RecordingSession& operator=(RecordingSession&& other) noexcept;
-        ~RecordingSession();
-    };
+struct RecordingSession {
+    GstElement* pipeline = nullptr;
+    GstElement* filesink = nullptr;
+    
+    RecordingSession() = default;
 
-    static void print_element_properties(GstElement *element);
-    void calculate_perspective_matrix(const std::vector<std::pair<double, double>>& points, 
-                                    gdouble matrix[9]);
-    bool createPipeline(const std::string& outputPath,
-                      const std::vector<std::pair<double, double>>& points,
-                      const std::string& flip_mode);
-
+    // Add copy constructor and assignment operator
+    RecordingSession(const RecordingSession&) = delete;
+    RecordingSession& operator=(const RecordingSession&) = delete;
+    
+    // Move constructor
+    RecordingSession(RecordingSession&& other) noexcept 
+        : pipeline(other.pipeline), filesink(other.filesink) {
+        other.pipeline = nullptr;
+        other.filesink = nullptr;
+    }
+    
+    // Move assignment
+    RecordingSession& operator=(RecordingSession&& other) noexcept {
+        if (this != &other) {
+            if (pipeline) {
+                gst_element_set_state(pipeline, GST_STATE_NULL);
+                gst_object_unref(pipeline);
+            }
+            pipeline = other.pipeline;
+            filesink = other.filesink;
+            other.pipeline = nullptr;
+            other.filesink = nullptr;
+        }
+        return *this;
+    }
+    
+    ~RecordingSession() {
+        if (pipeline) {
+            gst_element_set_state(pipeline, GST_STATE_NULL);
+            gst_object_unref(pipeline);
+        }
+    }
+};
+    
     std::map<std::string, RecordingSession> recordings;
     std::mutex mutex;
     
-    const std::unordered_map<std::string, int> flip_methods = {
-        {"none", 0}, {"horizontal", 1}, {"vertical", 2}, 
-        {"clockwise", 3}, {"counterclockwise", 4}};
+    bool createPipeline(const std::string& outputPath,
+                      const std::vector<std::pair<double, double>>& points,
+                      const std::string& flip_mode);
 };
 
-#endif
+#endif // GSTRECORDING_H

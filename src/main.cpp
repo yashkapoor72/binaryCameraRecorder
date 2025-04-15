@@ -42,6 +42,8 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
     std::string outputPath;
     std::vector<std::pair<double, double>> points;
     std::string flipMethod = "none";
+    int width = -1;
+    int height = -1;
     
     for (const auto& arg : args) {
         if (arg.find("--action=") == 0) {
@@ -93,6 +95,12 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
         else if (arg.find("--flipMethod=") == 0) {
             flipMethod = arg.substr(13);
         }
+        else if (arg.find("--width=") == 0) {
+            width = std::stoi(arg.substr(8));
+        }
+        else if (arg.find("--height=") == 0) {
+            height = std::stoi(arg.substr(9));
+        }
     }
     
     if (action == "start-recording") {
@@ -104,7 +112,7 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Error: Exactly 4 points (p1-p4) are required for quadrilateral cropping" << std::endl;
             return;
         }
-        if (!cmdHandler.startRecording(outputPath, points, flipMethod)) {
+        if (!cmdHandler.startRecording(outputPath, points, width, height, flipMethod)) {
             std::cerr << "Failed to start recording: " << outputPath << std::endl;
         }
         deskewHandler.updateSettings(points, flipMethod);
@@ -130,6 +138,16 @@ static int run_app(int argc, char* argv[]) {
     if (!deskewHandler.setupPipeline()) {
         std::cerr << "Failed to setup preview pipeline!" << std::endl;
         return 1;
+    }
+    
+    // Check if command line arguments were provided directly
+    if (argc > 1) {
+        std::string command;
+        for (int i = 1; i < argc; i++) {
+            command += argv[i];
+            if (i < argc - 1) command += " ";
+        }
+        parseAndExecuteCommand(command, cmdHandler, deskewHandler);
     }
     
     std::cout << "Ready to accept commands (--action=start-recording/stop-recording --outputPath=...)" << std::endl;
@@ -162,12 +180,6 @@ int main(int argc, char* argv[]) {
     if (!feature) {
         std::cerr << "ERROR: Plugin registration failed. Tried paths: " << plugin_path << std::endl;
         std::cerr << "Built plugin should be at: " << build_dir << "/opencvperspective.dylib" << std::endl;
-        return 1;
-    }
-    
-    if (!feature) {
-        std::cerr << "ERROR: Plugin not found in registry. Current GST_PLUGIN_PATH: " 
-                 << getenv("GST_PLUGIN_PATH") << std::endl;
         return 1;
     }
     

@@ -15,6 +15,8 @@ public:
     
     bool startRecording(const std::string& outputPath,
                       const std::vector<std::pair<double, double>>& points,
+                      int output_width,
+                      int output_height,
                       const std::string& flip_mode = "none");
     
     bool stopRecording(const std::string& outputPath);
@@ -65,6 +67,8 @@ struct RecordingSession {
     
     bool createPipeline(const std::string& outputPath,
                       const std::vector<std::pair<double, double>>& points,
+                      int output_width,
+                      int output_height,
                       const std::string& flip_mode);
 };
 

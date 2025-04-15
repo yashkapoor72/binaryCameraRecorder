@@ -4,7 +4,7 @@
 static GstRecording recorder;
 
 bool CommandHandler::startRecording(const std::string& outputPath,
-    const std::vector<std::pair<double, double>>& points,
+    const std::vector<std::pair<double, double>>& points,int width, int height,
     const std::string& flip_mode) {
     // Verify we have exactly 4 points
     if (points.size() != 4) {
@@ -29,7 +29,7 @@ bool CommandHandler::startRecording(const std::string& outputPath,
         return false;
     }
 
-    return recorder.startRecording(outputPath, points, flip_mode);
+    return recorder.startRecording(outputPath, points, width, height, flip_mode);
 }
 
 bool CommandHandler::stopRecording(const std::string& outputPath) {

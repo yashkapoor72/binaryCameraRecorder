@@ -20,13 +20,15 @@ GstRecording::~GstRecording() {
 
 bool GstRecording::startRecording(const std::string& outputPath,
                                 const std::vector<std::pair<double, double>>& points,
+                                int output_width,
+                                int output_height,
                                 const std::string& flip_mode) {
     std::lock_guard<std::mutex> lock(mutex);
     if (recordings.count(outputPath)) {
         std::cerr << "Recording already in progress for: " << outputPath << std::endl;
         return false;
     }
-    return createPipeline(outputPath, points, flip_mode);
+    return createPipeline(outputPath, points, output_width, output_height, flip_mode);
 }
 
 bool GstRecording::stopRecording(const std::string& outputPath) {
@@ -50,11 +52,11 @@ bool GstRecording::stopRecording(const std::string& outputPath) {
         std::cerr << "Failed to send EOS event" << std::endl;
     }
 
-    // Wait for EOS with proper GStreamer types
+    // Wait for EOS
     GstBus* bus = gst_element_get_bus(session.pipeline);
     if (bus) {
         GstMessage* msg = gst_bus_timed_pop_filtered(bus, 
-            GST_CLOCK_TIME_NONE,  // This is already of type GstClockTime
+            GST_CLOCK_TIME_NONE,
             static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
         
         if (msg) {
@@ -84,10 +86,18 @@ bool GstRecording::stopRecording(const std::string& outputPath) {
 
 bool GstRecording::createPipeline(const std::string& outputPath,
                                 const std::vector<std::pair<double, double>>& points,
+                                int output_width,
+                                int output_height,
                                 const std::string& flip_mode) {
     if (points.size() != 4) {
         std::cerr << "Need exactly 4 points for perspective transform" << std::endl;
         return false;
+    }
+
+    if (output_width == -1 || output_height == -1) {
+        output_width = 1280;
+        output_height = 720;
+        std::cout << "Invalid output dimensions, hence output width and height set to default 1280 * 720 "<< std::endl;
     }
 
     const std::unordered_map<std::string, int> flip_methods = {
@@ -147,14 +157,14 @@ bool GstRecording::createPipeline(const std::string& outputPath,
     
     // Muxer and sink
     GstElement* muxer = create_element("mp4mux", "muxer");
-    GstElement* filesink = create_element("filesink", "filesink");
+    session.filesink = create_element("filesink", "filesink");
 
     // Check if all elements were created
     if (!video_src || !video_convert1 || !videoscale || !video_capsfilter || 
         !video_convert_before_perspective || !perspective || !video_flip || 
         !video_convert2 || !video_queue || !video_encoder ||
         !audio_src || !audio_convert || !audio_resample || !audio_encoder ||
-        !audio_queue || !muxer || !filesink) {
+        !audio_queue || !muxer || !session.filesink) {
         return false;
     }
 
@@ -164,23 +174,17 @@ bool GstRecording::createPipeline(const std::string& outputPath,
                 "capture-screen", FALSE,
                 NULL);
 
-    // Set video caps - using BGRA format for better compatibility
+    // Set video caps with custom output dimensions
     GstCaps* video_caps = gst_caps_new_simple("video/x-raw",
                                             "format", G_TYPE_STRING, "BGRA",
-                                            "width", G_TYPE_INT, 1280,
-                                            "height", G_TYPE_INT, 720,
+                                            "width", G_TYPE_INT, output_width,
+                                            "height", G_TYPE_INT, output_height,
                                             "framerate", GST_TYPE_FRACTION, 30, 1,
                                             NULL);
     g_object_set(video_capsfilter, "caps", video_caps, NULL);
     gst_caps_unref(video_caps);
 
-    // Configure audio source
-
-
-    // Configure perspective transform
-    const int output_width = 1280;
-    const int output_height = 720;
-
+    // Configure perspective transform with custom output dimensions
     std::vector<cv::Point2f> dst_points = {
         cv::Point2f(static_cast<float>(points[0].first), static_cast<float>(points[0].second)),
         cv::Point2f(static_cast<float>(points[1].first), static_cast<float>(points[1].second)),
@@ -225,7 +229,7 @@ bool GstRecording::createPipeline(const std::string& outputPath,
                 NULL);
 
     // Configure filesink
-    g_object_set(filesink,
+    g_object_set(session.filesink,
                 "location", outputPath.c_str(),
                 "sync", FALSE,
                 NULL);
@@ -234,10 +238,10 @@ bool GstRecording::createPipeline(const std::string& outputPath,
     gst_bin_add_many(GST_BIN(session.pipeline),
                     video_src, video_convert1, videoscale, video_capsfilter,
                     video_convert_before_perspective, perspective, video_flip, 
-                    video_convert2,video_encoder, video_queue,
+                    video_convert2, video_encoder, video_queue,
                     audio_src, audio_convert, audio_resample, audio_encoder,
                     audio_queue,
-                    muxer, filesink,
+                    muxer, session.filesink,
                     NULL);
 
     // Link elements with detailed error reporting
@@ -294,7 +298,7 @@ bool GstRecording::createPipeline(const std::string& outputPath,
         return false;
     }
 
-    // Link audio chain - with additional audioresample element
+    // Link audio chain
     if (!link_elements(audio_src, audio_convert) ||
         !link_elements(audio_convert, audio_resample) ||
         !link_elements(audio_resample, audio_encoder) ||
@@ -342,7 +346,7 @@ bool GstRecording::createPipeline(const std::string& outputPath,
     gst_object_unref(audio_src_pad);
 
     // Link muxer to filesink
-    if (!gst_element_link(muxer, filesink)) {
+    if (!gst_element_link(muxer, session.filesink)) {
         std::cerr << "Failed to link muxer to filesink" << std::endl;
         return false;
     }
@@ -408,6 +412,7 @@ bool GstRecording::createPipeline(const std::string& outputPath,
     }
 
     recordings.emplace(outputPath, std::move(session));
-    std::cout << "Started recording to: " << outputPath << std::endl;
+    std::cout << "Started recording to: " << outputPath << " with resolution " 
+              << output_width << "x" << output_height << std::endl;
     return true;
 }

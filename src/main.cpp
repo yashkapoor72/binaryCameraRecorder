@@ -8,6 +8,10 @@
 #include <gst/gstmacos.h>
 #include "gstopencvperspective.h"
 
+// Global variables for device indices (set once at startup)
+static int g_camDevIndex = -1;
+static int g_audioDevIndex = -1;
+
 static std::vector<std::string> splitArguments(const std::string& input) {
     std::vector<std::string> args;
     bool inQuotes = false;
@@ -46,7 +50,15 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
     int height = -1;
     
     for (const auto& arg : args) {
-        if (arg.find("--action=") == 0) {
+        if (arg.find("--CamDevIndex=") == 0) {
+            std::cerr << "Error: Camera device index cannot be changed after startup" << std::endl;
+            return;
+        }
+        else if (arg.find("--AudioDevIndex=") == 0) {
+            std::cerr << "Error: Audio device index cannot be changed after startup" << std::endl;
+            return;
+        }
+        else if (arg.find("--action=") == 0) {
             action = arg.substr(9);
         }
         else if (arg.find("--outputPath=") == 0) {
@@ -126,16 +138,34 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Failed to stop recording: " << outputPath << std::endl;
         }
     }
-    else {
+    else if (!action.empty()) {
         std::cerr << "Unknown action: " << action << std::endl;
     }
 }
 
+static bool parseDeviceIndices(int argc, char* argv[]) {
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg.find("--CamDevIndex=") == 0) {
+            g_camDevIndex = std::stoi(arg.substr(14));
+        }
+        else if (arg.find("--AudioDevIndex=") == 0) {
+            g_audioDevIndex = std::stoi(arg.substr(16));
+        }
+    }
+    
+    if (g_camDevIndex == -1 || g_audioDevIndex == -1) {
+        std::cerr << "Error: Both --CamDevIndex and --AudioDevIndex must be specified" << std::endl;
+        return false;
+    }
+    return true;
+}
+
 static int run_app(int argc, char* argv[]) {
     CommandHandler cmdHandler;
-    DeskewHandler deskewHandler;
+    DeskewHandler deskewHandler(g_camDevIndex,g_audioDevIndex);  // Modified to take camera index
     
-    if (!deskewHandler.setupPipeline()) {
+    if (!deskewHandler.setupPipeline(g_camDevIndex,g_audioDevIndex)) {
         std::cerr << "Failed to setup preview pipeline!" << std::endl;
         return 1;
     }
@@ -163,6 +193,11 @@ static int run_app(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
+    // First parse and validate device indices
+    if (!parseDeviceIndices(argc, argv)) {
+        return 1;
+    }
+    
     // Set paths to include both system locations and our build directory
     std::string build_dir = g_get_current_dir();
     std::string plugin_path = "/usr/local/lib/gstreamer-1.0:/opt/homebrew/lib/gstreamer-1.0:" + build_dir;
@@ -174,7 +209,7 @@ int main(int argc, char* argv[]) {
     }
 
     GstRegistry* registry = gst_registry_get();
-    gst_registry_scan_path(registry, build_dir.c_str());  // Force scan build directory
+    gst_registry_scan_path(registry, build_dir.c_str());
 
     GstPluginFeature* feature = gst_registry_lookup_feature(registry, "opencvperspective");
     if (!feature) {

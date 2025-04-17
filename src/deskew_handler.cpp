@@ -4,7 +4,7 @@
 #include <opencv2/imgproc.hpp>
 #include <glib.h> 
 
-DeskewHandler::DeskewHandler() { 
+DeskewHandler::DeskewHandler(int camIndex, int audioIndex) {
     gst_init(nullptr, nullptr); 
     pipeline = nullptr;
     perspective = nullptr;
@@ -29,7 +29,7 @@ void DeskewHandler::stopPipeline() {
     }
 }
 
-bool DeskewHandler::setupPipeline() {
+bool DeskewHandler::setupPipeline(int camIndex, int audioIndex) {
     // Cleanup if already running
     stopPipeline();
 
@@ -89,7 +89,7 @@ bool DeskewHandler::setupPipeline() {
     // Configure source
     g_object_set(src, 
         "do-timestamp", TRUE, 
-        "device-index", 1,
+        "device-index", camIndex,
         "capture-screen", FALSE,
         NULL);
 

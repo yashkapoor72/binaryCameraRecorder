@@ -9,13 +9,15 @@
 
 class DeskewHandler {
 public:
-    DeskewHandler();
+    DeskewHandler(int camIndex, int audioIndex);
     ~DeskewHandler();
-    bool setupPipeline();
+    bool setupPipeline(int camIndex, int audioIndex);
     void updateSettings(const std::vector<std::pair<double, double>>& points, 
                        const std::string& flip_mode);
     void stopPipeline();
 private:
+    int cameraIndex;
+    int audioIndex;
     GstElement* pipeline = nullptr;
     GstElement* src = nullptr;
     GstElement* convert = nullptr;

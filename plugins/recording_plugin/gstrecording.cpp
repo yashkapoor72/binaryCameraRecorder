@@ -171,6 +171,7 @@ bool GstRecording::createPipeline(const std::string& outputPath,
     // Configure video source
     g_object_set(video_src,
                 "do-timestamp", TRUE,
+                "device-index", 1,
                 "capture-screen", FALSE,
                 NULL);
 

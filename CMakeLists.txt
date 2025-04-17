@@ -108,6 +108,8 @@ install(TARGETS opencvperspective DESTINATION lib/gstreamer-1.0)
 # Post-build verification
 add_custom_command(TARGET recording_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "Verifying plugin registration..."
+    COMMAND sh -c "ffmpeg -f avfoundation -list_devices true -i \"\" 2>&1 | sed -n '/AVFoundation video devices:/,/AVFoundation audio devices:/p;/AVFoundation audio devices:/,/^$/p' | grep -v 'Error\\|WARNING\\|^$' || true"
+    VERBATIM
     COMMAND sh -c "GST_DEBUG=3 ./recording_app --gst-plugin-path=${GST_PLUGIN_PATH} --gst-disable-registry-fork --version"
     COMMENT "Running basic plugin verification"
 )

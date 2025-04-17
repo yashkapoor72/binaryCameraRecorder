@@ -14,6 +14,7 @@ public:
     bool setupPipeline();
     void updateSettings(const std::vector<std::pair<double, double>>& points, 
                        const std::string& flip_mode);
+    void stopPipeline();
 private:
     GstElement* pipeline = nullptr;
     GstElement* src = nullptr;
@@ -23,6 +24,8 @@ private:
     GstElement* tee = nullptr;
     GstElement* previewQueue = nullptr;
     GstElement* previewSink = nullptr;
+    GstElement*capsFilter = nullptr;
+    GstElement*scale = nullptr;
     const std::unordered_map<std::string, int> flip_methods = {
         {"none", 0}, {"horizontal", 1}, {"vertical", 2}, 
         {"clockwise", 3}, {"counterclockwise", 4}};

@@ -12,16 +12,27 @@ DeskewHandler::DeskewHandler() {
     tee = nullptr;
     previewQueue = nullptr;
     previewSink = nullptr;
+    src = nullptr;
+    capsFilter = nullptr;
+    scale = nullptr;
 }
 
 DeskewHandler::~DeskewHandler() {
+    stopPipeline();
+}
+
+void DeskewHandler::stopPipeline() {
     if (pipeline) {
         gst_element_set_state(pipeline, GST_STATE_NULL);
         gst_object_unref(pipeline);
+        pipeline = nullptr;
     }
 }
 
 bool DeskewHandler::setupPipeline() {
+    // Cleanup if already running
+    stopPipeline();
+
     // Initialize GStreamer if not already done
     if (!gst_is_initialized()) {
         gst_init(nullptr, nullptr);
@@ -38,12 +49,13 @@ bool DeskewHandler::setupPipeline() {
     src = gst_element_factory_make("avfvideosrc", "source");
     GstElement* capsFilter = gst_element_factory_make("capsfilter", "capsfilter");
     GstElement* convert1 = gst_element_factory_make("videoconvert", "convert1");
+    GstElement* scale = gst_element_factory_make("videoscale", "scaler");
     perspective = gst_element_factory_make("perspective", "perspective");
     
     if (!perspective) {
         std::cerr << "Failed to create perspective element. Make sure gst-plugins-bad is installed." << std::endl;
         std::cerr << "Try: brew install gst-plugins-bad" << std::endl;
-        gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
@@ -55,13 +67,14 @@ bool DeskewHandler::setupPipeline() {
     previewSink = gst_element_factory_make("osxvideosink", "preview_sink");
 
     // Verify all elements were created
-    if (!src || !capsFilter || !convert1 || !perspective || !flip || 
+    if (!src || !capsFilter || !convert1 || !scale || !perspective || !flip || 
         !convert2 || !tee || !previewQueue || !convert3 || !previewSink) {
         std::cerr << "Failed to create one or more GStreamer elements:" << std::endl;
         if (!src) std::cerr << " - avfvideosrc" << std::endl;
         if (!capsFilter) std::cerr << " - capsfilter" << std::endl;
         if (!convert1) std::cerr << " - videoconvert" << std::endl;
-        if (!perspective) std::cerr << " - perspective (from gst-plugins-bad)" << std::endl;
+        if (!scale) std::cerr << " - videoscale" << std::endl;
+        if (!perspective) std::cerr << " - perspective" << std::endl;
         if (!flip) std::cerr << " - videoflip" << std::endl;
         if (!convert2) std::cerr << " - videoconvert" << std::endl;
         if (!tee) std::cerr << " - tee" << std::endl;
@@ -69,23 +82,23 @@ bool DeskewHandler::setupPipeline() {
         if (!convert3) std::cerr << " - videoconvert" << std::endl;
         if (!previewSink) std::cerr << " - osxvideosink" << std::endl;
         
-        if (pipeline) gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
     // Configure source
     g_object_set(src, 
         "do-timestamp", TRUE, 
-        "device-index", 0,
+        "device-index", 1,
         "capture-screen", FALSE,
         NULL);
 
-    // Set caps for the source
+    // Set flexible caps that work with most cameras
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "NV12",
-        "width", G_TYPE_INT, 1280,
-        "height", G_TYPE_INT, 720,
-        "framerate", GST_TYPE_FRACTION, 30, 1,
+        "width", GST_TYPE_INT_RANGE, 640, 1920,
+        "height", GST_TYPE_INT_RANGE, 480, 1080,
+        "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
         NULL);
     g_object_set(capsFilter, "caps", caps, NULL);
     gst_caps_unref(caps);
@@ -107,20 +120,20 @@ bool DeskewHandler::setupPipeline() {
 
     // Add elements to pipeline
     gst_bin_add_many(GST_BIN(pipeline), 
-        src, capsFilter, convert1, perspective, flip, 
+        src, capsFilter, convert1, scale, perspective, flip, 
         convert2, tee, previewQueue, convert3, previewSink, NULL);
 
     // Link main elements
-    if (!gst_element_link_many(src, capsFilter, convert1, perspective, flip, convert2, tee, NULL)) {
+    if (!gst_element_link_many(src, capsFilter, convert1, scale, perspective, flip, convert2, tee, NULL)) {
         std::cerr << "Failed to link main elements" << std::endl;
-        gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
     // Link preview branch
     if (!gst_element_link_many(previewQueue, convert3, previewSink, NULL)) {
         std::cerr << "Failed to link preview branch" << std::endl;
-        gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
@@ -128,7 +141,7 @@ bool DeskewHandler::setupPipeline() {
     GstPad* teePad = gst_element_request_pad_simple(tee, "src_%u");
     if (!teePad) {
         std::cerr << "Failed to request tee pad" << std::endl;
-        gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
@@ -136,7 +149,7 @@ bool DeskewHandler::setupPipeline() {
     if (!queuePad) {
         std::cerr << "Failed to get queue pad" << std::endl;
         gst_object_unref(teePad);
-        gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
@@ -146,7 +159,7 @@ bool DeskewHandler::setupPipeline() {
         std::cerr << "Failed to link tee to preview queue: " << gst_pad_link_get_name(ret) << std::endl;
         gst_object_unref(teePad);
         gst_object_unref(queuePad);
-        gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
@@ -172,6 +185,7 @@ bool DeskewHandler::setupPipeline() {
                 }
                 
                 g_error_free(err);
+                handler->stopPipeline();
                 break;
             }
             case GST_MESSAGE_WARNING: {
@@ -199,6 +213,10 @@ bool DeskewHandler::setupPipeline() {
                 }
                 break;
             }
+            case GST_MESSAGE_EOS:
+                std::cerr << "End of stream" << std::endl;
+                handler->stopPipeline();
+                break;
             default:
                 break;
         }
@@ -210,11 +228,11 @@ bool DeskewHandler::setupPipeline() {
     GstStateChangeReturn stateRet = gst_element_set_state(pipeline, GST_STATE_PLAYING);
     if (stateRet == GST_STATE_CHANGE_FAILURE) {
         std::cerr << "Failed to start pipeline" << std::endl;
-        gst_object_unref(pipeline);
+        stopPipeline();
         return false;
     }
 
-    std::cout << "Pipeline started successfully" << std::endl;
+    std::cout << "Pipeline started successfully with device index = 1 "<< std::endl;
     return true;
 }
 
@@ -229,7 +247,6 @@ void DeskewHandler::updateSettings(const std::vector<std::pair<double, double>>&
     const int output_height = 720;
 
     // Destination points - these should be the coordinates you want to map TO
-    // (the smaller region in your case)
     std::vector<cv::Point2f> dst_points = {
         cv::Point2f(static_cast<float>(points[0].first), static_cast<float>(points[0].second)),
         cv::Point2f(static_cast<float>(points[1].first), static_cast<float>(points[1].second)),
@@ -245,10 +262,9 @@ void DeskewHandler::updateSettings(const std::vector<std::pair<double, double>>&
         cv::Point2f(0.0f, static_cast<float>(output_height - 1))
     };
 
-    // Get the transformation matrix (now going from full frame to your region)
+    // Get the transformation matrix
     cv::Mat transform = cv::getPerspectiveTransform(src_points, dst_points);
 
-    // Rest of your code remains the same...
     GValueArray *matrix_array = g_value_array_new(9);
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {

@@ -460,7 +460,9 @@ dup_caps_with_alternate (GstCaps * caps)
   GstCapsFeatures *features;
 
   with_alternate = gst_caps_copy (caps);
-  features = gst_caps_features_new (GST_CAPS_FEATURE_FORMAT_INTERLACED, NULL);
+  features =
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_FORMAT_INTERLACED,
+      NULL);
   gst_caps_set_features_simple (with_alternate, features);
 
   gst_caps_set_simple (with_alternate, "interlace-mode", G_TYPE_STRING,
@@ -794,8 +796,10 @@ gst_interlace_caps_double_framerate (GstCaps * caps, gboolean half,
     } else if (G_VALUE_TYPE (val) == GST_TYPE_FRACTION_RANGE) {
       const GValue *min, *max;
       GValue nrange = { 0, }, nmin = {
-      0,}, nmax = {
-      0,};
+        0,
+      }, nmax = {
+        0,
+      };
       gint n, d;
 
       g_value_init (&nrange, GST_TYPE_FRACTION_RANGE);

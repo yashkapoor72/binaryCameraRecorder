@@ -29,9 +29,6 @@
  * by supporting publication and selection of available streams via the
  * #GstStreamCollection message and #GST_EVENT_SELECT_STREAMS event API.
  *
- * > playbin3 is still experimental API and a technology preview.
- * > Its behaviour and exposed API is subject to change.
- *
  * playbin3 can handle both audio and video files and features
  *
  * * automatic file type recognition and based on that automatic
@@ -112,11 +109,6 @@
  * using gst_element_factory_make()) and provide them to playbin3 using the
  * #GstPlayBin3:audio-sink or #GstPlayBin3:video-sink property.
  *
- * GNOME-based applications, for example, will usually want to create
- * gconfaudiosink and gconfvideosink elements and make playbin3 use those,
- * so that output happens to whatever the user has configured in the GNOME
- * Multimedia System Selector configuration dialog.
- *
  * The sink elements do not necessarily need to be ready-made sinks. It is
  * possible to create container elements that look like a sink to playbin3,
  * but in reality contain a number of custom elements linked together. This
@@ -189,6 +181,9 @@
  * a structure named 'redirect' along with a 'new-location' field of string
  * type. The new location may be a relative or an absolute URI. Examples
  * for such redirects can be found in many quicktime movie trailers.
+ *
+ * NOTE: playbin3 (via uridecodebin3) will handle the redirect messages if
+ * possible. The message will only be forwarded if it can't handle it.
  *
  * ## Examples
  * |[
@@ -1058,6 +1053,8 @@ colorbalance_value_changed_cb (GstColorBalance * balance,
 static void
 gst_play_bin3_init (GstPlayBin3 * playbin)
 {
+  GstCaps *uridecodebin_caps, *subtitle_caps;
+
   g_rec_mutex_init (&playbin->lock);
 
   /* assume we can create an input-selector */
@@ -1072,6 +1069,14 @@ gst_play_bin3_init (GstPlayBin3 * playbin)
   g_object_set (playbin->uridecodebin, "use-buffering", TRUE, NULL);
   gst_bin_add (GST_BIN_CAST (playbin),
       GST_ELEMENT_CAST (playbin->uridecodebin));
+
+  /* Make sure uridecodebin3 knows of all the subtitle formats that playsink can
+   * handle as-is */
+  subtitle_caps = gst_subtitle_overlay_create_factory_caps ();
+  g_object_get (playbin->uridecodebin, "caps", &uridecodebin_caps, NULL);
+  uridecodebin_caps = gst_caps_merge (uridecodebin_caps, subtitle_caps);
+  g_object_set (playbin->uridecodebin, "caps", uridecodebin_caps, NULL);
+  gst_caps_unref (uridecodebin_caps);
 
   g_signal_connect (playbin->uridecodebin, "pad-added",
       G_CALLBACK (pad_added_cb), playbin);
@@ -1190,11 +1195,6 @@ invalid:
 static void
 gst_play_bin3_set_uri (GstPlayBin3 * playbin, const gchar * uri)
 {
-  if (uri == NULL) {
-    g_warning ("cannot set NULL uri");
-    return;
-  }
-
   if (!gst_playbin_uri_is_valid (playbin, uri)) {
     if (g_str_has_prefix (uri, "file:")) {
       GST_WARNING_OBJECT (playbin, "not entirely correct file URI '%s' - make "
@@ -1857,10 +1857,11 @@ gst_play_bin3_send_event (GstElement * element, GstEvent * event)
     /* Don't reconfigure playsink just yet, until the streams-selected
      * message(s) tell us as streams become active / available */
 
+    GST_PLAY_BIN3_UNLOCK (playbin);
+
     /* Send this event directly to uridecodebin, so it works even
      * if uridecodebin didn't add any pads yet */
     res = gst_element_send_event (playbin->uridecodebin, event);
-    GST_PLAY_BIN3_UNLOCK (playbin);
 
     return res;
   }
@@ -2114,6 +2115,7 @@ combiner_active_pad_changed (GObject * combiner, GParamSpec * pspec,
         GST_PLAY_BIN3_UNLOCK (playbin);
         gst_play_bin3_send_custom_event (GST_OBJECT (combiner),
             "playsink-custom-video-flush-finish");
+        return;
       }
       break;
     case GST_STREAM_TYPE_AUDIO:
@@ -2124,6 +2126,7 @@ combiner_active_pad_changed (GObject * combiner, GParamSpec * pspec,
         GST_PLAY_BIN3_UNLOCK (playbin);
         gst_play_bin3_send_custom_event (GST_OBJECT (combiner),
             "playsink-custom-audio-flush-finish");
+        return;
       }
       break;
     case GST_STREAM_TYPE_TEXT:
@@ -2134,6 +2137,7 @@ combiner_active_pad_changed (GObject * combiner, GParamSpec * pspec,
         GST_PLAY_BIN3_UNLOCK (playbin);
         gst_play_bin3_send_custom_event (GST_OBJECT (combiner),
             "playsink-custom-subtitle-flush-finish");
+        return;
       }
       break;
     default:
@@ -2240,7 +2244,7 @@ static void
 control_source_pad (GstPlayBin3 * playbin, GstPad * pad,
     GstPad * combine_pad, GstStreamType stream_type)
 {
-  SourcePad *sourcepad = g_slice_new0 (SourcePad);
+  SourcePad *sourcepad = g_new0 (SourcePad, 1);
 
   sourcepad->pad = pad;
   sourcepad->event_probe_id =
@@ -2418,7 +2422,7 @@ release_source_pad (GstPlayBin3 * playbin,
 
   /* Remove from list of controlled pads and check again for EOS status */
   playbin->source_pads = g_list_remove (playbin->source_pads, sourcepad);
-  g_slice_free (SourcePad, sourcepad);
+  g_free (sourcepad);
 }
 
 /* this function is called when a new pad is added to decodebin. We check the
@@ -2608,25 +2612,38 @@ reconfigure_output (GstPlayBin3 * playbin)
       GST_DEBUG_OBJECT (playbin, "Stream type '%s' is now requested",
           gst_stream_type_get_name (combine->stream_type));
 
-      g_assert (combine->sinkpad == NULL);
+      if (combine->sinkpad) {
+        /* This was previously an assert but is now just a WARNING
+         *
+         * This *theoretically* should never happen, but there is the
+         * possibility where there was a failure within (uri)decodebin3 where
+         * the collection was posted (by demuxer for ex) but the decoding failed
+         * (no decoder, bad stream, etc...).
+         *
+         * in that case, we could have a combiner already prepared for that type
+         * but never got activated.
+         **/
+        GST_WARNING_OBJECT (playbin, "Combiner already configured");
+      } else {
 
-      /* Request playsink sink pad */
-      combine->sinkpad =
-          gst_play_sink_request_pad (playbin->playsink,
-          gst_play_sink_type_from_stream_type (combine->stream_type));
-      gst_object_ref (combine->sinkpad);
-      /* Create combiner if needed and link it */
-      create_combiner (playbin, combine);
-      if (combine->combiner) {
-        res = gst_pad_link (combine->srcpad, combine->sinkpad);
-        GST_DEBUG_OBJECT (playbin, "linked type %s, result: %d",
-            gst_stream_type_get_name (combine->stream_type), res);
-        if (res != GST_PAD_LINK_OK) {
-          GST_ELEMENT_ERROR (playbin, CORE, PAD,
-              ("Internal playbin error."),
-              ("Failed to link combiner to sink. Error %d", res));
+        /* Request playsink sink pad */
+        combine->sinkpad =
+            gst_play_sink_request_pad (playbin->playsink,
+            gst_play_sink_type_from_stream_type (combine->stream_type));
+        gst_object_ref (combine->sinkpad);
+        /* Create combiner if needed and link it */
+        create_combiner (playbin, combine);
+        if (combine->combiner) {
+          res = gst_pad_link (combine->srcpad, combine->sinkpad);
+          GST_DEBUG_OBJECT (playbin, "linked type %s, result: %d",
+              gst_stream_type_get_name (combine->stream_type), res);
+          if (res != GST_PAD_LINK_OK) {
+            GST_ELEMENT_ERROR (playbin, CORE, PAD,
+                ("Internal playbin error."),
+                ("Failed to link combiner to sink. Error %d", res));
+          }
+
         }
-
       }
     }
   }
@@ -2886,11 +2903,6 @@ gst_play_bin3_custom_element_init (GstPlugin * plugin)
   GST_DEBUG_CATEGORY_INIT (gst_play_bin3_debug, "playbin3", 0, "play bin3");
 
   playback_element_init (plugin);
-
-  if (g_getenv ("USE_PLAYBIN3")) {
-    ret &= gst_element_register (plugin, "playbin", GST_RANK_NONE,
-        GST_TYPE_PLAY_BIN);
-  }
 
   ret &= gst_element_register (plugin, "playbin3", GST_RANK_NONE,
       GST_TYPE_PLAY_BIN);

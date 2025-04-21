@@ -1,6 +1,6 @@
 project('gstreamer-vaapi', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
 
@@ -79,17 +79,12 @@ else
   message('GStreamer debug system is enabled')
 endif
 
-libva_dep = dependency('libva', version: libva_req,
-  fallback : ['libva', 'libva_dep'])
-libva_drm_dep = dependency('libva-drm', version: libva_req,
-  required: get_option('drm'), fallback : ['libva', 'libva_drm_dep'])
-libva_wayland_dep = dependency('libva-wayland', version: libva_req,
-  required: get_option('wayland'), fallback : ['libva', 'libva_wayland_dep'])
-libva_x11_dep = dependency('libva-x11', version: libva_req,
-  required: get_option('x11'), fallback : ['libva', 'libva_x11_dep'])
+libva_dep = dependency('libva', version: libva_req)
+libva_drm_dep = dependency('libva-drm', required: get_option('drm'), version: libva_req)
+libva_wayland_dep = dependency('libva-wayland', required: get_option('wayland'), version: libva_req)
+libva_x11_dep = dependency('libva-x11', required: get_option('x11'), version: libva_req)
 
-libdrm_dep = dependency('libdrm', version: libdrm_req,
-  required: get_option('drm'), fallback: ['libdrm', 'ext_libdrm'])
+libdrm_dep = dependency('libdrm', version: libdrm_req, required: get_option('drm'))
 libudev_dep = dependency('libudev', required: get_option('drm'))
 
 x11_dep = dependency('x11', required: get_option('x11'))
@@ -188,14 +183,14 @@ cdata.set_quoted('PACKAGE_NAME', 'GStreamer VA-API Plug-ins')
 cdata.set_quoted('PACKAGE_STRING', 'GStreamer VA-API Plug-ins @0@'.format(gst_version))
 cdata.set_quoted('PACKAGE_BUGREPORT', get_option('package-origin'))
 cdata.set_quoted('VA_DRIVERS_PATH', '@0@'.format(driverdir))
-cdata.set10('USE_DRM', USE_DRM)
-cdata.set10('USE_EGL', USE_EGL)
-cdata.set10('USE_ENCODERS', USE_ENCODERS)
-cdata.set10('USE_GLX', USE_GLX)
-cdata.set10('USE_VP9_ENCODER', USE_VP9_ENCODER)
-cdata.set10('USE_AV1_DECODER', USE_AV1_DECODER)
-cdata.set10('USE_WAYLAND', USE_WAYLAND)
-cdata.set10('USE_X11', USE_X11)
+cdata.set10('GST_VAAPI_USE_DRM', USE_DRM)
+cdata.set10('GST_VAAPI_USE_EGL', USE_EGL)
+cdata.set10('GST_VAAPI_USE_ENCODERS', USE_ENCODERS)
+cdata.set10('GST_VAAPI_USE_GLX', USE_GLX)
+cdata.set10('GST_VAAPI_USE_VP9_ENCODER', USE_VP9_ENCODER)
+cdata.set10('GST_VAAPI_USE_AV1_DECODER', USE_AV1_DECODER)
+cdata.set10('GST_VAAPI_USE_WAYLAND', USE_WAYLAND)
+cdata.set10('GST_VAAPI_USE_X11', USE_X11)
 cdata.set10('HAVE_XKBLIB', cc.has_header('X11/XKBlib.h', dependencies: x11_dep))
 cdata.set10('HAVE_XRANDR', xrandr_dep.found())
 cdata.set10('USE_GST_GL_HELPERS', gstgl_dep.found())
@@ -222,6 +217,8 @@ subdir('gst')
 subdir('tests')
 subdir('docs')
 
+warning ('GStreamer VA-API is deprecated in favor of GstVA in gst-plugins-bad')
+
 # Set release date
 if gst_version_nano == 0
   extract_release_date = find_program('scripts/extract-release-date-from-doap-file.py')
@@ -237,8 +234,14 @@ endif
 
 configure_file(output: 'config.h', configuration: cdata)
 
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.24.0', meson.project_version())
+
 pkgconfig = import('pkgconfig')
 plugins_pkgconfig_install_dir = join_paths(plugins_install_dir, 'pkgconfig')
+if get_option('default_library') == 'shared'
+  # If we don't build static plugins there is no need to generate pc files
+  plugins_pkgconfig_install_dir = disabler()
+endif
 
 plugin_names = []
 gst_plugins = []

@@ -80,6 +80,18 @@
                     }
                 },
                 "properties": {
+                    "qos": {
+                        "blurb": "Generate Quality-of-Service events upstream",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
                     "sync": {
                         "blurb": "Synchronize to pipeline clock",
                         "conditionally-available": false,
@@ -827,6 +839,18 @@
                         "type": "gint",
                         "writable": true
                     },
+                    "is-live": {
+                        "blurb": "Act like a live source",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
                     "timeout": {
                         "blurb": "Post a message after timeout microseconds (0 = disabled)",
                         "conditionally-available": false,
@@ -904,6 +928,18 @@
                         "mutable": "null",
                         "readable": true,
                         "type": "guint",
+                        "writable": true
+                    },
+                    "file-mode": {
+                        "blurb": "Specify file mode used to open file",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "truncate (1)",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "GstFileSinkFileMode",
                         "writable": true
                     },
                     "location": {
@@ -1881,6 +1917,18 @@
                         "type": "guint64",
                         "writable": true
                     },
+                    "notify-levels": {
+                        "blurb": "Whether to emit `notify` signals on levels changes or not",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
                     "silent": {
                         "blurb": "Don't emit queue signals",
                         "conditionally-available": false,
@@ -2646,6 +2694,26 @@
                     }
                 ]
             },
+            "GstFileSinkFileMode": {
+                "kind": "enum",
+                "values": [
+                    {
+                        "desc": "Truncate file (mode wb)",
+                        "name": "truncate",
+                        "value": "1"
+                    },
+                    {
+                        "desc": "Append file (mode ab)",
+                        "name": "output",
+                        "value": "2"
+                    },
+                    {
+                        "desc": "Overwrite file without truncating (mode rb+)",
+                        "name": "overwrite",
+                        "value": "3"
+                    }
+                ]
+            },
             "GstInputSelectorSyncMode": {
                 "kind": "enum",
                 "values": [
@@ -2880,12 +2948,185 @@
         "package": "GStreamer",
         "source": "gstreamer",
         "tracers": {
-            "factories": {},
-            "latency": {},
-            "leaks": {},
-            "log": {},
-            "rusage": {},
-            "stats": {}
+            "dots": {
+                "hierarchy": [
+                    "GstDotsTracer",
+                    "GstTracer",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "properties": {
+                    "no-delete": {
+                        "blurb": "Don't delete existing .dot files on startup",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    }
+                }
+            },
+            "factories": {
+                "hierarchy": [
+                    "GstFactoriesTracer",
+                    "GstTracer",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ]
+            },
+            "latency": {
+                "hierarchy": [
+                    "GstLatencyTracer",
+                    "GstTracer",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "properties": {
+                    "flags": {
+                        "blurb": "Flags to control what latency measurements to perform",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": true,
+                        "controllable": false,
+                        "default": "pipeline",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "GstLatencyTracerFlags",
+                        "writable": true
+                    }
+                }
+            },
+            "leaks": {
+                "hierarchy": [
+                    "GstLeaksTracer",
+                    "GstTracer",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "properties": {
+                    "check-refs": {
+                        "blurb": "Whether to track ref/unref operations",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": true,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
+                    "filters": {
+                        "blurb": "Comma-separated list of GObject types to track",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": true,
+                        "controllable": false,
+                        "default": "",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gchararray",
+                        "writable": true
+                    },
+                    "log-leaks-on-deinit": {
+                        "blurb": "Whether to log leaks on shutdown",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": true,
+                        "controllable": false,
+                        "default": "true",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
+                    "stack-traces-flags": {
+                        "blurb": "Stack trace collection mode",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": true,
+                        "controllable": false,
+                        "default": "disabled",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "GstLeaksStackTraceFlags",
+                        "writable": true
+                    }
+                },
+                "signals": {
+                    "activity-get-checkpoint": {
+                        "action": true,
+                        "args": [],
+                        "return-type": "GstStructure",
+                        "when": "last"
+                    },
+                    "activity-log-checkpoint": {
+                        "action": true,
+                        "args": [],
+                        "return-type": "void",
+                        "when": "last"
+                    },
+                    "activity-start-tracking": {
+                        "action": true,
+                        "args": [],
+                        "return-type": "void",
+                        "when": "last"
+                    },
+                    "activity-stop-tracking": {
+                        "action": true,
+                        "args": [],
+                        "return-type": "void",
+                        "when": "last"
+                    },
+                    "get-live-objects": {
+                        "action": true,
+                        "args": [],
+                        "return-type": "GstStructure",
+                        "when": "last"
+                    },
+                    "log-live-objects": {
+                        "action": true,
+                        "args": [],
+                        "return-type": "void",
+                        "when": "last"
+                    }
+                }
+            },
+            "log": {
+                "hierarchy": [
+                    "GstLogTracer",
+                    "GstTracer",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ]
+            },
+            "rusage": {
+                "hierarchy": [
+                    "GstRUsageTracer",
+                    "GstTracer",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ]
+            },
+            "stats": {
+                "hierarchy": [
+                    "GstStatsTracer",
+                    "GstTracer",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ]
+            }
         },
         "url": "Unknown package origin"
     }

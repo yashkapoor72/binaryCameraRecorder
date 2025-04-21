@@ -126,6 +126,7 @@
 #endif
 
 #include "gstharness.h"
+#include "gstharnesslink.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -133,8 +134,12 @@
 
 static void gst_harness_stress_free (GstHarnessThread * t);
 
-#define HARNESS_KEY "harness"
+/* Keys used for storing and retrieving associations to pads and elements with
+ * g_object_set_data (): */
+/* The HARNESS_REF association inside a GstElement will keep track of how many
+ * GstHarness'es are attached to that element. */
 #define HARNESS_REF "harness-ref"
+
 #define HARNESS_LOCK(h) g_mutex_lock (&(h)->priv->priv_mutex)
 #define HARNESS_UNLOCK(h) g_mutex_unlock (&(h)->priv->priv_mutex)
 
@@ -211,10 +216,16 @@ struct _GstHarnessPrivate
 static GstFlowReturn
 gst_harness_chain (GstPad * pad, GstObject * parent, GstBuffer * buffer)
 {
-  GstHarness *h = g_object_get_data (G_OBJECT (pad), HARNESS_KEY);
-  GstHarnessPrivate *priv = h->priv;
+  GstHarness *h;
+  GstHarnessLink *link;
+  GstHarnessPrivate *priv;
   (void) parent;
+
+  if (!(link = gst_harness_pad_link_lock (pad, &h)))
+    return GST_FLOW_FLUSHING;
   g_assert (h != NULL);
+  priv = h->priv;
+
   g_mutex_lock (&priv->blocking_push_mutex);
   g_atomic_int_inc (&priv->recv_buffers);
 
@@ -233,31 +244,45 @@ gst_harness_chain (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   }
   g_mutex_unlock (&priv->blocking_push_mutex);
 
+  gst_harness_link_unlock (link);
   return GST_FLOW_OK;
 }
 
 static gboolean
 gst_harness_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
 {
-  GstHarness *h = g_object_get_data (G_OBJECT (pad), HARNESS_KEY);
-  GstHarnessPrivate *priv = h->priv;
+  GstHarness *h;
+  GstHarnessLink *link;
+  GstHarnessPrivate *priv;
   (void) parent;
+
+  if (!(link = gst_harness_pad_link_lock (pad, &h)))
+    return FALSE;
   g_assert (h != NULL);
+  priv = h->priv;
+
   g_atomic_int_inc (&priv->recv_upstream_events);
   g_async_queue_push (priv->src_event_queue, event);
+
+  gst_harness_link_unlock (link);
   return TRUE;
 }
 
 static gboolean
 gst_harness_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
 {
-  GstHarness *h = g_object_get_data (G_OBJECT (pad), HARNESS_KEY);
-  GstHarnessPrivate *priv = h->priv;
+  GstHarness *h;
+  GstHarnessLink *link;
+  GstHarnessPrivate *priv;
   gboolean ret = TRUE;
   gboolean forward;
-
-  g_assert (h != NULL);
   (void) parent;
+
+  if (!(link = gst_harness_pad_link_lock (pad, &h)))
+    return FALSE;
+  g_assert (h != NULL);
+  priv = h->priv;
+
   g_atomic_int_inc (&priv->recv_events);
 
   switch (GST_EVENT_TYPE (event)) {
@@ -289,6 +314,7 @@ gst_harness_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
   }
   HARNESS_UNLOCK (h);
 
+  gst_harness_link_unlock (link);
   return ret;
 }
 
@@ -369,10 +395,16 @@ gst_harness_negotiate (GstHarness * h)
 static gboolean
 gst_harness_sink_query (GstPad * pad, GstObject * parent, GstQuery * query)
 {
-  GstHarness *h = g_object_get_data (G_OBJECT (pad), HARNESS_KEY);
-  GstHarnessPrivate *priv = h->priv;
+  GstHarness *h;
+  GstHarnessLink *link;
+  GstHarnessPrivate *priv;
   gboolean res = TRUE;
+  (void) parent;
+
+  if (!(link = gst_harness_pad_link_lock (pad, &h)))
+    return FALSE;
   g_assert (h != NULL);
+  priv = h->priv;
 
   // FIXME: forward all queries?
 
@@ -456,16 +488,23 @@ gst_harness_sink_query (GstPad * pad, GstObject * parent, GstQuery * query)
       res = gst_pad_query_default (pad, parent, query);
   }
 
+  gst_harness_link_unlock (link);
   return res;
 }
 
 static gboolean
 gst_harness_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
 {
-  GstHarness *h = g_object_get_data (G_OBJECT (pad), HARNESS_KEY);
-  GstHarnessPrivate *priv = h->priv;
+  GstHarness *h;
+  GstHarnessLink *link;
+  GstHarnessPrivate *priv;
   gboolean res = TRUE;
+  (void) parent;
+
+  if (!(link = gst_harness_pad_link_lock (pad, &h)))
+    return FALSE;
   g_assert (h != NULL);
+  priv = h->priv;
 
   switch (GST_QUERY_TYPE (query)) {
     case GST_QUERY_LATENCY:
@@ -495,6 +534,7 @@ gst_harness_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
     default:
       res = gst_pad_query_default (pad, parent, query);
   }
+  gst_harness_link_unlock (link);
   return res;
 }
 
@@ -579,8 +619,8 @@ gst_harness_setup_src_pad (GstHarness * h,
   /* sending pad */
   h->srcpad = gst_pad_new_from_static_template (src_tmpl, "src");
   g_assert (h->srcpad);
-  g_object_set_data (G_OBJECT (h->srcpad), HARNESS_KEY, h);
 
+  gst_harness_pad_link_set (h->srcpad, h);
   gst_pad_set_query_function (h->srcpad, gst_harness_src_query);
   gst_pad_set_event_function (h->srcpad, gst_harness_src_event);
 
@@ -600,8 +640,8 @@ gst_harness_setup_sink_pad (GstHarness * h,
   /* receiving pad */
   h->sinkpad = gst_pad_new_from_static_template (sink_tmpl, "sink");
   g_assert (h->sinkpad);
-  g_object_set_data (G_OBJECT (h->sinkpad), HARNESS_KEY, h);
 
+  gst_harness_pad_link_set (h->sinkpad, h);
   gst_pad_set_chain_function (h->sinkpad, gst_harness_chain);
   gst_pad_set_query_function (h->sinkpad, gst_harness_sink_query);
   gst_pad_set_event_function (h->sinkpad, gst_harness_sink_event);
@@ -1090,10 +1130,9 @@ gst_harness_teardown (GstHarness * h)
 
     /* Make sure our funcs are not called after harness is teared down since
      * they try to access this harness through pad data */
-    GST_PAD_STREAM_LOCK (h->srcpad);
+    gst_harness_pad_link_tear_down (h->srcpad);
     gst_pad_set_event_function (h->srcpad, NULL);
     gst_pad_set_query_function (h->srcpad, NULL);
-    GST_PAD_STREAM_UNLOCK (h->srcpad);
 
     gst_object_unref (h->srcpad);
   }
@@ -1108,11 +1147,10 @@ gst_harness_teardown (GstHarness * h)
 
     /* Make sure our funcs are not called after harness is teared down since
      * they try to access this harness through pad data */
-    GST_PAD_STREAM_LOCK (h->sinkpad);
+    gst_harness_pad_link_tear_down (h->sinkpad);
     gst_pad_set_chain_function (h->sinkpad, NULL);
     gst_pad_set_event_function (h->sinkpad, NULL);
     gst_pad_set_query_function (h->sinkpad, NULL);
-    GST_PAD_STREAM_UNLOCK (h->sinkpad);
 
     gst_object_unref (h->sinkpad);
   }
@@ -2898,13 +2936,13 @@ gst_harness_thread_init (GstHarnessThread * t, GDestroyNotify freefunc,
 static void
 gst_harness_thread_free (GstHarnessThread * t)
 {
-  g_slice_free (GstHarnessThread, t);
+  g_free (t);
 }
 
 static void
 gst_harness_custom_thread_free (GstHarnessCustomThread * t)
 {
-  g_slice_free (GstHarnessCustomThread, t);
+  g_free (t);
 }
 
 static void
@@ -2914,7 +2952,7 @@ gst_harness_push_buffer_thread_free (GstHarnessPushBufferThread * t)
     gst_caps_replace (&t->caps, NULL);
     if (t->notify != NULL)
       t->notify (t->data);
-    g_slice_free (GstHarnessPushBufferThread, t);
+    g_free (t);
   }
 }
 
@@ -2924,7 +2962,7 @@ gst_harness_push_event_thread_free (GstHarnessPushEventThread * t)
   if (t != NULL) {
     if (t->notify != NULL)
       t->notify (t->data);
-    g_slice_free (GstHarnessPushEventThread, t);
+    g_free (t);
   }
 }
 
@@ -2934,7 +2972,7 @@ gst_harness_property_thread_free (GstHarnessPropThread * t)
   if (t != NULL) {
     g_free (t->name);
     g_value_unset (&t->value);
-    g_slice_free (GstHarnessPropThread, t);
+    g_free (t);
   }
 }
 
@@ -2963,7 +3001,7 @@ gst_harness_requestpad_thread_free (GstHarnessReqPadThread * t)
     gst_caps_replace (&t->caps, NULL);
 
     gst_harness_requestpad_release_pads (t);
-    g_slice_free (GstHarnessReqPadThread, t);
+    g_free (t);
   }
 }
 
@@ -3209,7 +3247,7 @@ GstHarnessThread *
 gst_harness_stress_custom_start (GstHarness * h,
     GFunc init, GFunc callback, gpointer data, gulong sleep)
 {
-  GstHarnessCustomThread *t = g_slice_new0 (GstHarnessCustomThread);
+  GstHarnessCustomThread *t = g_new0 (GstHarnessCustomThread, 1);
   gst_harness_thread_init (&t->t,
       (GDestroyNotify) gst_harness_custom_thread_free, h, sleep);
 
@@ -3239,7 +3277,7 @@ gst_harness_stress_custom_start (GstHarness * h,
 GstHarnessThread *
 gst_harness_stress_statechange_start_full (GstHarness * h, gulong sleep)
 {
-  GstHarnessThread *t = g_slice_new0 (GstHarnessThread);
+  GstHarnessThread *t = g_new0 (GstHarnessThread, 1);
   gst_harness_thread_init (t,
       (GDestroyNotify) gst_harness_thread_free, h, sleep);
   GST_HARNESS_THREAD_START (statechange, t);
@@ -3312,7 +3350,7 @@ gst_harness_stress_push_buffer_with_cb_start_full (GstHarness * h,
     GstHarnessPrepareBufferFunc func, gpointer data, GDestroyNotify notify,
     gulong sleep)
 {
-  GstHarnessPushBufferThread *t = g_slice_new0 (GstHarnessPushBufferThread);
+  GstHarnessPushBufferThread *t = g_new0 (GstHarnessPushBufferThread, 1);
   gst_harness_thread_init (&t->t,
       (GDestroyNotify) gst_harness_push_buffer_thread_free, h, sleep);
 
@@ -3375,7 +3413,7 @@ gst_harness_stress_push_event_with_cb_start_full (GstHarness * h,
     GstHarnessPrepareEventFunc func, gpointer data, GDestroyNotify notify,
     gulong sleep)
 {
-  GstHarnessPushEventThread *t = g_slice_new0 (GstHarnessPushEventThread);
+  GstHarnessPushEventThread *t = g_new0 (GstHarnessPushEventThread, 1);
   gst_harness_thread_init (&t->t,
       (GDestroyNotify) gst_harness_push_event_thread_free, h, sleep);
 
@@ -3436,7 +3474,7 @@ gst_harness_stress_push_upstream_event_with_cb_start_full (GstHarness * h,
     GstHarnessPrepareEventFunc func, gpointer data, GDestroyNotify notify,
     gulong sleep)
 {
-  GstHarnessPushEventThread *t = g_slice_new0 (GstHarnessPushEventThread);
+  GstHarnessPushEventThread *t = g_new0 (GstHarnessPushEventThread, 1);
   gst_harness_thread_init (&t->t,
       (GDestroyNotify) gst_harness_push_event_thread_free, h, sleep);
 
@@ -3468,7 +3506,7 @@ GstHarnessThread *
 gst_harness_stress_property_start_full (GstHarness * h,
     const gchar * name, const GValue * value, gulong sleep)
 {
-  GstHarnessPropThread *t = g_slice_new0 (GstHarnessPropThread);
+  GstHarnessPropThread *t = g_new0 (GstHarnessPropThread, 1);
   gst_harness_thread_init (&t->t,
       (GDestroyNotify) gst_harness_property_thread_free, h, sleep);
 
@@ -3503,7 +3541,7 @@ gst_harness_stress_requestpad_start_full (GstHarness * h,
     GstPadTemplate * templ, const gchar * name, GstCaps * caps,
     gboolean release, gulong sleep)
 {
-  GstHarnessReqPadThread *t = g_slice_new0 (GstHarnessReqPadThread);
+  GstHarnessReqPadThread *t = g_new0 (GstHarnessReqPadThread, 1);
   gst_harness_thread_init (&t->t,
       (GDestroyNotify) gst_harness_requestpad_thread_free, h, sleep);
 

@@ -46,6 +46,7 @@
 
 #include <gst/va/gstvavideoformat.h>
 
+#include "gstvacaps.h"
 #include "gstvabasedec.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_va_jpegdec_debug);
@@ -139,8 +140,8 @@ gst_va_jpeg_dec_new_picture (GstJpegDecoder * decoder,
     GstJpegFrameHdr * frame_hdr)
 {
   GstVaJpegDec *self = GST_VA_JPEG_DEC (decoder);
-  GstVideoDecoder *vdec = GST_VIDEO_DECODER (decoder);
   GstVaBaseDec *base = GST_VA_BASE_DEC (decoder);
+  GstVideoInfo *info = &base->output_info;
   GstFlowReturn ret;
   VAProfile profile;
   VAPictureParameterBufferJPEGBaseline pic_param;
@@ -163,22 +164,18 @@ gst_va_jpeg_dec_new_picture (GstJpegDecoder * decoder,
           frame_hdr->width, frame_hdr->height)) {
     base->profile = profile;
     base->rt_format = rt_format;
-    base->width = frame_hdr->width;
-    base->height = frame_hdr->height;
+    GST_VIDEO_INFO_WIDTH (info) = base->width = frame_hdr->width;
+    GST_VIDEO_INFO_HEIGHT (info) = base->height = frame_hdr->height;
 
     base->need_negotiation = TRUE;
     GST_INFO_OBJECT (self, "Format changed to %s [%x] (%dx%d)",
         gst_va_profile_name (profile), rt_format, base->width, base->height);
   }
 
-  if (base->need_negotiation) {
-    if (!gst_video_decoder_negotiate (vdec)) {
-      GST_ERROR_OBJECT (self, "Failed to negotiate with downstream");
-      return GST_FLOW_NOT_NEGOTIATED;
-    }
-  }
+  g_clear_pointer (&base->input_state, gst_video_codec_state_unref);
+  base->input_state = gst_video_codec_state_ref (decoder->input_state);
 
-  ret = gst_video_decoder_allocate_output_frame (vdec, frame);
+  ret = gst_va_base_dec_prepare_output_frame (base, frame);
   if (ret != GST_FLOW_OK) {
     GST_ERROR_OBJECT (self, "Failed to allocate output buffer: %s",
         gst_flow_get_name (ret));
@@ -327,12 +324,12 @@ static GstFlowReturn
 gst_va_jpeg_dec_output_picture (GstJpegDecoder * decoder,
     GstVideoCodecFrame * frame)
 {
-  GstVideoDecoder *vdec = GST_VIDEO_DECODER (decoder);
   GstVaBaseDec *base = GST_VA_BASE_DEC (decoder);
+  GstVideoDecoder *vdec = GST_VIDEO_DECODER (decoder);
 
-  if (base->copy_frames)
-    gst_va_base_dec_copy_output_buffer (base, frame);
-  return gst_video_decoder_finish_frame (vdec, frame);
+  if (gst_va_base_dec_process_output (base, frame, NULL, 0))
+    return gst_video_decoder_finish_frame (vdec, frame);
+  return GST_FLOW_ERROR;
 }
 
 /* @XXX: Checks for drivers that can do color convertion to nv12
@@ -359,8 +356,8 @@ gst_va_jpeg_dec_negotiate (GstVideoDecoder * decoder)
 {
   GstVaBaseDec *base = GST_VA_BASE_DEC (decoder);
   GstVaJpegDec *self = GST_VA_JPEG_DEC (decoder);
-  GstJpegDecoder *jpegdec = GST_JPEG_DECODER (decoder);
   GstVideoFormat format;
+  guint64 modifier;
   GstCapsFeatures *capsfeatures = NULL;
 
   /* Ignore downstream renegotiation request. */
@@ -391,7 +388,7 @@ gst_va_jpeg_dec_negotiate (GstVideoDecoder * decoder)
     base->rt_format = VA_RT_FORMAT_RGBP;
 
   gst_va_base_dec_get_preferred_format_and_caps_features (base, &format,
-      &capsfeatures);
+      &capsfeatures, &modifier);
   if (format == GST_VIDEO_FORMAT_UNKNOWN)
     return FALSE;
 
@@ -405,9 +402,18 @@ gst_va_jpeg_dec_negotiate (GstVideoDecoder * decoder)
 
   base->output_state =
       gst_video_decoder_set_output_state (decoder, format,
-      base->width, base->height, jpegdec->input_state);
+      base->width, base->height, base->input_state);
 
-  base->output_state->caps = gst_video_info_to_caps (&base->output_state->info);
+  /* set caps feature */
+  if (capsfeatures && gst_caps_features_contains (capsfeatures,
+          GST_CAPS_FEATURE_MEMORY_DMABUF)) {
+    base->output_state->caps =
+        gst_va_video_info_to_dma_caps (&base->output_state->info, modifier);
+  } else {
+    base->output_state->caps =
+        gst_video_info_to_caps (&base->output_state->info);
+  }
+
   if (capsfeatures)
     gst_caps_set_features_simple (base->output_state->caps, capsfeatures);
 
@@ -456,6 +462,15 @@ gst_va_jpeg_dec_class_init (gpointer g_class, gpointer class_data)
 
   parent_class = g_type_class_peek_parent (g_class);
 
+  /**
+   * GstVaJpegDec:device-path:
+   *
+   * It shows the DRM device path used for the VA operation, if any.
+   */
+  gst_va_base_dec_class_init (GST_VA_BASE_DEC_CLASS (g_class), JPEG,
+      cdata->render_device_path, cdata->sink_caps, cdata->src_caps,
+      src_doc_caps, sink_doc_caps);
+
   gobject_class->dispose = gst_va_jpeg_dec_dispose;
 
   decoder_class->negotiate = GST_DEBUG_FUNCPTR (gst_va_jpeg_dec_negotiate);
@@ -468,15 +483,6 @@ gst_va_jpeg_dec_class_init (gpointer g_class, gpointer class_data)
       GST_DEBUG_FUNCPTR (gst_va_jpeg_dec_end_picture);
   jpegdecoder_class->output_picture =
       GST_DEBUG_FUNCPTR (gst_va_jpeg_dec_output_picture);
-
-  /**
-   * GstVaJpegDec:device-path:
-   *
-   * It shows the DRM device path used for the VA operation, if any.
-   */
-  gst_va_base_dec_class_init (GST_VA_BASE_DEC_CLASS (g_class), JPEG,
-      cdata->render_device_path, cdata->sink_caps, cdata->src_caps,
-      src_doc_caps, sink_doc_caps);
 
   g_free (long_name);
   g_free (cdata->description);
@@ -529,6 +535,10 @@ _fixup_sink_caps (GstVaDisplay * display, GstCaps * caps)
     g_value_unset (&sampling);
     return ret;
   }
+
+  /* TODO: support interleaved mjpeg */
+  gst_caps_set_simple (caps, "interlace-mode", G_TYPE_STRING, "progressive",
+      NULL);
   return gst_caps_ref (caps);
 }
 
@@ -536,6 +546,42 @@ static GstCaps *
 _fixup_src_caps (GstVaDisplay * display, GstCaps * caps)
 {
   if (GST_VA_DISPLAY_IS_IMPLEMENTATION (display, INTEL_IHD)) {
+    GstCaps *ret;
+    guint i, len;
+
+    ret = gst_caps_copy (caps);
+
+    len = gst_caps_get_size (ret);
+    for (i = 0; i < len; i++) {
+      guint j, size;
+      GValue out = G_VALUE_INIT;
+      const GValue *in;
+      GstStructure *s;
+      GstCapsFeatures *f;
+
+      f = gst_caps_get_features (ret, i);
+      if (!gst_caps_features_is_equal (f,
+              GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY))
+        continue;
+
+      s = gst_caps_get_structure (ret, i);
+
+      in = gst_structure_get_value (s, "format");
+
+      size = gst_value_list_get_size (in);
+      gst_value_list_init (&out, size);
+      for (j = 0; j < size; j++) {
+        const GValue *fmt = gst_value_list_get_value (in, j);
+
+        /* rgbp is not correctly mapped into memory */
+        if (g_strcmp0 (g_value_get_string (fmt), "RGBP") != 0)
+          gst_value_list_append_value (&out, fmt);
+      }
+      gst_structure_take_value (s, "format", &out);
+    }
+
+    return ret;
+  } else if (GST_VA_DISPLAY_IS_IMPLEMENTATION (display, INTEL_I965)) {
     GstCaps *ret;
     GstStructure *s;
     GstCapsFeatures *f;
@@ -547,39 +593,11 @@ _fixup_src_caps (GstVaDisplay * display, GstCaps * caps)
     for (i = 0; i < len; i++) {
       s = gst_caps_get_structure (ret, i);
       f = gst_caps_get_features (ret, i);
-      if (gst_caps_features_is_equal (f,
-              GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY)) {
-        /* rgbp is not correctly mapped into memory */
-        guint i, size;
-        GValue out = G_VALUE_INIT;
-        const GValue *in = gst_structure_get_value (s, "format");
 
-        size = gst_value_list_get_size (in);
-        gst_value_list_init (&out, size);
-        for (i = 0; i < size; i++) {
-          const GValue *fmt = gst_value_list_get_value (in, i);
-          if (g_strcmp0 (g_value_get_string (fmt), "RGBP") != 0)
-            gst_value_list_append_value (&out, fmt);
-        }
-        gst_structure_set_value (s, "format", &out);
-        g_value_unset (&out);
-      } else if (gst_caps_features_contains (f, GST_CAPS_FEATURE_MEMORY_DMABUF)) {
-        /* dmabuf exportation only handles NV12 */
-        gst_structure_set (s, "format", G_TYPE_STRING, "NV12", NULL);
-      }
-    }
+      /* DMA kind formats have modifiers, we should not change */
+      if (gst_caps_features_contains (f, GST_CAPS_FEATURE_MEMORY_DMABUF))
+        continue;
 
-    return ret;
-  } else if (GST_VA_DISPLAY_IS_IMPLEMENTATION (display, INTEL_I965)) {
-    GstCaps *ret;
-    GstStructure *s;
-    guint i, len;
-
-    ret = gst_caps_copy (caps);
-
-    len = gst_caps_get_size (ret);
-    for (i = 0; i < len; i++) {
-      s = gst_caps_get_structure (ret, i);
       /* only NV12 works in this nigthmare */
       gst_structure_set (s, "format", G_TYPE_STRING, "NV12", NULL);
     }
@@ -619,28 +637,14 @@ gst_va_jpeg_dec_register (GstPlugin * plugin, GstVaDevice * device,
   /* class data will be leaked if the element never gets instantiated */
   GST_MINI_OBJECT_FLAG_SET (cdata->sink_caps,
       GST_MINI_OBJECT_FLAG_MAY_BE_LEAKED);
-  GST_MINI_OBJECT_FLAG_SET (src_caps, GST_MINI_OBJECT_FLAG_MAY_BE_LEAKED);
+  GST_MINI_OBJECT_FLAG_SET (cdata->src_caps,
+      GST_MINI_OBJECT_FLAG_MAY_BE_LEAKED);
 
   type_info.class_data = cdata;
 
-  type_name = g_strdup ("GstVaJpegDec");
-  feature_name = g_strdup ("vajpegdec");
-
-  /* The first decoder to be registered should use a constant name,
-   * like vajpegdec, for any additional decoders, we create unique
-   * names, using inserting the render device name. */
-  if (g_type_from_name (type_name)) {
-    gchar *basename = g_path_get_basename (device->render_device_path);
-    g_free (type_name);
-    g_free (feature_name);
-    type_name = g_strdup_printf ("GstVa%sJpegDec", basename);
-    feature_name = g_strdup_printf ("va%sjpegdec", basename);
-    cdata->description = basename;
-
-    /* lower rank for non-first device */
-    if (rank > 0)
-      rank--;
-  }
+  gst_va_create_feature_name (device, "GstVaJpegDec", "GstVa%sJpegDec",
+      &type_name, "vajpegdec", "va%sjpegdec", &feature_name,
+      &cdata->description, &rank);
 
   g_once (&debug_once, _register_debug_category, NULL);
 

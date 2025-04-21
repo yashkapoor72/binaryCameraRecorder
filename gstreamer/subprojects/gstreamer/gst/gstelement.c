@@ -98,7 +98,6 @@
 #include "gstghostpad.h"
 #include "gstutils.h"
 #include "gstinfo.h"
-#include "gstquark.h"
 #include "gsttracerutils.h"
 #include "gstvalue.h"
 #include <glib/gi18n-lib.h>
@@ -747,6 +746,7 @@ gst_element_add_pad (GstElement * element, GstPad * pad)
 {
   gchar *pad_name;
   gboolean active;
+  gboolean should_activate;
 
   g_return_val_if_fail (GST_IS_ELEMENT (element), FALSE);
   g_return_val_if_fail (GST_IS_PAD (pad), FALSE);
@@ -771,10 +771,8 @@ gst_element_add_pad (GstElement * element, GstPad * pad)
     goto had_parent;
 
   /* check for active pads */
-  if (!active && (GST_STATE (element) > GST_STATE_READY ||
-          GST_STATE_NEXT (element) == GST_STATE_PAUSED)) {
-    gst_pad_set_active (pad, TRUE);
-  }
+  should_activate = !active && (GST_STATE (element) > GST_STATE_READY ||
+      GST_STATE_NEXT (element) == GST_STATE_PAUSED);
 
   g_free (pad_name);
 
@@ -795,6 +793,9 @@ gst_element_add_pad (GstElement * element, GstPad * pad)
   element->numpads++;
   element->pads_cookie++;
   GST_OBJECT_UNLOCK (element);
+
+  if (should_activate)
+    gst_pad_set_active (pad, TRUE);
 
   /* emit the PAD_ADDED signal */
   g_signal_emit (element, gst_element_signals[PAD_ADDED], 0, pad);
@@ -1422,8 +1423,8 @@ gst_element_do_foreach_pad (GstElement * element,
 /**
  * gst_element_foreach_sink_pad:
  * @element: a #GstElement to iterate sink pads of
- * @func: (scope call): function to call for each sink pad
- * @user_data: (closure): user data passed to @func
+ * @func: (scope call) (closure user_data): function to call for each sink pad
+ * @user_data: user data passed to @func
  *
  * Call @func with @user_data for each of @element's sink pads. @func will be
  * called exactly once for each sink pad that exists at the time of this call,
@@ -1448,8 +1449,8 @@ gst_element_foreach_sink_pad (GstElement * element,
 /**
  * gst_element_foreach_src_pad:
  * @element: a #GstElement to iterate source pads of
- * @func: (scope call): function to call for each source pad
- * @user_data: (closure): user data passed to @func
+ * @func: (scope call) (closure user_data): function to call for each source pad
+ * @user_data: user data passed to @func
  *
  * Call @func with @user_data for each of @element's source pads. @func will be
  * called exactly once for each source pad that exists at the time of this call,
@@ -1474,8 +1475,8 @@ gst_element_foreach_src_pad (GstElement * element,
 /**
  * gst_element_foreach_pad:
  * @element: a #GstElement to iterate pads of
- * @func: (scope call): function to call for each pad
- * @user_data: (closure): user data passed to @func
+ * @func: (scope call) (closure user_data): function to call for each pad
+ * @user_data: user data passed to @func
  *
  * Call @func with @user_data for each of @element's pads. @func will be called
  * exactly once for each pad that exists at the time of this call, unless
@@ -1657,11 +1658,11 @@ gst_element_class_set_metadata (GstElementClass * klass,
   g_return_if_fail (description != NULL && *description != '\0');
   g_return_if_fail (author != NULL && *author != '\0');
 
-  gst_structure_id_set ((GstStructure *) klass->metadata,
-      GST_QUARK (ELEMENT_METADATA_LONGNAME), G_TYPE_STRING, longname,
-      GST_QUARK (ELEMENT_METADATA_KLASS), G_TYPE_STRING, classification,
-      GST_QUARK (ELEMENT_METADATA_DESCRIPTION), G_TYPE_STRING, description,
-      GST_QUARK (ELEMENT_METADATA_AUTHOR), G_TYPE_STRING, author, NULL);
+  gst_structure_set_static_str ((GstStructure *) klass->metadata,
+      GST_ELEMENT_METADATA_LONGNAME, G_TYPE_STRING, longname,
+      GST_ELEMENT_METADATA_KLASS, G_TYPE_STRING, classification,
+      GST_ELEMENT_METADATA_DESCRIPTION, G_TYPE_STRING, description,
+      GST_ELEMENT_METADATA_AUTHOR, G_TYPE_STRING, author, NULL);
 }
 
 /**
@@ -1702,17 +1703,17 @@ gst_element_class_set_static_metadata (GstElementClass * klass,
   g_value_init (&val, G_TYPE_STRING);
 
   g_value_set_static_string (&val, longname);
-  gst_structure_id_set_value (s, GST_QUARK (ELEMENT_METADATA_LONGNAME), &val);
+  gst_structure_set_value_static_str (s, GST_ELEMENT_METADATA_LONGNAME, &val);
 
   g_value_set_static_string (&val, classification);
-  gst_structure_id_set_value (s, GST_QUARK (ELEMENT_METADATA_KLASS), &val);
+  gst_structure_set_value_static_str (s, GST_ELEMENT_METADATA_KLASS, &val);
 
   g_value_set_static_string (&val, description);
-  gst_structure_id_set_value (s, GST_QUARK (ELEMENT_METADATA_DESCRIPTION),
+  gst_structure_set_value_static_str (s, GST_ELEMENT_METADATA_DESCRIPTION,
       &val);
 
   g_value_set_static_string (&val, author);
-  gst_structure_id_take_value (s, GST_QUARK (ELEMENT_METADATA_AUTHOR), &val);
+  gst_structure_take_value_static_str (s, GST_ELEMENT_METADATA_AUTHOR, &val);
 }
 
 /**
@@ -2498,72 +2499,80 @@ gst_element_get_state_func (GstElement * element,
 {
   GstStateChangeReturn ret = GST_STATE_CHANGE_FAILURE;
   GstState old_pending;
+  gint64 end_time;
 
   GST_CAT_DEBUG_OBJECT (GST_CAT_STATES, element, "getting state, timeout %"
       GST_TIME_FORMAT, GST_TIME_ARGS (timeout));
 
   GST_OBJECT_LOCK (element);
-  ret = GST_STATE_RETURN (element);
-  GST_CAT_DEBUG_OBJECT (GST_CAT_STATES, element, "RETURN is %s",
-      gst_element_state_change_return_get_name (ret));
 
-  /* we got an error, report immediately */
-  if (ret == GST_STATE_CHANGE_FAILURE)
-    goto done;
+  if (timeout != GST_CLOCK_TIME_NONE) {
+    /* make timeout absolute */
+    end_time = g_get_monotonic_time () + (timeout / 1000);
+  }
 
-  /* we got no_preroll, report immediately */
-  if (ret == GST_STATE_CHANGE_NO_PREROLL)
-    goto done;
+  do {
+    ret = GST_STATE_RETURN (element);
+    GST_CAT_DEBUG_OBJECT (GST_CAT_STATES, element, "RETURN is %s",
+        gst_element_state_change_return_get_name (ret));
 
-  /* no need to wait async if we are not async */
-  if (ret != GST_STATE_CHANGE_ASYNC)
-    goto done;
+    /* we got an error, report immediately */
+    if (ret == GST_STATE_CHANGE_FAILURE)
+      goto done;
 
-  old_pending = GST_STATE_PENDING (element);
-  if (old_pending != GST_STATE_VOID_PENDING) {
-    gboolean signaled;
-    guint32 cookie;
+    /* we got no_preroll, report immediately */
+    if (ret == GST_STATE_CHANGE_NO_PREROLL)
+      goto done;
 
-    /* get cookie to detect state changes during waiting */
-    cookie = element->state_cookie;
+    /* no need to wait async if we are not async */
+    if (ret != GST_STATE_CHANGE_ASYNC)
+      goto done;
 
-    GST_CAT_INFO_OBJECT (GST_CAT_STATES, element,
-        "waiting for element to commit state");
+    old_pending = GST_STATE_PENDING (element);
+    if (old_pending != GST_STATE_VOID_PENDING) {
+      gboolean signaled = TRUE;
+      guint32 cookie;
 
-    /* we have a pending state change, wait for it to complete */
-    if (timeout != GST_CLOCK_TIME_NONE) {
-      gint64 end_time;
-      /* make timeout absolute */
-      end_time = g_get_monotonic_time () + (timeout / 1000);
-      signaled = GST_STATE_WAIT_UNTIL (element, end_time);
-    } else {
-      GST_STATE_WAIT (element);
-      signaled = TRUE;
-    }
+      /* get cookie to detect state changes during waiting */
+      cookie = element->state_cookie;
 
-    if (!signaled) {
-      GST_CAT_INFO_OBJECT (GST_CAT_STATES, element, "timed out");
-      /* timeout triggered */
-      ret = GST_STATE_CHANGE_ASYNC;
-    } else {
-      if (cookie != element->state_cookie)
-        goto interrupted;
+      GST_CAT_INFO_OBJECT (GST_CAT_STATES, element,
+          "waiting for element to commit state");
 
-      /* could be success or failure */
-      if (old_pending == GST_STATE (element)) {
-        GST_CAT_DEBUG_OBJECT (GST_CAT_STATES, element, "got success");
-        ret = GST_STATE_CHANGE_SUCCESS;
+      /* we have a pending state change, wait for it to complete or for
+         an interruption */
+      if (timeout != GST_CLOCK_TIME_NONE) {
+        signaled = GST_STATE_WAIT_UNTIL (element, end_time);
       } else {
-        GST_CAT_DEBUG_OBJECT (GST_CAT_STATES, element, "got failure");
-        ret = GST_STATE_CHANGE_FAILURE;
+        GST_STATE_WAIT (element);
+        signaled = TRUE;
+      }
+
+      if (!signaled) {
+        GST_CAT_INFO_OBJECT (GST_CAT_STATES, element, "timed out");
+        /* timeout triggered */
+        ret = GST_STATE_CHANGE_ASYNC;
+        goto done;
+      } else {
+        if (cookie != element->state_cookie)
+          goto interrupted;
+
+        /* could be success or failure */
+        if (old_pending == GST_STATE (element)) {
+          GST_CAT_DEBUG_OBJECT (GST_CAT_STATES, element, "got success");
+          ret = GST_STATE_CHANGE_SUCCESS;
+        } else {
+          GST_CAT_DEBUG_OBJECT (GST_CAT_STATES, element, "got failure");
+          ret = GST_STATE_CHANGE_FAILURE;
+        }
+      }
+      /* if nothing is pending anymore we can return SUCCESS */
+      if (GST_STATE_PENDING (element) == GST_STATE_VOID_PENDING) {
+        GST_CAT_LOG_OBJECT (GST_CAT_STATES, element, "nothing pending");
+        ret = GST_STATE_CHANGE_SUCCESS;
       }
     }
-    /* if nothing is pending anymore we can return SUCCESS */
-    if (GST_STATE_PENDING (element) == GST_STATE_VOID_PENDING) {
-      GST_CAT_LOG_OBJECT (GST_CAT_STATES, element, "nothing pending");
-      ret = GST_STATE_CHANGE_SUCCESS;
-    }
-  }
+  } while (old_pending != GST_STATE (element));
 
 done:
   if (state)

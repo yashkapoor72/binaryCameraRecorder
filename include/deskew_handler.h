@@ -9,9 +9,9 @@
 
 class DeskewHandler {
 public:
-    DeskewHandler(int camIndex, int audioIndex);
+    DeskewHandler(std::string camIndex, int audioIndex);
     ~DeskewHandler();
-    bool setupPipeline(int camIndex, int audioIndex);
+    bool setupPipeline(std::string camIndex, int audioIndex);
     void updateSettings(const std::vector<std::pair<double, double>>& points, 
                        const std::string& flip_mode);
     void stopPipeline();

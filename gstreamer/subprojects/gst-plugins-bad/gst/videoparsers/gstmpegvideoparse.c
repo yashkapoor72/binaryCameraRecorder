@@ -196,6 +196,7 @@ gst_mpegv_parse_reset_frame (GstMpegvParse * mpvparse)
   mpvparse->ext_count = 0;
   mpvparse->slice_count = 0;
   mpvparse->slice_offset = 0;
+  gst_video_clear_user_data (&mpvparse->user_data, FALSE);
 }
 
 static void
@@ -390,17 +391,17 @@ picture_start_code_name (guint8 psc)
     const gchar *name;
   } psc_names[] = {
     {
-    0x00, "Picture Start"}, {
-    0xb0, "Reserved"}, {
-    0xb1, "Reserved"}, {
-    0xb2, "User Data Start"}, {
-    0xb3, "Sequence Header Start"}, {
-    0xb4, "Sequence Error"}, {
-    0xb5, "Extension Start"}, {
-    0xb6, "Reserved"}, {
-    0xb7, "Sequence End"}, {
-    0xb8, "Group Start"}, {
-    0xb9, "Program End"}
+        0x00, "Picture Start"}, {
+        0xb0, "Reserved"}, {
+        0xb1, "Reserved"}, {
+        0xb2, "User Data Start"}, {
+        0xb3, "Sequence Header Start"}, {
+        0xb4, "Sequence Error"}, {
+        0xb5, "Extension Start"}, {
+        0xb6, "Reserved"}, {
+        0xb7, "Sequence End"}, {
+        0xb8, "Group Start"}, {
+        0xb9, "Program End"}
   };
   if (psc < 0xB0 && psc > 0)
     return "Slice Start";
@@ -422,11 +423,11 @@ picture_type_name (guint8 pct)
     const gchar *name;
   } pct_names[] = {
     {
-    0, "Forbidden"}, {
-    1, "I Frame"}, {
-    2, "P Frame"}, {
-    3, "B Frame"}, {
-    4, "DC Intra Coded (Shall Not Be Used!)"}
+        0, "Forbidden"}, {
+        1, "I Frame"}, {
+        2, "P Frame"}, {
+        3, "B Frame"}, {
+        4, "DC Intra Coded (Shall Not Be Used!)"}
   };
 
   for (i = 0; i < G_N_ELEMENTS (pct_names); i++)
@@ -868,6 +869,7 @@ gst_mpegv_parse_update_src_caps (GstMpegvParse * mpvparse)
       switch (level_c) {
         case 2:
           level = levels[0];
+          /* FALLTHROUGH */
         case 5:
           if (!level)
             level = levels[2];
@@ -875,12 +877,15 @@ gst_mpegv_parse_update_src_caps (GstMpegvParse * mpvparse)
           break;
         case 10:
           level = levels[0];
+          /* FALLTHROUGH */
         case 11:
           if (!level)
             level = levels[1];
+          /* FALLTHROUGH */
         case 13:
           if (!level)
             level = levels[2];
+          /* FALLTHROUGH */
         case 14:
           if (!level)
             level = levels[3];
@@ -930,7 +935,7 @@ gst_mpegv_parse_parse_frame (GstBaseParse * parse, GstBaseParseFrame * frame)
 
   if (G_UNLIKELY (mpvparse->pichdr.pic_type == GST_MPEG_VIDEO_PICTURE_TYPE_I))
     GST_BUFFER_FLAG_UNSET (buffer, GST_BUFFER_FLAG_DELTA_UNIT);
-  else
+  else if (mpvparse->pichdr.pic_type != 0)
     GST_BUFFER_FLAG_SET (buffer, GST_BUFFER_FLAG_DELTA_UNIT);
 
   /* maybe only sequence in this buffer, though not recommended,

@@ -41,7 +41,7 @@ using namespace Microsoft::WRL;
 GST_DEBUG_CATEGORY_EXTERN (gst_mf_source_object_debug);
 #define GST_CAT_DEFAULT gst_mf_source_object_debug
 
-DEFINE_GUID (MEDIASUBTYPE_I420, 0x30323449, 0x0000, 0x0010, 0x80, 0x00, 0x00,
+DEFINE_GUID (MF_MEDIASUBTYPE_I420, 0x30323449, 0x0000, 0x0010, 0x80, 0x00, 0x00,
     0xAA, 0x00, 0x38, 0x9B, 0x71);
 
 /* From qedit.h */
@@ -51,9 +51,17 @@ DEFINE_GUID (CLSID_SampleGrabber, 0xc1f400A0, 0x3f08, 0x11d3, 0x9f, 0x0b, 0x00,
 DEFINE_GUID (CLSID_NullRenderer, 0xc1f400a4, 0x3f08, 0x11d3, 0x9f, 0x0b, 0x00,
     0x60, 0x08, 0x03, 0x9e, 0x37);
 
+DEFINE_GUID (IID_ISampleGrabberCB, 0x0579154a, 0x2b53,
+    0x4994, 0xb0, 0xd0, 0xe7, 0x73, 0x14, 0x82, 0xff, 0x85);
+
+DEFINE_GUID (IID_ISampleGrabber, 0x6b652fff, 0x11fe,
+    0x4fce, 0x92, 0xad, 0x02, 0x66, 0xb5, 0xd7, 0xc7, 0x8f);
+
+DEFINE_GUID (IID_IGstMFSampleGrabberCB, 0xbfae6598, 0x5df6,
+    0x11ed, 0x9b, 0x6a, 0x02, 0x42, 0xac, 0x12, 0x00, 0x02);
+
 /* *INDENT-OFF* */
-struct DECLSPEC_UUID("0579154a-2b53-4994-b0d0-e773148eff85")
-ISampleGrabberCB : public IUnknown
+struct ISampleGrabberCB : public IUnknown
 {
   virtual HRESULT STDMETHODCALLTYPE SampleCB(
       double SampleTime,
@@ -65,8 +73,7 @@ ISampleGrabberCB : public IUnknown
       LONG BufferLen) = 0;
 };
 
-struct DECLSPEC_UUID("6b652fff-11fe-4fce-92ad-0266b5d7c78f")
-ISampleGrabber : public IUnknown
+struct ISampleGrabber : public IUnknown
 {
   virtual HRESULT STDMETHODCALLTYPE SetOneShot(
       BOOL OneShot) = 0;
@@ -97,8 +104,7 @@ typedef void (*OnBufferCB) (double sample_time,
                             LONG len,
                             gpointer user_data);
 
-class DECLSPEC_UUID("bfae6598-5df6-11ed-9b6a-0242ac120002")
-IGstMFSampleGrabberCB : public ISampleGrabberCB
+class IGstMFSampleGrabberCB : public ISampleGrabberCB
 {
 public:
   static HRESULT
@@ -141,10 +147,10 @@ public:
     if (riid == __uuidof (IUnknown)) {
       *object = static_cast<IUnknown *>
           (static_cast<IGstMFSampleGrabberCB *> (this));
-    } else if (riid == __uuidof (ISampleGrabberCB)) {
+    } else if (riid == IID_ISampleGrabberCB) {
       *object = static_cast<ISampleGrabberCB *>
           (static_cast<IGstMFSampleGrabberCB *> (this));
-    } else if (riid == __uuidof (IGstMFSampleGrabberCB)) {
+    } else if (riid == IID_IGstMFSampleGrabberCB) {
       *object = this;
     } else {
       *object = nullptr;
@@ -756,7 +762,7 @@ subtype_to_format (REFGUID subtype)
     return GST_VIDEO_FORMAT_YV12;
   else if (subtype == MEDIASUBTYPE_NV12)
     return GST_VIDEO_FORMAT_NV12;
-  else if (subtype == MEDIASUBTYPE_I420)
+  else if (subtype == MF_MEDIASUBTYPE_I420)
     return GST_VIDEO_FORMAT_I420;
   else if (subtype == MEDIASUBTYPE_IYUV)
     return GST_VIDEO_FORMAT_I420;
@@ -1023,7 +1029,8 @@ gst_mf_dshow_enum_device (GstMFCaptureDShow * self,
       return FALSE;
   }
 
-  if (!gst_mf_result (hr))
+  // Documentation states that the result of CreateClassEnumerator must be checked against S_OK
+  if (hr != S_OK)
     return FALSE;
 
   for (guint i = 0;; i++) {
@@ -1154,7 +1161,7 @@ gst_mf_capture_dshow_thread_func (GstMFCaptureDShow * self)
       /* Make sure ISampleGrabber and NullRenderer are available,
        * MS may want to drop the the legacy implementations */
       hr = CoCreateInstance (CLSID_SampleGrabber, nullptr, CLSCTX_INPROC_SERVER,
-          IID_PPV_ARGS (&grabber));
+          IID_ISampleGrabber, (void **) &grabber);
       if (!gst_mf_result (hr)) {
         GST_WARNING_OBJECT (self, "ISampleGrabber interface is not available");
         goto run_loop;
@@ -1186,16 +1193,20 @@ gst_mf_capture_dshow_thread_func (GstMFCaptureDShow * self)
       self->inner->grabber = grabber;
       self->inner->fakesink = fakesink;
 
-      object->opened =
-          gst_mf_capture_dshow_open (self, selected.moniker.Get ());
+      if (!gst_mf_capture_dshow_open (self, selected.moniker.Get ())) {
+        object->source_state = GST_MF_ACTIVATION_FAILED;
+      } else {
+        object->source_state = GST_MF_OK;
+        g_free (object->device_path);
+        object->device_path = g_strdup (selected.path.c_str());
 
-      g_free (object->device_path);
-      object->device_path = g_strdup (selected.path.c_str());
+        g_free (object->device_name);
+        object->device_name = g_strdup (selected.name.c_str());
 
-      g_free (object->device_name);
-      object->device_name = g_strdup (selected.name.c_str());
-
-      object->device_index = selected.index;
+        object->device_index = selected.index;
+      }
+    } else {
+      object->source_state = GST_MF_DEVICE_NOT_FOUND;
     }
   }
 
@@ -1306,9 +1317,9 @@ gst_mf_capture_dshow_on_buffer (double sample_time, BYTE * data, LONG len,
     gst_clear_caps (&caps);
   }
 
-  if (len < GST_VIDEO_INFO_SIZE (&self->info)) {
+  if (len < (LONG) GST_VIDEO_INFO_SIZE (&self->info)) {
     GST_ERROR_OBJECT (self, "Too small size %d < %d",
-        (gint) len, GST_VIDEO_INFO_SIZE (&self->info));
+        (gint) len, (guint) GST_VIDEO_INFO_SIZE (&self->info));
     goto error;
   }
 
@@ -1341,7 +1352,7 @@ gst_mf_capture_dshow_on_buffer (double sample_time, BYTE * data, LONG len,
     src = data + src_stride * (height - 1);
     dst = (guint8 *) GST_VIDEO_FRAME_PLANE_DATA (&frame, 0);
 
-    for (guint i = 0; i < height; i++) {
+    for (gint i = 0; i < height; i++) {
       memcpy (dst, src, width);
       src -= src_stride;
       dst += dst_stride;
@@ -1360,7 +1371,7 @@ gst_mf_capture_dshow_on_buffer (double sample_time, BYTE * data, LONG len,
       width = GST_VIDEO_INFO_COMP_WIDTH (&self->info, i)
           * GST_VIDEO_INFO_COMP_PSTRIDE (&self->info, i);
 
-      for (guint j = 0; j < GST_VIDEO_INFO_COMP_HEIGHT (&self->info, i); j++) {
+      for (gint j = 0; j < GST_VIDEO_INFO_COMP_HEIGHT (&self->info, i); j++) {
         memcpy (dst, src, width);
         src += src_stride;
         dst += dst_stride;
@@ -1410,11 +1421,29 @@ gst_mf_capture_dshow_new (GstMFSourceType type, gint device_index,
 
   gst_object_ref_sink (self);
 
-  if (!self->opened) {
+  if (self->source_state != GST_MF_OK) {
     GST_DEBUG_OBJECT (self, "Couldn't open device");
     gst_object_unref (self);
     return nullptr;
   }
 
   return self;
+}
+
+GstMFSourceResult
+gst_mf_capture_dshow_enumerate (gint device_index, GstMFSourceObject ** object)
+{
+  auto self = (GstMFSourceObject *) g_object_new (GST_TYPE_MF_CAPTURE_DSHOW,
+      "source-type", GST_MF_SOURCE_TYPE_VIDEO, "device-index", device_index,
+      nullptr);
+  gst_object_ref_sink (self);
+
+  auto ret = self->source_state;
+  if (ret != GST_MF_OK) {
+    gst_object_unref (self);
+    return ret;
+  }
+
+  *object = self;
+  return GST_MF_OK;
 }

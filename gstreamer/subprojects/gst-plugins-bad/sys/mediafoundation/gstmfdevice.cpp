@@ -198,12 +198,13 @@ gst_mf_device_provider_device_enum_completed (GstWinRTDeviceWatcher *
 #endif
 
 static void
-gst_mf_device_provider_on_device_updated (GstMFDeviceProvider * self);
-
-static void
 gst_mf_device_provider_class_init (GstMFDeviceProviderClass * klass)
 {
+  auto object_class = G_OBJECT_CLASS (klass);
   GstDeviceProviderClass *provider_class = GST_DEVICE_PROVIDER_CLASS (klass);
+
+  object_class->dispose = gst_mf_device_provider_dispose;
+  object_class->finalize = gst_mf_device_provider_finalize;
 
   provider_class->probe = GST_DEBUG_FUNCPTR (gst_mf_device_provider_probe);
   provider_class->start = GST_DEBUG_FUNCPTR (gst_mf_device_provider_start);
@@ -280,21 +281,23 @@ gst_mf_device_provider_probe_internal (GstDeviceProvider * provider,
     GstCaps *caps = nullptr;
     gchar *device_name = nullptr;
     gchar *device_path = nullptr;
+    GstMFSourceResult ret = GST_MF_DEVICE_NOT_FOUND;
 
 #if GST_MF_WINAPI_DESKTOP
     if (try_dshow) {
-      obj = gst_mf_capture_dshow_new (GST_MF_SOURCE_TYPE_VIDEO, i,
-          nullptr, nullptr);
+      ret = gst_mf_capture_dshow_enumerate (i, &obj);
     } else {
-      obj = gst_mf_source_object_new (GST_MF_SOURCE_TYPE_VIDEO,
-          i, nullptr, nullptr, nullptr);
+      ret = gst_mf_source_object_enumerate (i, &obj);
     }
 #else
-    obj = gst_mf_source_object_new (GST_MF_SOURCE_TYPE_VIDEO,
-        i, nullptr, nullptr, nullptr);
+    ret = gst_mf_source_object_enumerate (i, &obj);
 #endif
-    if (!obj)
+    if (ret == GST_MF_DEVICE_NOT_FOUND)
       break;
+    else if (ret == GST_MF_ACTIVATION_FAILED)
+      continue;
+
+    g_assert (ret == GST_MF_OK);
 
     caps = gst_mf_source_object_get_caps (obj);
     if (!caps) {

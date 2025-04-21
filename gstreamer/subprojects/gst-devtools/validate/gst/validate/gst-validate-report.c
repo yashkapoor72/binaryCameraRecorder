@@ -48,7 +48,8 @@
 #include "gst-validate-scenario.h"
 
 static GstClockTime _gst_validate_report_start_time = 0;
-static GstValidateDebugFlags _gst_validate_flags = 0;
+static GstValidateDebugFlags _gst_validate_flags =
+    GST_VALIDATE_FATAL_CRITICALS | GST_VALIDATE_PRINT_ISSUES;
 static GHashTable *_gst_validate_issues = NULL;
 static FILE **log_files = NULL;
 static gboolean output_is_tty = TRUE;
@@ -136,7 +137,7 @@ gst_validate_issue_unref (GstValidateIssue * issue)
     /* We are using an string array for area and name */
     g_strfreev (&issue->area);
 
-    g_slice_free (GstValidateIssue, issue);
+    g_free (issue);
   }
 }
 
@@ -250,7 +251,7 @@ gst_validate_issue_new_full (GstValidateIssueId issue_id, const gchar * summary,
     return NULL;
   }
 
-  issue = g_slice_new (GstValidateIssue);
+  issue = g_new (GstValidateIssue, 1);
   issue->issue_id = issue_id;
   issue->summary = g_strdup (summary);
   issue->description = g_strdup (description);
@@ -287,7 +288,7 @@ gst_validate_issue_new (GstValidateIssueId issue_id, const gchar * summary,
     return NULL;
   }
 
-  issue = g_slice_new (GstValidateIssue);
+  issue = g_new (GstValidateIssue, 1);
   issue->issue_id = issue_id;
   issue->summary = g_strdup (summary);
   issue->description = g_strdup (description);
@@ -639,7 +640,7 @@ gst_validate_report_init (void)
 
     /* init the debug flags */
     var = g_getenv ("GST_VALIDATE");
-    if (var && strlen (var) > 0) {
+    if (var) {
       _gst_validate_flags =
           g_parse_debug_string (var, keys, G_N_ELEMENTS (keys));
     }
@@ -728,9 +729,9 @@ gst_validate_report_init (void)
   }
 
 #ifndef GST_DISABLE_GST_DEBUG
-  if (!newline_regex)
-    newline_regex =
-        g_regex_new ("\n", G_REGEX_OPTIMIZE | G_REGEX_MULTILINE, 0, NULL);
+  if (!newline_regex) {
+    newline_regex = g_regex_new ("\n", G_REGEX_MULTILINE, 0, NULL);
+  }
 #endif
 }
 
@@ -854,7 +855,7 @@ _report_free (GstValidateReport * report)
   g_list_free_full (report->repeated_reports,
       (GDestroyNotify) gst_validate_report_unref);
   g_mutex_clear (&report->shadow_reports_lock);
-  g_slice_free (GstValidateReport, report);
+  g_free (report);
 }
 
 static gboolean
@@ -889,7 +890,7 @@ GstValidateReport *
 gst_validate_report_new (GstValidateIssue * issue,
     GstValidateReporter * reporter, const gchar * message)
 {
-  GstValidateReport *report = g_slice_new0 (GstValidateReport);
+  GstValidateReport *report = g_new0 (GstValidateReport, 1);
   GstValidateReportingDetails reporter_details, default_details,
       issue_type_details;
   GstValidateRunner *runner = gst_validate_reporter_get_runner (reporter);
@@ -961,10 +962,11 @@ typedef struct
 } PrintActionFieldData;
 
 static gboolean
-_append_value (GQuark field_id, const GValue * value, PrintActionFieldData * d)
+_append_value (const GstIdStr * field, const GValue * value,
+    PrintActionFieldData * d)
 {
   gchar *val_str = NULL;
-  const gchar *fieldname = g_quark_to_string (field_id);
+  const gchar *fieldname = gst_id_str_as_str (field);
 
   if (g_str_has_prefix (fieldname, "__") && g_str_has_suffix (fieldname, "__"))
     return TRUE;
@@ -1004,11 +1006,14 @@ gst_validate_print_action (GstValidateAction * action, const gchar * message)
   if (message == NULL) {
     gint indent = (gst_validate_action_get_level (action) * 2);
     PrintActionFieldData d = { NULL, indent, 0 };
+    GstValidateScenario *scenario = gst_validate_action_get_scenario (action);
     d.str = string = g_string_new (NULL);
 
-    g_string_append_printf (string, "`%s` at %s:%d", action->type,
+    g_string_append_printf (string, "`%s` at %s:%d(%s)", action->type,
         GST_VALIDATE_ACTION_FILENAME (action),
-        GST_VALIDATE_ACTION_LINENO (action));
+        GST_VALIDATE_ACTION_LINENO (action),
+        scenario ? GST_OBJECT_NAME (scenario) : "no scenario");
+    gst_object_unref (scenario);
 
     if (GST_VALIDATE_ACTION_N_REPEATS (action))
       g_string_append_printf (string, " [%s=%d/%d]",
@@ -1017,8 +1022,8 @@ gst_validate_print_action (GstValidateAction * action, const gchar * message)
           GST_VALIDATE_ACTION_N_REPEATS (action));
 
     g_string_append (string, " ( ");
-    gst_structure_foreach (action->structure,
-        (GstStructureForeachFunc) _append_value, &d);
+    gst_structure_foreach_id_str (action->structure,
+        (GstStructureForeachIdStrFunc) _append_value, &d);
     if (d.printed)
       g_string_append_printf (string, "\n%*c)\n", indent, ' ');
     else
@@ -1037,7 +1042,7 @@ print_action_parameter (GString * string, GstValidateActionType * type,
     GstValidateActionParameter * param)
 {
   gchar *desc;
-  g_string_append_printf (string, "\n\n* `%s`:(%s): ", param->name,
+  g_string_append_printf (string, "\n\n#### `%s` (_%s_)\n\n", param->name,
       param->mandatory ? "mandatory" : "optional");
 
   if (g_strcmp0 (param->description, "")) {
@@ -1053,16 +1058,18 @@ print_action_parameter (GString * string, GstValidateActionType * type,
     desc =
         g_regex_replace (newline_regex,
         param->possible_variables, -1, 0, "\n\n  * ", 0, NULL);
-    g_string_append_printf (string, "\n\n  Possible variables:\n\n  * %s",
+    g_string_append_printf (string, "\n\n**Possible variables**:\n\n  * %s",
         desc);
   }
 
   if (param->types)
-    g_string_append_printf (string, "\n\n  Possible types: `%s`", param->types);
+    g_string_append_printf (string, "\n\n**Possible types**: `%s`",
+        param->types);
 
   if (!param->mandatory)
-    g_string_append_printf (string, "\n\n  Default: %s", param->def);
+    g_string_append_printf (string, "\n\n**Default**: %s", param->def);
 
+  g_string_append (string, "\n\n---");
 }
 
 static void
@@ -1176,7 +1183,7 @@ gst_validate_printf_valist (gpointer source, const gchar * format, va_list args)
 
       g_string_append_printf (string, "\n%s", type->description);
       g_string_append_printf (string,
-          "\n * Implementer namespace: %s", type->implementer_namespace);
+          "\n\n**Implementer namespace**: %s", type->implementer_namespace);
 
       if (IS_CONFIG_ACTION_TYPE (type->flags))
         g_string_append_printf (string,
@@ -1228,8 +1235,7 @@ gst_validate_printf_valist (gpointer source, const gchar * format, va_list args)
   g_free (tmp);
 
   if (!newline_regex)
-    newline_regex =
-        g_regex_new ("\n", G_REGEX_OPTIMIZE | G_REGEX_MULTILINE, 0, NULL);
+    newline_regex = g_regex_new ("\n", G_REGEX_MULTILINE, 0, NULL);
 
 #ifndef GST_DISABLE_GST_DEBUG
   {
@@ -1532,7 +1538,8 @@ gst_validate_error_structure (gpointer structure, const gchar * format, ...)
   if (debug)
     g_string_append (f, debug);
 
-  g_print ("Bail out! %sERROR%s: %s\n\n", color ? color : "", endcolor, f->str);
+  g_printerr ("Bail out! %sERROR%s: %s\n\n", color ? color : "", endcolor,
+      f->str);
   g_string_free (f, TRUE);
   g_free (debug);
   g_free (color);
@@ -1552,12 +1559,13 @@ gst_validate_abort (const gchar * format, ...)
   tmp = gst_info_strdup_vprintf (format, var_args);
   va_end (var_args);
 
-  g_print ("Bail out! %s\n", tmp);
+  g_printerr ("Bail out! %s\n", tmp);
+  g_free (tmp);
   exit (-18);
 }
 
 gboolean
-is_tty ()
+is_tty (void)
 {
   return output_is_tty;
 }

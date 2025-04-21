@@ -28,10 +28,15 @@
 #include "gstcccombiner.h"
 #include "gstccconverter.h"
 #include "gstccextractor.h"
+#include "gstcea608mux.h"
 #include "gstline21dec.h"
 #include "gstceaccoverlay.h"
 #include "gstline21enc.h"
 #include "ccutils.h"
+#include "gsth264ccextractor.h"
+#include "gsth265ccextractor.h"
+#include "gsth264ccinserter.h"
+#include "gsth265ccinserter.h"
 
 static gboolean
 closedcaption_init (GstPlugin * plugin)
@@ -42,11 +47,16 @@ closedcaption_init (GstPlugin * plugin)
       "Closed caption utilities");
 
   ret |= GST_ELEMENT_REGISTER (cccombiner, plugin);
+  ret |= GST_ELEMENT_REGISTER (cea608mux, plugin);
   ret |= GST_ELEMENT_REGISTER (ccconverter, plugin);
   ret |= GST_ELEMENT_REGISTER (ccextractor, plugin);
   ret |= GST_ELEMENT_REGISTER (line21decoder, plugin);
   ret |= GST_ELEMENT_REGISTER (cc708overlay, plugin);
   ret |= GST_ELEMENT_REGISTER (line21encoder, plugin);
+  ret |= GST_ELEMENT_REGISTER (h264ccextractor, plugin);
+  ret |= GST_ELEMENT_REGISTER (h265ccextractor, plugin);
+  ret |= GST_ELEMENT_REGISTER (h264ccinserter, plugin);
+  ret |= GST_ELEMENT_REGISTER (h265ccinserter, plugin);
 
   return ret;
 }

@@ -59,7 +59,7 @@ struct _GstAdaptiveDemuxLoop
 GstAdaptiveDemuxClock *
 gst_adaptive_demux_clock_new (void)
 {
-  GstAdaptiveDemuxClock *clock = g_slice_new0 (GstAdaptiveDemuxClock);
+  GstAdaptiveDemuxClock *clock = g_new0 (GstAdaptiveDemuxClock, 1);
   GstClockType clock_type = GST_CLOCK_TYPE_OTHER;
   GObjectClass *gobject_class;
 
@@ -102,7 +102,7 @@ gst_adaptive_demux_clock_unref (GstAdaptiveDemuxClock * clock)
   g_return_if_fail (clock != NULL);
   if (g_atomic_int_dec_and_test (&clock->ref_count)) {
     gst_object_unref (clock->gst_clock);
-    g_slice_free (GstAdaptiveDemuxClock, clock);
+    g_free (clock);
   }
 }
 
@@ -152,7 +152,7 @@ gst_adaptive_demux_clock_set_utc_time (GstAdaptiveDemuxClock * clock,
 GstAdaptiveDemuxLoop *
 gst_adaptive_demux_loop_new (void)
 {
-  GstAdaptiveDemuxLoop *loop = g_slice_new0 (GstAdaptiveDemuxLoop);
+  GstAdaptiveDemuxLoop *loop = g_new0 (GstAdaptiveDemuxLoop, 1);
   g_atomic_int_set (&loop->ref_count, 1);
 
   g_mutex_init (&loop->lock);
@@ -184,7 +184,7 @@ gst_adaptive_demux_loop_unref (GstAdaptiveDemuxLoop * loop)
     g_rec_mutex_clear (&loop->context_lock);
     g_cond_clear (&loop->cond);
 
-    g_slice_free (GstAdaptiveDemuxLoop, loop);
+    g_free (loop);
   }
 }
 
@@ -310,6 +310,9 @@ gst_adaptive_demux_loop_pause_and_lock (GstAdaptiveDemuxLoop * loop)
 
     g_rec_mutex_lock (&loop->context_lock);
   }
+
+  if (!loop->context)
+    return FALSE;
   g_main_context_push_thread_default (loop->context);
 
   return TRUE;
@@ -320,7 +323,8 @@ gst_adaptive_demux_loop_unlock_and_unpause (GstAdaptiveDemuxLoop * loop)
 {
   gboolean stopped;
 
-  g_main_context_pop_thread_default (loop->context);
+  if (loop->context)
+    g_main_context_pop_thread_default (loop->context);
   g_rec_mutex_unlock (&loop->context_lock);
 
   g_mutex_lock (&loop->lock);
@@ -543,14 +547,14 @@ gst_event_store_insert_event (GstEventStore * store, GstEvent * event,
 {
   guint i, len;
   GArray *events;
-  GQuark name_id = 0;
+  const gchar *name = NULL;
   gboolean insert = TRUE;
 
   GstEventType type = GST_EVENT_TYPE (event);
   guint event_sticky_order = gst_event_type_to_sticky_ordering (type);
 
   if (type & GST_EVENT_TYPE_STICKY_MULTI)
-    name_id = gst_structure_get_name_id (gst_event_get_structure (event));
+    name = gst_structure_get_name (gst_event_get_structure (event));
 
   events = store->events;
 
@@ -563,7 +567,7 @@ gst_event_store_insert_event (GstEventStore * store, GstEvent * event,
 
     if (type == GST_EVENT_TYPE (ev->event)) {
       /* matching types, check matching name if needed */
-      if (name_id && !gst_event_has_name_id (ev->event, name_id))
+      if (name && !gst_event_has_name (ev->event, name))
         continue;
 
       /* overwrite if different */

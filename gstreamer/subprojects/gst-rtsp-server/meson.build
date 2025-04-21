@@ -1,6 +1,6 @@
 project('gst-rtsp-server', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : ['warning_level=1', 'buildtype=debugoptimized'])
 
 gst_version = meson.project_version()
@@ -16,7 +16,7 @@ endif
 gst_version_is_stable = gst_version_minor.is_even()
 gst_version_is_dev = gst_version_minor.is_odd() and gst_version_micro < 90
 
-glib_req = '>= 2.62.0'
+glib_req = '>= 2.64.0'
 
 if gst_version_is_stable
   gst_req = '>= @0@.@1@.0'.format(gst_version_major, gst_version_minor)
@@ -49,17 +49,9 @@ if cc.has_link_argument('-Wl,-z,nodelete')
 endif
 
 # Symbol visibility
-if cc.get_id() == 'msvc'
-  export_define = '__declspec(dllexport) extern'
-elif cc.has_argument('-fvisibility=hidden')
+if cc.has_argument('-fvisibility=hidden')
   add_project_arguments('-fvisibility=hidden', language: 'c')
-  export_define = 'extern __attribute__ ((visibility ("default")))'
-else
-  export_define = 'extern'
 endif
-
-# Passing this through the command line would be too messy
-cdata.set('GST_API_EXPORT', export_define)
 
 # Disable strict aliasing
 if cc.has_argument('-fno-strict-aliasing')
@@ -72,20 +64,20 @@ if gst_version_is_dev
   add_project_arguments('-DG_DISABLE_DEPRECATED', language: 'c')
 endif
 
-cast_checks = get_option('gobject-cast-checks')
-if cast_checks.disabled() or (cast_checks.auto() and not gst_version_is_dev)
+# Same logic as in GLib.
+glib_debug = get_option('glib_debug')
+if glib_debug.disabled() or (
+   glib_debug.auto() and (not get_option('debug') or get_option('optimization') not in [ '0', 'g' ]))
   message('Disabling GLib cast checks')
   add_project_arguments('-DG_DISABLE_CAST_CHECKS', language: 'c')
 endif
 
-glib_asserts = get_option('glib-asserts')
-if glib_asserts.disabled() or (glib_asserts.auto() and not gst_version_is_dev)
+if not get_option('glib_assert')
   message('Disabling GLib asserts')
   add_project_arguments('-DG_DISABLE_ASSERT', language: 'c')
 endif
 
-glib_checks = get_option('glib-checks')
-if glib_checks.disabled() or (glib_checks.auto() and not gst_version_is_dev)
+if not get_option('glib_checks')
   message('Disabling GLib checks')
   add_project_arguments('-DG_DISABLE_CHECKS', language: 'c')
 endif
@@ -117,23 +109,28 @@ cdata.set_quoted('GST_PACKAGE_ORIGIN', get_option('package-origin'))
 
 rtspserver_args = ['-DHAVE_CONFIG_H']
 
+# NOTE: Keep entries alphabetically sorted
 warning_flags = [
-  '-Wmissing-declarations',
-  '-Wmissing-prototypes',
-  '-Wredundant-decls',
-  '-Wundef',
-  '-Wwrite-strings',
+  '-Waddress',
+  '-Waggregate-return',
   '-Wformat',
   '-Wformat-nonliteral',
   '-Wformat-security',
-  '-Wold-style-definition',
-  '-Waggregate-return',
+  '-Wimplicit-fallthrough=3',
   '-Winit-self',
+  '-Wmissing-declarations',
   '-Wmissing-include-dirs',
-  '-Waddress',
+  '-Wmissing-parameter-type',
+  '-Wmissing-prototypes',
   '-Wno-multichar',
-  '-Wvla',
+  '-Wold-style-definition',
   '-Wpointer-arith',
+  '-Wredundant-decls',
+  '-Wshift-negative-value',
+  '-Wtype-limits',
+  '-Wundef',
+  '-Wvla',
+  '-Wwrite-strings',
 ]
 
 foreach extra_arg : warning_flags
@@ -154,6 +151,8 @@ gstsdp_dep = dependency('gstreamer-sdp-1.0', version : gst_req,
   fallback : ['gst-plugins-base', 'sdp_dep'])
 gstapp_dep = dependency('gstreamer-app-1.0', version : gst_req,
   fallback : ['gst-plugins-base', 'app_dep'])
+gstvideo_dep = dependency('gstreamer-video-1.0', version : gst_req,
+  fallback : ['gst-plugins-base', 'video_dep'])
 gstnet_dep = dependency('gstreamer-net-1.0', version : gst_req,
   fallback : ['gstreamer', 'gst_net_dep'])
 if host_machine.system() != 'windows'
@@ -185,6 +184,7 @@ gir_init_section = [ '--add-init-section=extern void gst_init(gint*,gchar**);' +
     'g_setenv("GST_REGISTRY_1.0", "@0@", TRUE);'.format(meson.current_build_dir() + '/gir_empty_registry.reg') + \
     'g_setenv("GST_PLUGIN_PATH_1_0", "", TRUE);' + \
     'g_setenv("GST_PLUGIN_SYSTEM_PATH_1_0", "", TRUE);' + \
+    'g_setenv("GST_TRACERS", "", TRUE);' + \
     'gst_init(NULL,NULL);', '--quiet']
 
 pkgconfig = import('pkgconfig')
@@ -195,17 +195,22 @@ if get_option('default_library') == 'shared'
 endif
 
 plugins = []
+plugin_sources = {}
 pkgconfig_subdirs = ['gstreamer-1.0']
 static_build = get_option('default_library') == 'static'
 gst_libraries = []
 
+if host_machine.system() == 'windows'
+  pathsep = ';'
+else
+  pathsep = ':'
+endif
+
 subdir('gst')
-if not get_option('tests').disabled()
-  subdir('tests')
-endif
-if not get_option('examples').disabled()
-  subdir('examples')
-endif
+
+subdir('tests')
+subdir('examples')
+
 subdir('docs')
 
 # Set release date
@@ -217,7 +222,14 @@ if gst_version_nano == 0
   message('Package release date: ' + release_date)
 endif
 
+glib_gio_dep = dependency('gio-2.0', version: glib_req)
+if glib_gio_dep.version().version_compare('< 2.67.4')
+  cdata.set('g_memdup2(ptr,sz)', '(G_LIKELY(((guint64)(sz)) < G_MAXUINT)) ? g_memdup(ptr,sz) : (g_abort(),NULL)')
+endif
+
 configure_file(output: 'config.h', configuration: cdata)
+
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.24.0', meson.project_version())
 
 plugin_names = []
 gst_plugins = []

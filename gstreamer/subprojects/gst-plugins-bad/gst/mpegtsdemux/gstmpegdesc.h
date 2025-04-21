@@ -211,6 +211,10 @@
 
 /* AC3_audio_stream_descriptor */
 #define DESC_AC_AUDIO_STREAM_bsid(desc)             ((desc)[2] & 0x1f)
+#define DESC_AC_AUDIO_STREAM_channels(desc)         ((desc[4] >> 1) & 0x0f)
+#define DESC_AC_AUDIO_STREAM_textlen(desc)          ((desc[7 + (DESC_AC_AUDIO_STREAM_channels(desc)==0)] >> 1) & 0x7f)
+#define DESC_AC_AUDIO_STREAM_has_lang1(desc)        ((desc[8 + DESC_AC_AUDIO_STREAM_textlen(desc)] >> 7) & 0x01)
+#define DESC_AC_AUDIO_STREAM_lang1_code(desc)       (desc + 9 + DESC_AC_AUDIO_STREAM_textlen(desc))
 
 /* FIXME : Move list of well know registration ids to an enum
  * in the mpegts library.
@@ -235,5 +239,9 @@
 #define DRF_ID_OPUS       0x4f707573
 #define DRF_ID_EAC3       0x45414333   /* defined in A/52 Annex G */
 #define DRF_ID_AC4        0x41432D34   /* defined in ETSI TS 103 190-2 Annex D */
+#define DRF_ID_ID3        0x49443320   /* defined in SMPTE registration authority */
+#define DRF_ID_VANC       0x56414e43   /* defined in SMPTE ST-2038 */
+#define DRF_ID_VP09       0x56503039   /* Custom GStreamer vp9 */
+#define DRF_ID_AV1G       0x41563147   /* Custom AV1 GStreamer mapping */
 
 #endif /* __GST_MPEG_DESC_H__ */

@@ -64,7 +64,6 @@
 #include "gst_private.h"
 #include <string.h>
 #include "gstcontext.h"
-#include "gstquark.h"
 
 struct _GstContext
 {
@@ -114,7 +113,7 @@ _gst_context_free (GstContext * context)
   memset (context, 0xff, sizeof (GstContext));
 #endif
 
-  g_slice_free1 (sizeof (GstContext), context);
+  g_free (context);
 }
 
 static void gst_context_init (GstContext * context);
@@ -128,7 +127,7 @@ _gst_context_copy (GstContext * context)
   GST_CAT_LOG (GST_CAT_CONTEXT, "copy context %p: %" GST_PTR_FORMAT, context,
       GST_CONTEXT_STRUCTURE (context));
 
-  copy = g_slice_new0 (GstContext);
+  copy = g_new0 (GstContext, 1);
 
   gst_context_init (copy);
 
@@ -171,11 +170,11 @@ gst_context_new (const gchar * context_type, gboolean persistent)
 
   g_return_val_if_fail (context_type != NULL, NULL);
 
-  context = g_slice_new0 (GstContext);
+  context = g_new0 (GstContext, 1);
 
   GST_CAT_LOG (GST_CAT_CONTEXT, "creating new context %p", context);
 
-  structure = gst_structure_new_id_empty (GST_QUARK (CONTEXT));
+  structure = gst_structure_new_static_str_empty ("context");
   gst_structure_set_parent_refcount (structure, &context->mini_object.refcount);
   gst_context_init (context);
 
@@ -314,6 +313,25 @@ void
 gst_context_unref (GstContext * context)
 {
   gst_mini_object_unref (GST_MINI_OBJECT_CAST (context));
+}
+
+/**
+ * gst_clear_context: (skip)
+ * @context_ptr: a pointer to a #GstContext reference
+ *
+ * Clears a reference to a #GstContext.
+ *
+ * @context_ptr must not be `NULL`.
+ *
+ * If the reference is `NULL` then this function does nothing. Otherwise, the
+ * reference count of the context is decreased and the pointer is set to `NULL`.
+ *
+ * Since: 1.24
+ */
+void
+gst_clear_context (GstContext ** context_ptr)
+{
+  gst_clear_mini_object ((GstMiniObject **) context_ptr);
 }
 
 /**

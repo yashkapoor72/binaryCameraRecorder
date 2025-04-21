@@ -49,31 +49,37 @@
  * Since: 1.6
  *
  */
+#define _GNU_SOURCE 1
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
 #include "gstptpclock.h"
 
-#include "gstptp_private.h"
+#include <gio/gio.h>
 
-#ifdef HAVE_SYS_WAIT_H
-#include <sys/wait.h>
-#endif
+#include <gst/base/base.h>
+
+#include "gst/glib-compat-private.h"
+
 #ifdef G_OS_WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <processthreadsapi.h>  /* GetCurrentProcessId */
 #endif
-#include <sys/types.h>
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
-#elif defined(G_OS_WIN32)
-#include <io.h>
 #endif
 
-#include <gst/base/base.h>
+#ifdef G_OS_WIN32
+#include <windows.h>
+static HMODULE gstnet_dll_handle = NULL;
+#endif
+
+#ifdef HAVE_DLFCN_H
+#include <dlfcn.h>
+#endif
 
 GST_DEBUG_CATEGORY_STATIC (ptp_debug);
 #define GST_CAT_DEFAULT (ptp_debug)
@@ -233,6 +239,28 @@ typedef struct
   } message_specific;
 } PtpMessage;
 
+typedef enum
+{
+  TYPE_EVENT = 0,               /* 8-bit interface index, 64-bit monotonic clock time and PTP message is payload */
+  TYPE_GENERAL = 1,             /* 8-bit interface index, 64-bit monotonic clock time and PTP message is payload */
+  TYPE_CLOCK_ID = 2,            /* 64-bit clock ID is payload */
+  TYPE_SEND_TIME_ACK = 3,       /* 64-bit monotonic clock time, 8-bit message type, 8-bit domain number and 16-bit sequence number is payload */
+} StdIOMessageType;
+
+/* 2 byte BE payload size plus 1 byte message type */
+#define STDIO_MESSAGE_HEADER_SIZE (3)
+
+/* 2 byte BE payload size. Payload format:
+ * - 1 byte GstDebugLevel
+ * - 2 byte BE filename length
+ * - filename UTF-8 string
+ * - 2 byte BE module path length
+ * - module path UTF-8 string
+ * - 4 byte BE line number
+ * - remainder is UTF-8 string
+ */
+#define STDERR_MESSAGE_HEADER_SIZE (2)
+
 static GMutex ptp_lock;
 static GCond ptp_cond;
 static gboolean initted = FALSE;
@@ -241,20 +269,45 @@ static gboolean supported = TRUE;
 #else
 static gboolean supported = FALSE;
 #endif
-static GPid ptp_helper_pid;
+static GSubprocess *ptp_helper_process;
+static GInputStream *stdout_pipe;
+static GInputStream *stderr_pipe;
+static GOutputStream *stdin_pipe;
+static guint8 stdio_header[STDIO_MESSAGE_HEADER_SIZE];  /* buffer for reading the message header */
+static guint8 stdout_buffer[8192];      /* buffer for reading the message payload */
+static guint8 stderr_header[STDERR_MESSAGE_HEADER_SIZE];        /* buffer for reading the message header */
+static guint8 stderr_buffer[8192];      /* buffer for reading the message payload */
 static GThread *ptp_helper_thread;
 static GMainContext *main_context;
 static GMainLoop *main_loop;
-static GIOChannel *stdin_channel, *stdout_channel;
 static GRand *delay_req_rand;
 static GstClock *observation_system_clock;
 static PtpClockIdentity ptp_clock_id = { GST_PTP_CLOCK_ID_NONE, 0 };
 
+#define CUR_STDIO_HEADER_SIZE (GST_READ_UINT16_BE (stdio_header))
+#define CUR_STDIO_HEADER_TYPE ((StdIOMessageType) stdio_header[2])
+
+#define CUR_STDERR_HEADER_SIZE (GST_READ_UINT16_BE (stderr_header))
+
 typedef struct
 {
+  PtpClockIdentity master_clock_identity;
+  guint8 iface_idx;
+
+  GstClockTime announce_interval;       /* last interval we received */
+  GQueue announce_messages;
+  guint64 timed_out_sync;       /* how often did this sender continuously time out a FOLLOW_UP */
+  guint64 timed_out_delay_resp; /* how often did this sender continuously time out a DELAY_RESP */
+} PtpAnnounceSender;
+
+typedef struct
+{
+  PtpAnnounceSender *sender;
+
   GstClockTime receive_time;
 
   PtpClockIdentity master_clock_identity;
+  guint8 iface_idx;
 
   guint8 grandmaster_priority_1;
   PtpClockQuality grandmaster_clock_quality;
@@ -268,24 +321,16 @@ typedef struct
 
 typedef struct
 {
-  PtpClockIdentity master_clock_identity;
-
-  GstClockTime announce_interval;       /* last interval we received */
-  GQueue announce_messages;
-} PtpAnnounceSender;
-
-typedef struct
-{
   guint domain;
-  PtpClockIdentity master_clock_identity;
 
-  guint16 sync_seqnum;
+  guint32 sync_seqnum;
   GstClockTime sync_recv_time_local;    /* t2 */
   GstClockTime sync_send_time_remote;   /* t1, might be -1 if FOLLOW_UP pending */
   GstClockTime follow_up_recv_time_local;
 
   GSource *timeout_source;
-  guint16 delay_req_seqnum;
+  guint8 iface_idx;
+  guint32 delay_req_seqnum;
   GstClockTime delay_req_send_time_local;       /* t3, -1 if we wait for FOLLOW_UP */
   GstClockTime delay_req_recv_time_remote;      /* t4, -1 if we wait */
   GstClockTime delay_resp_recv_time_local;
@@ -318,15 +363,18 @@ typedef struct
   /* Last selected master clock */
   gboolean have_master_clock;
   PtpClockIdentity master_clock_identity;
+  guint8 iface_idx;
   guint64 grandmaster_identity;
 
   /* Last SYNC or FOLLOW_UP timestamp we received */
   GstClockTime last_ptp_sync_time;
+  GstClockTime last_ptp_sync_time_local;
   GstClockTime sync_interval;
 
   GstClockTime mean_path_delay;
   GstClockTime last_delay_req, min_delay_req_interval;
   guint16 last_delay_req_seqnum;
+  GstClockTime last_ptp_delay_resp_time_local;
 
   GstClockTime last_path_delays[MEDIAN_PRE_FILTERING_WINDOW];
   gint last_path_delays_missing;
@@ -336,6 +384,11 @@ typedef struct
   GstClock *domain_clock;
 } PtpDomainData;
 
+// The lists domain_clocks and domain_data are same but the former is protected
+// by the domain_clocks_lock.
+// It is needed because sometimes other threads than the PTP thread will need
+// to access the list, and without a mutex it might happen that the original
+// list (domain_data) is modified at the same time (prepending a new domain).
 static GList *domain_data;
 static GMutex domain_clocks_lock;
 static GList *domain_clocks;
@@ -345,6 +398,11 @@ static void emit_ptp_statistics (guint8 domain, const GstStructure * stats);
 static GHookList domain_stats_hooks;
 static gint domain_stats_n_hooks;
 static gboolean domain_stats_hooks_initted = FALSE;
+
+/* Only ever accessed from the PTP thread */
+/* PTPD in hybrid mode (default) sends multicast PTP messages with an invalid
+ * logMessageInterval. We work around this here and warn once */
+static gboolean ptpd_hybrid_workaround_warned_once = FALSE;
 
 /* Converts log2 seconds to GstClockTime */
 static GstClockTime
@@ -650,20 +708,35 @@ parse_ptp_message (PtpMessage * msg, const guint8 * data, gsize size)
 
 static gint
 compare_announce_message (const PtpAnnounceMessage * a,
-    const PtpAnnounceMessage * b)
+    const PtpAnnounceMessage * b, gboolean skip_tiebreakers)
 {
   /* IEEE 1588 Figure 27 */
   if (a->grandmaster_identity == b->grandmaster_identity) {
-    if (a->steps_removed + 1 < b->steps_removed)
+    // Random threshold of 4 timeouts to completely ignore all steps removed
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync + 4 <
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync)
       return -1;
-    else if (a->steps_removed > b->steps_removed + 1)
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync >
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync + 4)
       return 1;
 
-    /* Error cases are filtered out earlier */
     if (a->steps_removed < b->steps_removed)
       return -1;
     else if (a->steps_removed > b->steps_removed)
       return 1;
+
+    // If both are the same number of steps removed, prefer the clock with
+    // fewer timeouts before going to the tie breakers based on clock
+    // identities and interface indices
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync <
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync)
+      return -1;
+    if (a->sender->timed_out_delay_resp + a->sender->timed_out_sync >
+        b->sender->timed_out_delay_resp + b->sender->timed_out_sync)
+      return 1;
+
+    if (skip_tiebreakers)
+      return 0;
 
     /* Error cases are filtered out earlier */
     if (a->master_clock_identity.clock_identity <
@@ -680,8 +753,11 @@ compare_announce_message (const PtpAnnounceMessage * a,
     else if (a->master_clock_identity.port_number >
         b->master_clock_identity.port_number)
       return 1;
-    else
-      g_assert_not_reached ();
+
+    if (a->iface_idx < b->iface_idx)
+      return -1;
+    else if (a->iface_idx > b->iface_idx)
+      return 1;
 
     return 0;
   }
@@ -770,20 +846,70 @@ select_best_master_clock (PtpDomainData * domain, GstClockTime now)
   for (l = qualified_messages; l; l = l->next) {
     PtpAnnounceMessage *msg = l->data;
 
-    if (!best || compare_announce_message (msg, best) < 0)
+    if (!best || compare_announce_message (msg, best, FALSE) < 0)
       best = msg;
   }
+
+  GST_DEBUG ("Found master clock for domain %u: 0x%016" G_GINT64_MODIFIER
+      "x %u on interface %u with grandmaster clock 0x%016" G_GINT64_MODIFIER
+      "x", domain->domain, best->master_clock_identity.clock_identity,
+      best->master_clock_identity.port_number, best->iface_idx,
+      best->grandmaster_identity);
+
+  // Check if the newly selected best clock and the previous one are
+  // equivalent except for tiebreakers. In that case, don't actually switch
+  // to avoid switching regularly between clocks.
+  if (domain->have_master_clock &&
+      (compare_clock_identity (&domain->master_clock_identity,
+              &best->master_clock_identity) != 0
+          || domain->iface_idx != best->iface_idx)
+      ) {
+    // Find announce sender for the currently selected clock
+    for (l = domain->announce_senders; l; l = l->next) {
+      PtpAnnounceSender *sender = l->data;
+
+      if (compare_clock_identity (&domain->master_clock_identity,
+              &sender->master_clock_identity) == 0
+          && domain->iface_idx == sender->iface_idx) {
+
+        // Find qualified message for it (if there is none then it timed out)
+        for (m = qualified_messages; m; m = m->next) {
+          PtpAnnounceMessage *msg = m->data;
+
+          if (compare_clock_identity (&sender->master_clock_identity,
+                  &msg->master_clock_identity) == 0
+              && sender->iface_idx == msg->iface_idx) {
+
+            if (compare_announce_message (msg, best, TRUE) == 0) {
+              GST_DEBUG
+                  ("Currently selected master clock for domain %u is equivalent",
+                  domain->domain);
+              best = msg;
+            }
+
+            break;
+          }
+        }
+
+        break;
+      }
+    }
+  }
+
   g_clear_pointer (&qualified_messages, g_list_free);
 
   if (domain->have_master_clock
       && compare_clock_identity (&domain->master_clock_identity,
-          &best->master_clock_identity) == 0) {
+          &best->master_clock_identity) == 0
+      && domain->iface_idx == best->iface_idx) {
     GST_DEBUG ("Master clock in domain %u did not change", domain->domain);
   } else {
-    GST_DEBUG ("Selected master clock for domain %u: 0x%016" G_GINT64_MODIFIER
-        "x %u with grandmaster clock 0x%016" G_GINT64_MODIFIER "x",
-        domain->domain, best->master_clock_identity.clock_identity,
-        best->master_clock_identity.port_number, best->grandmaster_identity);
+    GST_DEBUG ("Selected new master clock for domain %u: 0x%016"
+        G_GINT64_MODIFIER "x %u on interface %u with grandmaster clock 0x%016"
+        G_GINT64_MODIFIER "x", domain->domain,
+        best->master_clock_identity.clock_identity,
+        best->master_clock_identity.port_number, best->iface_idx,
+        best->grandmaster_identity);
 
     domain->have_master_clock = TRUE;
     domain->grandmaster_identity = best->grandmaster_identity;
@@ -791,15 +917,19 @@ select_best_master_clock (PtpDomainData * domain, GstClockTime now)
     /* Opportunistic master clock selection likely gave us the same master
      * clock before, no need to reset all statistics */
     if (compare_clock_identity (&domain->master_clock_identity,
-            &best->master_clock_identity) != 0) {
+            &best->master_clock_identity) != 0
+        || domain->iface_idx != best->iface_idx) {
       memcpy (&domain->master_clock_identity, &best->master_clock_identity,
           sizeof (PtpClockIdentity));
+      domain->iface_idx = best->iface_idx;
       domain->mean_path_delay = 0;
       domain->last_delay_req = 0;
       domain->last_path_delays_missing = 9;
+      domain->last_ptp_delay_resp_time_local = 0;
       domain->min_delay_req_interval = 0;
       domain->sync_interval = 0;
       domain->last_ptp_sync_time = 0;
+      domain->last_ptp_sync_time_local = 0;
       domain->skipped_updates = 0;
       g_queue_foreach (&domain->pending_syncs, (GFunc) ptp_pending_sync_free,
           NULL);
@@ -823,7 +953,8 @@ select_best_master_clock (PtpDomainData * domain, GstClockTime now)
 }
 
 static void
-handle_announce_message (PtpMessage * msg, GstClockTime receive_time)
+handle_announce_message (PtpMessage * msg, guint8 iface_idx,
+    GstClockTime receive_time)
 {
   GList *l;
   PtpDomainData *domain = NULL;
@@ -883,7 +1014,7 @@ handle_announce_message (PtpMessage * msg, GstClockTime receive_time)
     PtpAnnounceSender *tmp = l->data;
 
     if (compare_clock_identity (&tmp->master_clock_identity,
-            &msg->source_port_identity) == 0) {
+            &msg->source_port_identity) == 0 && tmp->iface_idx == iface_idx) {
       sender = tmp;
       break;
     }
@@ -894,6 +1025,7 @@ handle_announce_message (PtpMessage * msg, GstClockTime receive_time)
 
     memcpy (&sender->master_clock_identity, &msg->source_port_identity,
         sizeof (PtpClockIdentity));
+    sender->iface_idx = iface_idx;
     g_queue_init (&sender->announce_messages);
     domain->announce_senders =
         g_list_prepend (domain->announce_senders, sender);
@@ -909,13 +1041,25 @@ handle_announce_message (PtpMessage * msg, GstClockTime receive_time)
       return;
   }
 
-  sender->announce_interval = log2_to_clock_time (msg->log_message_interval);
+  if (msg->log_message_interval == 0x7f) {
+    sender->announce_interval = 2 * GST_SECOND;
+
+    if (!ptpd_hybrid_workaround_warned_once) {
+      GST_WARNING ("Working around ptpd bug: ptpd sends multicast PTP packets "
+          "with invalid logMessageInterval");
+      ptpd_hybrid_workaround_warned_once = TRUE;
+    }
+  } else {
+    sender->announce_interval = log2_to_clock_time (msg->log_message_interval);
+  }
 
   announce = g_new0 (PtpAnnounceMessage, 1);
+  announce->sender = sender;
   announce->receive_time = receive_time;
   announce->sequence_id = msg->sequence_id;
   memcpy (&announce->master_clock_identity, &msg->source_port_identity,
       sizeof (PtpClockIdentity));
+  announce->iface_idx = iface_idx;
   announce->grandmaster_identity =
       msg->message_specific.announce.grandmaster_identity;
   announce->grandmaster_priority_1 =
@@ -939,19 +1083,22 @@ handle_announce_message (PtpMessage * msg, GstClockTime receive_time)
 static gboolean
 send_delay_req_timeout (PtpPendingSync * sync)
 {
-  StdIOHeader header = { 0, };
-  guint8 delay_req[44];
+  guint8 message[STDIO_MESSAGE_HEADER_SIZE + 1 + 8 + 44] = { 0, };
   GstByteWriter writer;
-  GIOStatus status;
   gsize written;
   GError *err = NULL;
-
-  header.type = TYPE_EVENT;
-  header.size = 44;
+  GstClockTime send_time;
 
   GST_TRACE ("Sending delay_req to domain %u", sync->domain);
 
-  gst_byte_writer_init_with_data (&writer, delay_req, 44, FALSE);
+  sync->delay_req_send_time_local = send_time =
+      gst_clock_get_time (observation_system_clock);
+
+  gst_byte_writer_init_with_data (&writer, message, sizeof (message), FALSE);
+  gst_byte_writer_put_uint16_be_unchecked (&writer, 1 + 8 + 44);
+  gst_byte_writer_put_uint8_unchecked (&writer, TYPE_EVENT);
+  gst_byte_writer_put_uint8_unchecked (&writer, sync->iface_idx);
+  gst_byte_writer_put_uint64_be_unchecked (&writer, send_time);
   gst_byte_writer_put_uint8_unchecked (&writer, PTP_MESSAGE_TYPE_DELAY_REQ);
   gst_byte_writer_put_uint8_unchecked (&writer, 2);
   gst_byte_writer_put_uint16_be_unchecked (&writer, 44);
@@ -969,48 +1116,20 @@ send_delay_req_timeout (PtpPendingSync * sync)
   gst_byte_writer_put_uint64_be_unchecked (&writer, 0);
   gst_byte_writer_put_uint16_be_unchecked (&writer, 0);
 
-  status =
-      g_io_channel_write_chars (stdout_channel, (gchar *) & header,
-      sizeof (header), &written, &err);
-  if (status == G_IO_STATUS_ERROR) {
-    g_warning ("Failed to write to stdout: %s", err->message);
-    g_clear_error (&err);
-    return G_SOURCE_REMOVE;
-  } else if (status == G_IO_STATUS_EOF) {
+  if (!g_output_stream_write_all (stdin_pipe, message, sizeof (message),
+          &written, NULL, &err)) {
+    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CLOSED)
+        || g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED)) {
+      GST_ERROR ("Got EOF on stdout");
+    } else {
+      GST_ERROR ("Failed to write delay-req to stdin: %s", err->message);
+    }
+
     g_message ("EOF on stdout");
     g_main_loop_quit (main_loop);
     return G_SOURCE_REMOVE;
-  } else if (status != G_IO_STATUS_NORMAL) {
-    g_warning ("Unexpected stdout write status: %d", status);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (written != sizeof (header)) {
-    g_warning ("Unexpected write size: %" G_GSIZE_FORMAT, written);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  }
-
-  sync->delay_req_send_time_local =
-      gst_clock_get_time (observation_system_clock);
-
-  status =
-      g_io_channel_write_chars (stdout_channel,
-      (const gchar *) delay_req, 44, &written, &err);
-  if (status == G_IO_STATUS_ERROR) {
-    g_warning ("Failed to write to stdout: %s", err->message);
-    g_clear_error (&err);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (status == G_IO_STATUS_EOF) {
-    g_message ("EOF on stdout");
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (status != G_IO_STATUS_NORMAL) {
-    g_warning ("Unexpected stdout write status: %d", status);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (written != 44) {
-    g_warning ("Unexpected write size: %" G_GSIZE_FORMAT, written);
+  } else if (written != sizeof (message)) {
+    GST_ERROR ("Unexpected write size: %" G_GSIZE_FORMAT, written);
     g_main_loop_quit (main_loop);
     return G_SOURCE_REMOVE;
   }
@@ -1032,6 +1151,7 @@ send_delay_req (PtpDomainData * domain, PtpPendingSync * sync)
   }
 
   domain->last_delay_req = now;
+  sync->iface_idx = domain->iface_idx;
   sync->delay_req_seqnum = domain->last_delay_req_seqnum++;
 
   /* IEEE 1588 9.5.11.2 */
@@ -1339,7 +1459,7 @@ update_mean_path_delay (PtpDomainData * domain, PtpPendingSync * sync)
   } else {
     memcpy (&last_path_delays, &domain->last_path_delays,
         sizeof (last_path_delays));
-    g_qsort_with_data (&last_path_delays,
+    g_sort_array (&last_path_delays,
         MEDIAN_PRE_FILTERING_WINDOW, sizeof (GstClockTime),
         (GCompareDataFunc) compare_clock_time, NULL);
 
@@ -1455,7 +1575,8 @@ out:
 }
 
 static void
-handle_sync_message (PtpMessage * msg, GstClockTime receive_time)
+handle_sync_message (PtpMessage * msg, guint8 iface_idx,
+    GstClockTime receive_time)
 {
   GList *l;
   PtpDomainData *domain = NULL;
@@ -1497,21 +1618,36 @@ handle_sync_message (PtpMessage * msg, GstClockTime receive_time)
 
   /* If we have a master clock, ignore this message if it's not coming from there */
   if (domain->have_master_clock
-      && compare_clock_identity (&domain->master_clock_identity,
-          &msg->source_port_identity) != 0)
+      && (compare_clock_identity (&domain->master_clock_identity,
+              &msg->source_port_identity) != 0
+          || domain->iface_idx != iface_idx)) {
+    GST_TRACE ("SYNC msg not from current clock master. Ignoring");
     return;
+  }
 
 #ifdef USE_OPPORTUNISTIC_CLOCK_SELECTION
   /* Opportunistic selection of master clock */
-  if (!domain->have_master_clock)
+  if (!domain->have_master_clock) {
     memcpy (&domain->master_clock_identity, &msg->source_port_identity,
         sizeof (PtpClockIdentity));
+    domain->iface_idx = iface_idx;
+  }
 #else
   if (!domain->have_master_clock)
     return;
 #endif
 
-  domain->sync_interval = log2_to_clock_time (msg->log_message_interval);
+  if (msg->log_message_interval == 0x7f) {
+    domain->sync_interval = GST_SECOND;
+
+    if (!ptpd_hybrid_workaround_warned_once) {
+      GST_WARNING ("Working around ptpd bug: ptpd sends multicast PTP packets "
+          "with invalid logMessageInterval");
+      ptpd_hybrid_workaround_warned_once = TRUE;
+    }
+  } else {
+    domain->sync_interval = log2_to_clock_time (msg->log_message_interval);
+  }
 
   /* Check if duplicated */
   for (l = domain->pending_syncs.head; l; l = l->next) {
@@ -1539,6 +1675,7 @@ handle_sync_message (PtpMessage * msg, GstClockTime receive_time)
   sync->delay_req_send_time_local = GST_CLOCK_TIME_NONE;
   sync->delay_req_recv_time_remote = GST_CLOCK_TIME_NONE;
   sync->delay_resp_recv_time_local = GST_CLOCK_TIME_NONE;
+  sync->delay_req_seqnum = G_MAXUINT32;
 
   /* 0.5 correction factor for division later */
   sync->correction_field_sync = msg->correction_field;
@@ -1562,6 +1699,20 @@ handle_sync_message (PtpMessage * msg, GstClockTime receive_time)
       return;
     }
     domain->last_ptp_sync_time = sync->sync_send_time_remote;
+    domain->last_ptp_sync_time_local = receive_time;
+
+    for (l = domain->announce_senders; l; l = l->next) {
+      PtpAnnounceSender *sender = l->data;
+
+      if (compare_clock_identity (&domain->master_clock_identity,
+              &sender->master_clock_identity) == 0
+          && domain->iface_idx == sender->iface_idx) {
+
+        sender->timed_out_sync = 0;
+
+        break;
+      }
+    }
 
     if (send_delay_req (domain, sync)) {
       /* Sent delay request */
@@ -1577,7 +1728,8 @@ handle_sync_message (PtpMessage * msg, GstClockTime receive_time)
 }
 
 static void
-handle_follow_up_message (PtpMessage * msg, GstClockTime receive_time)
+handle_follow_up_message (PtpMessage * msg, guint8 iface_idx,
+    GstClockTime receive_time)
 {
   GList *l;
   PtpDomainData *domain = NULL;
@@ -1607,8 +1759,9 @@ handle_follow_up_message (PtpMessage * msg, GstClockTime receive_time)
 
   /* If we have a master clock, ignore this message if it's not coming from there */
   if (domain->have_master_clock
-      && compare_clock_identity (&domain->master_clock_identity,
-          &msg->source_port_identity) != 0) {
+      && (compare_clock_identity (&domain->master_clock_identity,
+              &msg->source_port_identity) != 0
+          || domain->iface_idx != iface_idx)) {
     GST_TRACE ("FOLLOW_UP msg not from current clock master. Ignoring");
     return;
   }
@@ -1661,6 +1814,20 @@ handle_follow_up_message (PtpMessage * msg, GstClockTime receive_time)
     return;
   }
   domain->last_ptp_sync_time = sync->sync_send_time_remote;
+  domain->last_ptp_sync_time_local = receive_time;
+
+  for (l = domain->announce_senders; l; l = l->next) {
+    PtpAnnounceSender *sender = l->data;
+
+    if (compare_clock_identity (&domain->master_clock_identity,
+            &sender->master_clock_identity) == 0
+        && domain->iface_idx == sender->iface_idx) {
+
+      sender->timed_out_sync = 0;
+
+      break;
+    }
+  }
 
   if (send_delay_req (domain, sync)) {
     /* Sent delay request */
@@ -1673,11 +1840,19 @@ handle_follow_up_message (PtpMessage * msg, GstClockTime receive_time)
 }
 
 static void
-handle_delay_resp_message (PtpMessage * msg, GstClockTime receive_time)
+handle_delay_resp_message (PtpMessage * msg, guint8 iface_idx,
+    GstClockTime receive_time)
 {
   GList *l;
   PtpDomainData *domain = NULL;
   PtpPendingSync *sync = NULL;
+
+  /* Not for us */
+  if (msg->message_specific.delay_resp.
+      requesting_port_identity.clock_identity != ptp_clock_id.clock_identity
+      || msg->message_specific.delay_resp.
+      requesting_port_identity.port_number != ptp_clock_id.port_number)
+    return;
 
   /* Don't consider messages with the alternate master flag set */
   if ((msg->flag_field & 0x0100))
@@ -1697,19 +1872,25 @@ handle_delay_resp_message (PtpMessage * msg, GstClockTime receive_time)
 
   /* If we have a master clock, ignore this message if it's not coming from there */
   if (domain->have_master_clock
-      && compare_clock_identity (&domain->master_clock_identity,
-          &msg->source_port_identity) != 0)
+      && (compare_clock_identity (&domain->master_clock_identity,
+              &msg->source_port_identity) != 0
+          || domain->iface_idx != iface_idx)) {
+    GST_TRACE ("DELAY_RESP msg not from current clock master. Ignoring");
     return;
+  }
 
-  /* Not for us */
-  if (msg->message_specific.delay_resp.
-      requesting_port_identity.clock_identity != ptp_clock_id.clock_identity
-      || msg->message_specific.delay_resp.
-      requesting_port_identity.port_number != ptp_clock_id.port_number)
-    return;
+  if (msg->log_message_interval == 0x7f) {
+    domain->min_delay_req_interval = GST_SECOND;
 
-  domain->min_delay_req_interval =
-      log2_to_clock_time (msg->log_message_interval);
+    if (!ptpd_hybrid_workaround_warned_once) {
+      GST_WARNING ("Working around ptpd bug: ptpd sends multicast PTP packets "
+          "with invalid logMessageInterval");
+      ptpd_hybrid_workaround_warned_once = TRUE;
+    }
+  } else {
+    domain->min_delay_req_interval =
+        log2_to_clock_time (msg->log_message_interval);
+  }
 
   /* Check if we know about this one */
   for (l = domain->pending_syncs.head; l; l = l->next) {
@@ -1756,6 +1937,21 @@ handle_delay_resp_message (PtpMessage * msg, GstClockTime receive_time)
     return;
   }
 
+  domain->last_ptp_delay_resp_time_local = receive_time;
+
+  for (l = domain->announce_senders; l; l = l->next) {
+    PtpAnnounceSender *sender = l->data;
+
+    if (compare_clock_identity (&domain->master_clock_identity,
+            &sender->master_clock_identity) == 0
+        && domain->iface_idx == sender->iface_idx) {
+
+      sender->timed_out_delay_resp = 0;
+
+      break;
+    }
+  }
+
   if (update_mean_path_delay (domain, sync))
     update_ptp_time (domain, sync);
   g_queue_remove (&domain->pending_syncs, sync);
@@ -1763,7 +1959,8 @@ handle_delay_resp_message (PtpMessage * msg, GstClockTime receive_time)
 }
 
 static void
-handle_ptp_message (PtpMessage * msg, GstClockTime receive_time)
+handle_ptp_message (PtpMessage * msg, guint8 iface_idx,
+    GstClockTime receive_time)
 {
   /* Ignore our own messages */
   if (msg->source_port_identity.clock_identity == ptp_clock_id.clock_identity &&
@@ -1772,109 +1969,157 @@ handle_ptp_message (PtpMessage * msg, GstClockTime receive_time)
     return;
   }
 
-  GST_TRACE ("Message type %d receive_time %" GST_TIME_FORMAT,
-      msg->message_type, GST_TIME_ARGS (receive_time));
+  GST_TRACE ("Message type %d iface idx %d receive_time %" GST_TIME_FORMAT,
+      msg->message_type, iface_idx, GST_TIME_ARGS (receive_time));
   switch (msg->message_type) {
     case PTP_MESSAGE_TYPE_ANNOUNCE:
-      handle_announce_message (msg, receive_time);
+      handle_announce_message (msg, iface_idx, receive_time);
       break;
     case PTP_MESSAGE_TYPE_SYNC:
-      handle_sync_message (msg, receive_time);
+      handle_sync_message (msg, iface_idx, receive_time);
       break;
     case PTP_MESSAGE_TYPE_FOLLOW_UP:
-      handle_follow_up_message (msg, receive_time);
+      handle_follow_up_message (msg, iface_idx, receive_time);
       break;
     case PTP_MESSAGE_TYPE_DELAY_RESP:
-      handle_delay_resp_message (msg, receive_time);
+      handle_delay_resp_message (msg, iface_idx, receive_time);
       break;
     default:
       break;
   }
 }
 
-static gboolean
-have_stdin_data_cb (GIOChannel * channel, GIOCondition condition,
+static void
+handle_send_time_ack (const guint8 * data, gsize size,
+    GstClockTime receive_time)
+{
+  GstByteReader breader;
+  GstClockTime helper_send_time;
+  guint8 message_type;
+  guint8 domain_number;
+  guint16 seqnum;
+  GList *l;
+  PtpDomainData *domain = NULL;
+  PtpPendingSync *sync = NULL;
+
+  gst_byte_reader_init (&breader, data, size);
+  helper_send_time = gst_byte_reader_get_uint64_be_unchecked (&breader);
+  message_type = gst_byte_reader_get_uint8_unchecked (&breader);
+  domain_number = gst_byte_reader_get_uint8_unchecked (&breader);
+  seqnum = gst_byte_reader_get_uint16_be_unchecked (&breader);
+
+  GST_TRACE
+      ("Received SEND_TIME_ACK for message type %d, domain number %d, seqnum %d with send time %"
+      GST_TIME_FORMAT " at receive_time %" GST_TIME_FORMAT, message_type,
+      domain_number, seqnum, GST_TIME_ARGS (helper_send_time),
+      GST_TIME_ARGS (receive_time));
+
+  if (message_type != PTP_MESSAGE_TYPE_DELAY_REQ)
+    return;
+
+  for (l = domain_data; l; l = l->next) {
+    PtpDomainData *tmp = l->data;
+
+    if (domain_number == tmp->domain) {
+      domain = tmp;
+      break;
+    }
+  }
+
+  if (!domain)
+    return;
+
+  /* Check if we know about this one */
+  for (l = domain->pending_syncs.head; l; l = l->next) {
+    PtpPendingSync *tmp = l->data;
+
+    if (tmp->delay_req_seqnum == seqnum) {
+      sync = tmp;
+      break;
+    }
+  }
+
+  if (!sync)
+    return;
+
+  /* Got a DELAY_RESP for this already */
+  if (sync->delay_req_recv_time_remote != GST_CLOCK_TIME_NONE)
+    return;
+
+  if (helper_send_time != 0) {
+    GST_TRACE ("DELAY_REQ message took %" GST_STIME_FORMAT
+        " to helper process, SEND_TIME_ACK took %" GST_STIME_FORMAT
+        " from helper process",
+        GST_STIME_ARGS ((GstClockTimeDiff) (helper_send_time -
+                sync->delay_req_send_time_local)),
+        GST_STIME_ARGS ((GstClockTimeDiff) (receive_time - helper_send_time)));
+    sync->delay_req_send_time_local = helper_send_time;
+  }
+}
+
+static void have_stdout_header (GInputStream * stdout_pipe, GAsyncResult * res,
+    gpointer user_data);
+
+static void
+have_stdout_body (GInputStream * stdout_pipe, GAsyncResult * res,
     gpointer user_data)
 {
-  GIOStatus status;
-  StdIOHeader header;
-  gchar buffer[8192];
   GError *err = NULL;
   gsize read;
 
-  if ((condition & G_IO_STATUS_EOF)) {
-    GST_ERROR ("Got EOF on stdin");
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  }
-
-  status =
-      g_io_channel_read_chars (channel, (gchar *) & header, sizeof (header),
-      &read, &err);
-  if (status == G_IO_STATUS_ERROR) {
-    GST_ERROR ("Failed to read from stdin: %s", err->message);
+  /* Finish reading the body */
+  if (!g_input_stream_read_all_finish (stdout_pipe, res, &read, &err)) {
+    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CLOSED) ||
+        g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED)) {
+      GST_ERROR ("Got EOF on stdout");
+    } else {
+      GST_ERROR ("Failed to read header from stdout: %s", err->message);
+    }
     g_clear_error (&err);
     g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (status == G_IO_STATUS_EOF) {
+    return;
+  } else if (read == 0) {
     GST_ERROR ("Got EOF on stdin");
     g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (status != G_IO_STATUS_NORMAL) {
-    GST_ERROR ("Unexpected stdin read status: %d", status);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (read != sizeof (header)) {
+    return;
+  } else if (read != CUR_STDIO_HEADER_SIZE) {
     GST_ERROR ("Unexpected read size: %" G_GSIZE_FORMAT, read);
     g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (header.size > 8192) {
-    GST_ERROR ("Unexpected size: %u", header.size);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
+    return;
   }
 
-  status = g_io_channel_read_chars (channel, buffer, header.size, &read, &err);
-  if (status == G_IO_STATUS_ERROR) {
-    GST_ERROR ("Failed to read from stdin: %s", err->message);
-    g_clear_error (&err);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (status == G_IO_STATUS_EOF) {
-    GST_ERROR ("EOF on stdin");
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (status != G_IO_STATUS_NORMAL) {
-    GST_ERROR ("Unexpected stdin read status: %d", status);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  } else if (read != header.size) {
-    GST_ERROR ("Unexpected read size: %" G_GSIZE_FORMAT, read);
-    g_main_loop_quit (main_loop);
-    return G_SOURCE_REMOVE;
-  }
-
-  switch (header.type) {
+  switch (CUR_STDIO_HEADER_TYPE) {
     case TYPE_EVENT:
     case TYPE_GENERAL:{
       GstClockTime receive_time = gst_clock_get_time (observation_system_clock);
+      guint8 iface_idx;
+      GstClockTime helper_receive_time;
       PtpMessage msg;
 
-      if (parse_ptp_message (&msg, (const guint8 *) buffer, header.size)) {
+      iface_idx = GST_READ_UINT8 (stdout_buffer);
+      helper_receive_time = GST_READ_UINT64_BE (stdout_buffer + 1);
+
+      if (parse_ptp_message (&msg, (const guint8 *) stdout_buffer + 1 + 8,
+              CUR_STDIO_HEADER_SIZE)) {
         dump_ptp_message (&msg);
-        handle_ptp_message (&msg, receive_time);
+        if (helper_receive_time != 0) {
+          GST_TRACE ("Message took %" GST_STIME_FORMAT " from helper process",
+              GST_STIME_ARGS ((GstClockTimeDiff) (receive_time -
+                      helper_receive_time)));
+          receive_time = helper_receive_time;
+        }
+        handle_ptp_message (&msg, iface_idx, receive_time);
       }
       break;
     }
-    default:
     case TYPE_CLOCK_ID:{
-      if (header.size != 8) {
-        GST_ERROR ("Unexpected clock id size (%u != 8)", header.size);
+      if (CUR_STDIO_HEADER_SIZE != 8) {
+        GST_ERROR ("Unexpected clock id size (%u != 8)", CUR_STDIO_HEADER_SIZE);
         g_main_loop_quit (main_loop);
-        return G_SOURCE_REMOVE;
+        return;
       }
       g_mutex_lock (&ptp_lock);
-      ptp_clock_id.clock_identity = GST_READ_UINT64_BE (buffer);
+      ptp_clock_id.clock_identity = GST_READ_UINT64_BE (stdout_buffer);
 #ifdef G_OS_WIN32
       ptp_clock_id.port_number = (guint16) GetCurrentProcessId ();
 #else
@@ -1886,9 +2131,202 @@ have_stdin_data_cb (GIOChannel * channel, GIOCondition condition,
       g_mutex_unlock (&ptp_lock);
       break;
     }
+    case TYPE_SEND_TIME_ACK:{
+      GstClockTime receive_time = gst_clock_get_time (observation_system_clock);
+
+      if (CUR_STDIO_HEADER_SIZE != 12) {
+        GST_ERROR ("Unexpected send time ack size (%u != 12)",
+            CUR_STDIO_HEADER_SIZE);
+        g_main_loop_quit (main_loop);
+        return;
+      }
+
+      handle_send_time_ack (stdout_buffer, CUR_STDIO_HEADER_SIZE, receive_time);
+      break;
+    }
+    default:
+      break;
   }
 
-  return G_SOURCE_CONTINUE;
+  /* And read the next header */
+  memset (&stdio_header, 0, STDIO_MESSAGE_HEADER_SIZE);
+  g_input_stream_read_all_async (stdout_pipe, stdio_header,
+      STDIO_MESSAGE_HEADER_SIZE, G_PRIORITY_DEFAULT, NULL,
+      (GAsyncReadyCallback) have_stdout_header, NULL);
+}
+
+static void
+have_stdout_header (GInputStream * stdout_pipe, GAsyncResult * res,
+    gpointer user_data)
+{
+  GError *err = NULL;
+  gsize read;
+
+  /* Finish reading the header */
+  if (!g_input_stream_read_all_finish (stdout_pipe, res, &read, &err)) {
+    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CLOSED) ||
+        g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED)) {
+      GST_ERROR ("Got EOF on stdout");
+    } else {
+      GST_ERROR ("Failed to read header from stdout: %s", err->message);
+    }
+    g_clear_error (&err);
+    g_main_loop_quit (main_loop);
+    return;
+  } else if (read == 0) {
+    GST_ERROR ("Got EOF on stdin");
+    return;
+  } else if (read != STDIO_MESSAGE_HEADER_SIZE) {
+    GST_ERROR ("Unexpected read size: %" G_GSIZE_FORMAT, read);
+    g_main_loop_quit (main_loop);
+    return;
+  } else if (CUR_STDIO_HEADER_SIZE > 8192) {
+    GST_ERROR ("Unexpected size: %u", CUR_STDIO_HEADER_SIZE);
+    g_main_loop_quit (main_loop);
+    return;
+  }
+
+  /* And now read the body */
+  g_input_stream_read_all_async (stdout_pipe, stdout_buffer,
+      CUR_STDIO_HEADER_SIZE, G_PRIORITY_DEFAULT, NULL,
+      (GAsyncReadyCallback) have_stdout_body, NULL);
+}
+
+static void have_stderr_header (GInputStream * stderr_pipe, GAsyncResult * res,
+    gpointer user_data);
+
+static void
+have_stderr_body (GInputStream * stderr_pipe, GAsyncResult * res,
+    gpointer user_data)
+{
+  GError *err = NULL;
+  gsize read;
+#ifndef GST_DISABLE_GST_DEBUG
+  GstByteReader breader;
+  GstDebugLevel level;
+  guint16 filename_length;
+  gchar *filename = NULL;
+  guint16 module_path_length;
+  gchar *module_path = NULL;
+  guint32 line_number;
+  gchar *message = NULL;
+  guint16 message_length;
+  guint8 b;
+#endif
+
+  /* Finish reading the body */
+  if (!g_input_stream_read_all_finish (stderr_pipe, res, &read, &err)) {
+    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CLOSED) ||
+        g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED)) {
+      GST_ERROR ("Got EOF on stderr");
+    } else {
+      GST_ERROR ("Failed to read header from stderr: %s", err->message);
+    }
+    g_clear_error (&err);
+    g_main_loop_quit (main_loop);
+    return;
+  } else if (read == 0) {
+    GST_ERROR ("Got EOF on stderr");
+    g_main_loop_quit (main_loop);
+    return;
+  } else if (read != CUR_STDERR_HEADER_SIZE) {
+    GST_ERROR ("Unexpected read size: %" G_GSIZE_FORMAT, read);
+    g_main_loop_quit (main_loop);
+    return;
+  }
+
+#ifndef GST_DISABLE_GST_DEBUG
+  gst_byte_reader_init (&breader, stderr_buffer, CUR_STDERR_HEADER_SIZE);
+
+  if (!gst_byte_reader_get_uint8 (&breader, &b) || b > GST_LEVEL_MAX)
+    goto err;
+  level = (GstDebugLevel) b;
+  if (!gst_byte_reader_get_uint16_be (&breader, &filename_length)
+      || filename_length > gst_byte_reader_get_remaining (&breader))
+    goto err;
+  filename =
+      g_strndup ((const gchar *) gst_byte_reader_get_data_unchecked (&breader,
+          filename_length), filename_length);
+
+  if (!gst_byte_reader_get_uint16_be (&breader, &module_path_length)
+      || module_path_length > gst_byte_reader_get_remaining (&breader))
+    goto err;
+  module_path =
+      g_strndup ((const gchar *) gst_byte_reader_get_data_unchecked (&breader,
+          module_path_length), module_path_length);
+
+  if (!gst_byte_reader_get_uint32_be (&breader, &line_number))
+    goto err;
+
+  message_length = gst_byte_reader_get_remaining (&breader);
+  message =
+      g_strndup ((const gchar *) gst_byte_reader_get_data_unchecked (&breader,
+          message_length), message_length);
+
+  gst_debug_log_literal (GST_CAT_DEFAULT, level, filename, module_path,
+      line_number, NULL, message);
+
+  g_clear_pointer (&filename, g_free);
+  g_clear_pointer (&module_path, g_free);
+  g_clear_pointer (&message, g_free);
+#endif
+
+  /* And read the next header */
+  memset (&stderr_header, 0, STDERR_MESSAGE_HEADER_SIZE);
+  g_input_stream_read_all_async (stderr_pipe, stderr_header,
+      STDERR_MESSAGE_HEADER_SIZE, G_PRIORITY_DEFAULT, NULL,
+      (GAsyncReadyCallback) have_stderr_header, NULL);
+  return;
+
+#ifndef GST_DISABLE_GST_DEBUG
+err:
+  {
+    GST_ERROR ("Unexpected stderr data");
+    g_clear_pointer (&filename, g_free);
+    g_clear_pointer (&module_path, g_free);
+    g_clear_pointer (&message, g_free);
+    g_main_loop_quit (main_loop);
+    return;
+  }
+#endif
+}
+
+static void
+have_stderr_header (GInputStream * stderr_pipe, GAsyncResult * res,
+    gpointer user_data)
+{
+  GError *err = NULL;
+  gsize read;
+
+  /* Finish reading the header */
+  if (!g_input_stream_read_all_finish (stderr_pipe, res, &read, &err)) {
+    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CLOSED) ||
+        g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED)) {
+      GST_ERROR ("Got EOF on stderr");
+    } else {
+      GST_ERROR ("Failed to read header from stderr: %s", err->message);
+    }
+    g_clear_error (&err);
+    g_main_loop_quit (main_loop);
+    return;
+  } else if (read == 0) {
+    GST_ERROR ("Got EOF on stderr");
+    g_main_loop_quit (main_loop);
+    return;
+  } else if (read != STDERR_MESSAGE_HEADER_SIZE) {
+    GST_ERROR ("Unexpected read size: %" G_GSIZE_FORMAT, read);
+    g_main_loop_quit (main_loop);
+    return;
+  } else if (CUR_STDERR_HEADER_SIZE > 8192 || CUR_STDERR_HEADER_SIZE < 9) {
+    GST_ERROR ("Unexpected size: %u", CUR_STDERR_HEADER_SIZE);
+    g_main_loop_quit (main_loop);
+    return;
+  }
+
+  /* And now read the body */
+  g_input_stream_read_all_async (stderr_pipe, stderr_buffer,
+      CUR_STDERR_HEADER_SIZE, G_PRIORITY_DEFAULT, NULL,
+      (GAsyncReadyCallback) have_stderr_body, NULL);
 }
 
 /* Cleanup all announce messages and announce message senders
@@ -1935,7 +2373,8 @@ cleanup_cb (gpointer data)
         GList *tmp = n->next;
 
         if (compare_clock_identity (&sender->master_clock_identity,
-                &domain->master_clock_identity) == 0)
+                &domain->master_clock_identity) == 0
+            && sender->iface_idx == domain->iface_idx)
           GST_WARNING ("currently selected master clock timed out");
         g_free (sender);
         domain->announce_senders =
@@ -1945,12 +2384,13 @@ cleanup_cb (gpointer data)
         n = n->next;
       }
     }
-    select_best_master_clock (domain, now);
 
     /* Clean up any pending syncs */
     for (n = domain->pending_syncs.head; n;) {
       PtpPendingSync *sync = n->data;
       gboolean timed_out = FALSE;
+      gboolean clock_timed_out_sync = FALSE;
+      gboolean clock_timed_out_delay_resp = FALSE;
 
       /* Time out pending syncs after 4 sync intervals or 10 seconds,
        * and pending delay reqs after 4 delay req intervals or 10 seconds
@@ -1961,10 +2401,48 @@ cleanup_cb (gpointer data)
                   4 * domain->min_delay_req_interval < now)
               || (sync->delay_req_send_time_local + 10 * GST_SECOND < now))) {
         timed_out = TRUE;
-      } else if ((domain->sync_interval != 0
-              && sync->sync_recv_time_local + 4 * domain->sync_interval < now)
-          || (sync->sync_recv_time_local + 10 * GST_SECOND < now)) {
+
+        // If no newer delay resp received in the meantime, downgrade the
+        // selected clock
+        if (domain->last_ptp_delay_resp_time_local <
+            sync->delay_req_send_time_local) {
+          clock_timed_out_delay_resp = TRUE;
+        }
+      } else if (sync->follow_up_recv_time_local == GST_CLOCK_TIME_NONE && (
+              (domain->sync_interval != 0
+                  && sync->sync_recv_time_local + 4 * domain->sync_interval <
+                  now)
+              || (sync->sync_recv_time_local + 10 * GST_SECOND < now))) {
         timed_out = TRUE;
+
+        // If no newer sync/follow-up received in the meantime, downgrade the
+        // selected clock
+        if (domain->last_ptp_sync_time_local < sync->sync_recv_time_local) {
+          clock_timed_out_sync = TRUE;
+        }
+      }
+
+      // If the clock is timed out then downgrade it now in case there is a
+      // better clock for the domain that can be selected below.
+      if (domain->have_master_clock && (clock_timed_out_sync
+              || clock_timed_out_delay_resp)) {
+        GST_DEBUG ("Currently selected clock timed out, downgrading");
+
+        for (m = domain->announce_senders; m; m = m->next) {
+          PtpAnnounceSender *sender = m->data;
+
+          if (compare_clock_identity (&domain->master_clock_identity,
+                  &sender->master_clock_identity) == 0
+              && domain->iface_idx == sender->iface_idx) {
+
+            if (clock_timed_out_sync)
+              sender->timed_out_sync++;
+            if (clock_timed_out_delay_resp)
+              sender->timed_out_delay_resp++;
+
+            break;
+          }
+        }
       }
 
       if (timed_out) {
@@ -1976,6 +2454,8 @@ cleanup_cb (gpointer data)
         n = n->next;
       }
     }
+
+    select_best_master_clock (domain, now);
   }
 
   return G_SOURCE_CONTINUE;
@@ -1988,8 +2468,20 @@ ptp_helper_main (gpointer data)
 
   GST_DEBUG ("Starting PTP helper loop");
 
-  /* Check all 5 seconds, if we have to cleanup ANNOUNCE or pending syncs message */
-  cleanup_source = g_timeout_source_new_seconds (5);
+  g_main_context_push_thread_default (main_context);
+
+  memset (&stdio_header, 0, STDIO_MESSAGE_HEADER_SIZE);
+  g_input_stream_read_all_async (stdout_pipe, stdio_header,
+      STDIO_MESSAGE_HEADER_SIZE, G_PRIORITY_DEFAULT, NULL,
+      (GAsyncReadyCallback) have_stdout_header, NULL);
+
+  memset (&stderr_header, 0, STDERR_MESSAGE_HEADER_SIZE);
+  g_input_stream_read_all_async (stderr_pipe, stderr_header,
+      STDERR_MESSAGE_HEADER_SIZE, G_PRIORITY_DEFAULT, NULL,
+      (GAsyncReadyCallback) have_stderr_header, NULL);
+
+  /* Check every 1 seconds, if we have to cleanup ANNOUNCE or pending syncs message */
+  cleanup_source = g_timeout_source_new_seconds (1);
   g_source_set_priority (cleanup_source, G_PRIORITY_DEFAULT);
   g_source_set_callback (cleanup_source, (GSourceFunc) cleanup_cb, NULL, NULL);
   g_source_attach (cleanup_source, main_context);
@@ -1997,6 +2489,8 @@ ptp_helper_main (gpointer data)
 
   g_main_loop_run (main_loop);
   GST_DEBUG ("Stopped PTP helper loop");
+
+  g_main_context_pop_thread_default (main_context);
 
   g_mutex_lock (&ptp_lock);
   ptp_clock_id.clock_identity = GST_PTP_CLOCK_ID_NONE;
@@ -2040,35 +2534,201 @@ gst_ptp_is_initialized (void)
   return initted;
 }
 
+#if defined(G_OS_WIN32) && !defined(GST_STATIC_COMPILATION)
+/* Note: DllMain is only called when DLLs are loaded or unloaded, so this will
+ * never be called if libgstnet-1.0 is linked statically. Do not add any code
+ * here to, say, initialize variables or set things up since that will only
+ * happen for dynamically-built GStreamer.
+ */
+BOOL WINAPI DllMain (HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);
+BOOL WINAPI
+DllMain (HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+{
+  if (fdwReason == DLL_PROCESS_ATTACH)
+    gstnet_dll_handle = (HMODULE) hinstDLL;
+  return TRUE;
+}
+
+#endif
+
+static char *
+get_relocated_libgstnet (void)
+{
+  char *dir = NULL;
+
+#ifdef G_OS_WIN32
+  {
+    char *base_dir;
+
+    GST_DEBUG ("attempting to retrieve libgstnet-1.0 location using "
+        "Win32-specific method");
+
+    base_dir =
+        g_win32_get_package_installation_directory_of_module
+        (gstnet_dll_handle);
+    if (!base_dir)
+      return NULL;
+
+    dir = g_build_filename (base_dir, GST_PLUGIN_SUBDIR, NULL);
+    GST_DEBUG ("using DLL dir %s", dir);
+
+    g_free (base_dir);
+  }
+#elif defined(HAVE_DLADDR)
+  {
+    Dl_info info;
+    char *real_fname = NULL;
+    long path_max = 0;
+
+    GST_DEBUG ("attempting to retrieve libgstnet-1.0 location using "
+        "dladdr()");
+
+    if (dladdr (&gst_ptp_init, &info)) {
+      GST_LOG ("dli_fname: %s", info.dli_fname);
+
+      if (!info.dli_fname) {
+        return NULL;
+      }
+#ifdef PATH_MAX
+      path_max = PATH_MAX;
+#else
+      path_max = pathconf (info.dli_fname, _PC_PATH_MAX);
+      if (path_max <= 0)
+        path_max = 4096;
+#endif
+
+      real_fname = g_malloc (path_max);
+      if (realpath (info.dli_fname, real_fname)) {
+        dir = g_path_get_dirname (real_fname);
+        GST_DEBUG ("real directory location: %s", dir);
+      } else {
+        GST_ERROR ("could not canonicalize path %s: %s", info.dli_fname,
+            g_strerror (errno));
+        dir = g_path_get_dirname (info.dli_fname);
+      }
+      g_free (real_fname);
+
+    } else {
+      GST_LOG ("dladdr() failed");
+      return NULL;
+    }
+  }
+#else
+#warning "Unsupported platform for retrieving the current location of a shared library."
+#warning "Relocatable builds will not work."
+  GST_WARNING ("Don't know how to retrieve the location of the shared "
+      "library libgstnet-" GST_API_VERSION);
+#endif
+
+  return dir;
+}
+
+static int
+count_directories (const char *filepath)
+{
+  int i = 0;
+  char *tmp;
+  gsize len;
+
+  g_return_val_if_fail (!g_path_is_absolute (filepath), 0);
+
+  tmp = g_strdup (filepath);
+  len = strlen (tmp);
+
+  /* ignore UNC share paths entirely */
+  if (len >= 3 && G_IS_DIR_SEPARATOR (tmp[0]) && G_IS_DIR_SEPARATOR (tmp[1])
+      && !G_IS_DIR_SEPARATOR (tmp[2])) {
+    GST_WARNING ("found a UNC share path, ignoring");
+    g_clear_pointer (&tmp, g_free);
+    return 0;
+  }
+
+  /* remove trailing slashes if they exist */
+  while (
+      /* don't remove the trailing slash for C:\.
+       * UNC paths are at least \\s\s */
+      len > 3 && G_IS_DIR_SEPARATOR (tmp[len - 1])) {
+    tmp[len - 1] = '\0';
+    len--;
+  }
+
+  while (tmp) {
+    char *dirname, *basename;
+    len = strlen (tmp);
+
+    if (g_strcmp0 (tmp, ".") == 0)
+      break;
+    if (g_strcmp0 (tmp, "/") == 0)
+      break;
+
+    /* g_path_get_dirname() may return something of the form 'C:.', where C is
+     * a drive letter */
+    if (len == 3 && g_ascii_isalpha (tmp[0]) && tmp[1] == ':' && tmp[2] == '.')
+      break;
+
+    basename = g_path_get_basename (tmp);
+    dirname = g_path_get_dirname (tmp);
+
+    if (g_strcmp0 (basename, "..") == 0) {
+      i--;
+    } else if (g_strcmp0 (basename, ".") == 0) {
+      /* nothing to do */
+    } else {
+      i++;
+    }
+
+    g_clear_pointer (&basename, g_free);
+    g_clear_pointer (&tmp, g_free);
+    tmp = dirname;
+  }
+
+  g_clear_pointer (&tmp, g_free);
+
+  if (i < 0) {
+    g_critical ("path counting resulted in a negative directory count!");
+    return 0;
+  }
+
+  return i;
+}
+
+
 /**
- * gst_ptp_init:
- * @clock_id: PTP clock id of this process' clock or %GST_PTP_CLOCK_ID_NONE
- * @interfaces: (transfer none) (array zero-terminated=1) (allow-none): network interfaces to run the clock on
+ * gst_ptp_init_full:
+ * @config: Configuration for initializing the GStreamer PTP subsystem
  *
  * Initialize the GStreamer PTP subsystem and create a PTP ordinary clock in
- * slave-only mode for all domains on the given @interfaces with the
- * given @clock_id.
+ * slave-only mode according to the @config.
  *
- * If @clock_id is %GST_PTP_CLOCK_ID_NONE, a clock id is automatically
- * generated from the MAC address of the first network interface.
+ * @config is a #GstStructure with the following optional fields:
+ * * #guint64 `clock-id`: The clock ID to use for the local clock. If the
+ *     clock-id is not provided or %GST_PTP_CLOCK_ID_NONE is provided, a clock
+ *     id is automatically generated from the MAC address of the first network
+ *     interface.
+ * * #GStrv `interfaces`: The interface names to listen on for PTP packets. If
+ *     none are provided then all compatible interfaces will be used.
+ * * #guint `ttl`: The TTL to use for multicast packets sent out by GStreamer.
+ *     This defaults to 1, i.e. packets will not leave the local network.
  *
  * This function is automatically called by gst_ptp_clock_new() with default
  * parameters if it wasn't called before.
  *
  * Returns: %TRUE if the GStreamer PTP clock subsystem could be initialized.
  *
- * Since: 1.6
+ * Since: 1.24
  */
 gboolean
-gst_ptp_init (guint64 clock_id, gchar ** interfaces)
+gst_ptp_init_full (const GstStructure * config)
 {
   gboolean ret;
   const gchar *env;
   gchar **argv = NULL;
   gint argc, argc_c;
-  gint fd_r, fd_w;
+  guint64 clock_id = GST_CLOCK_TIME_NONE;
+  const GValue *v;
+  gchar **interfaces = NULL;
+  guint ttl = 1;
   GError *err = NULL;
-  GSource *stdin_source;
 
   GST_DEBUG_CATEGORY_INIT (ptp_debug, "ptp", 0, "PTP clock");
 
@@ -2085,7 +2745,7 @@ gst_ptp_init (guint64 clock_id, gchar ** interfaces)
     goto done;
   }
 
-  if (ptp_helper_pid) {
+  if (ptp_helper_process) {
     GST_DEBUG ("PTP currently initializing");
     goto wait;
   }
@@ -2096,27 +2756,84 @@ gst_ptp_init (guint64 clock_id, gchar ** interfaces)
   }
 
   argc = 1;
+  gst_structure_get_uint64 (config, "clock-id", &clock_id);
   if (clock_id != GST_PTP_CLOCK_ID_NONE)
     argc += 2;
+  v = gst_structure_get_value (config, "interfaces");
+  if (v && G_VALUE_HOLDS (v, G_TYPE_STRV))
+    interfaces = g_value_get_boxed (v);
   if (interfaces != NULL)
     argc += 2 * g_strv_length (interfaces);
+  gst_structure_get_uint (config, "ttl", &ttl);
+  argc += 2;
 
-  argv = g_new0 (gchar *, argc + 2);
+  // 3 for: executable, -v and NULL
+  argv = g_new0 (gchar *, argc + 3);
   argc_c = 0;
 
+  /* Find the gst-ptp-helper */
   env = g_getenv ("GST_PTP_HELPER_1_0");
-  if (env == NULL)
+  if (!env)
     env = g_getenv ("GST_PTP_HELPER");
-  if (env != NULL && *env != '\0') {
-    GST_LOG ("Trying GST_PTP_HELPER env var: %s", env);
+
+  if (env && *env != '\0') {
+    /* use the env-var if it is set */
     argv[argc_c++] = g_strdup (env);
   } else {
-    argv[argc_c++] = g_strdup (GST_PTP_HELPER_INSTALLED);
+    char *relocated_libgstnet;
+
+    /* use the installed version */
+    GST_LOG ("Trying installed PTP helper process");
+
+#define MAX_PATH_DEPTH 64
+
+    relocated_libgstnet = get_relocated_libgstnet ();
+    if (relocated_libgstnet) {
+      int plugin_subdir_depth = count_directories (GST_PLUGIN_SUBDIR);
+
+      GST_DEBUG ("found libgstnet-" GST_API_VERSION " library "
+          "at %s", relocated_libgstnet);
+
+      if (plugin_subdir_depth < MAX_PATH_DEPTH) {
+        const char *filenamev[MAX_PATH_DEPTH + 5];
+        int i = 0, j;
+
+        filenamev[i++] = relocated_libgstnet;
+        for (j = 0; j < plugin_subdir_depth; j++)
+          filenamev[i++] = "..";
+        filenamev[i++] = GST_PTP_HELPER_SUBDIR;
+        filenamev[i++] = "gstreamer-" GST_API_VERSION;
+#ifdef G_OS_WIN32
+        filenamev[i++] = "gst-ptp-helper.exe";
+#else
+        filenamev[i++] = "gst-ptp-helper";
+#endif
+        filenamev[i++] = NULL;
+        g_assert (i <= MAX_PATH_DEPTH + 5);
+
+        GST_DEBUG ("constructing path to system PTP helper using "
+            "plugin dir: \'%s\', PTP helper dir: \'%s\'",
+            GST_PLUGIN_SUBDIR, GST_PTP_HELPER_SUBDIR);
+
+        argv[argc_c++] = g_build_filenamev ((char **) filenamev);
+      } else {
+        GST_WARNING ("GST_PLUGIN_SUBDIR: \'%s\' has too many path segments",
+            GST_PLUGIN_SUBDIR);
+        argv[argc_c++] = g_strdup (GST_PTP_HELPER_INSTALLED);
+      }
+    } else {
+      argv[argc_c++] = g_strdup (GST_PTP_HELPER_INSTALLED);
+    }
   }
+
+#undef MAX_PATH_DEPTH
+
+  GST_LOG ("Using PTP helper process: %s", argv[argc_c - 1]);
 
   if (clock_id != GST_PTP_CLOCK_ID_NONE) {
     argv[argc_c++] = g_strdup ("-c");
     argv[argc_c++] = g_strdup_printf ("0x%016" G_GINT64_MODIFIER "x", clock_id);
+    GST_LOG ("Using clock ID: %s", argv[argc_c - 1]);
   }
 
   if (interfaces != NULL) {
@@ -2125,9 +2842,53 @@ gst_ptp_init (guint64 clock_id, gchar ** interfaces)
     while (*ptr) {
       argv[argc_c++] = g_strdup ("-i");
       argv[argc_c++] = g_strdup (*ptr);
+      GST_LOG ("Using interface: %s", argv[argc_c - 1]);
       ptr++;
     }
   }
+
+  argv[argc_c++] = g_strdup ("--ttl");
+  argv[argc_c++] = g_strdup_printf ("%u", ttl);
+
+  /* Check if the helper process should be verbose */
+  env = g_getenv ("GST_PTP_HELPER_VERBOSE");
+  if (env && g_ascii_strcasecmp (env, "no") != 0) {
+    argv[argc_c++] = g_strdup ("-v");
+  }
+
+  ptp_helper_process =
+      g_subprocess_newv ((const gchar * const *) argv,
+      G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+      G_SUBPROCESS_FLAGS_STDERR_PIPE, &err);
+  if (!ptp_helper_process) {
+    GST_ERROR ("Failed to start ptp helper process: %s", err->message);
+    g_clear_error (&err);
+    ret = FALSE;
+    supported = FALSE;
+    goto done;
+  }
+
+  stdin_pipe = g_subprocess_get_stdin_pipe (ptp_helper_process);
+  if (stdin_pipe)
+    g_object_ref (stdin_pipe);
+  stdout_pipe = g_subprocess_get_stdout_pipe (ptp_helper_process);
+  if (stdout_pipe)
+    g_object_ref (stdout_pipe);
+  stderr_pipe = g_subprocess_get_stderr_pipe (ptp_helper_process);
+  if (stderr_pipe)
+    g_object_ref (stderr_pipe);
+  if (!stdin_pipe || !stdout_pipe || !stderr_pipe) {
+    GST_ERROR ("Failed to get ptp helper process pipes");
+    ret = FALSE;
+    supported = FALSE;
+    goto done;
+  }
+
+  delay_req_rand = g_rand_new ();
+  observation_system_clock =
+      g_object_new (GST_TYPE_SYSTEM_CLOCK, "name", "ptp-observation-clock",
+      NULL);
+  gst_object_ref_sink (observation_system_clock);
 
   main_context = g_main_context_new ();
   main_loop = g_main_loop_new (main_context, FALSE);
@@ -2140,39 +2901,6 @@ gst_ptp_init (guint64 clock_id, gchar ** interfaces)
     ret = FALSE;
     goto done;
   }
-
-  if (!g_spawn_async_with_pipes (NULL, argv, NULL, 0, NULL, NULL,
-          &ptp_helper_pid, &fd_w, &fd_r, NULL, &err)) {
-    GST_ERROR ("Failed to start ptp helper process: %s", err->message);
-    g_clear_error (&err);
-    ret = FALSE;
-    supported = FALSE;
-    goto done;
-  }
-
-  stdin_channel = g_io_channel_unix_new (fd_r);
-  g_io_channel_set_encoding (stdin_channel, NULL, NULL);
-  g_io_channel_set_buffered (stdin_channel, FALSE);
-  g_io_channel_set_close_on_unref (stdin_channel, TRUE);
-  stdin_source =
-      g_io_create_watch (stdin_channel, G_IO_IN | G_IO_PRI | G_IO_HUP);
-  g_source_set_priority (stdin_source, G_PRIORITY_DEFAULT);
-  g_source_set_callback (stdin_source, (GSourceFunc) have_stdin_data_cb, NULL,
-      NULL);
-  g_source_attach (stdin_source, main_context);
-  g_source_unref (stdin_source);
-
-  /* Create stdout channel */
-  stdout_channel = g_io_channel_unix_new (fd_w);
-  g_io_channel_set_encoding (stdout_channel, NULL, NULL);
-  g_io_channel_set_close_on_unref (stdout_channel, TRUE);
-  g_io_channel_set_buffered (stdout_channel, FALSE);
-
-  delay_req_rand = g_rand_new ();
-  observation_system_clock =
-      g_object_new (GST_TYPE_SYSTEM_CLOCK, "name", "ptp-observation-clock",
-      NULL);
-  gst_object_ref_sink (observation_system_clock);
 
   initted = TRUE;
 
@@ -2195,24 +2923,13 @@ done:
   g_strfreev (argv);
 
   if (!ret) {
-    if (ptp_helper_pid) {
-#ifndef G_OS_WIN32
-      kill (ptp_helper_pid, SIGKILL);
-      waitpid (ptp_helper_pid, NULL, 0);
-#else
-      TerminateProcess (ptp_helper_pid, 1);
-      WaitForSingleObject (ptp_helper_pid, INFINITE);
-#endif
-      g_spawn_close_pid (ptp_helper_pid);
+    if (ptp_helper_process) {
+      g_clear_object (&stdin_pipe);
+      g_clear_object (&stdout_pipe);
+      g_clear_object (&stderr_pipe);
+      g_subprocess_force_exit (ptp_helper_process);
+      g_clear_object (&ptp_helper_process);
     }
-    ptp_helper_pid = 0;
-
-    if (stdin_channel)
-      g_io_channel_unref (stdin_channel);
-    stdin_channel = NULL;
-    if (stdout_channel)
-      g_io_channel_unref (stdout_channel);
-    stdout_channel = NULL;
 
     if (main_loop && ptp_helper_thread) {
       g_main_loop_quit (main_loop);
@@ -2241,6 +2958,40 @@ done:
 }
 
 /**
+ * gst_ptp_init:
+ * @clock_id: PTP clock id of this process' clock or %GST_PTP_CLOCK_ID_NONE
+ * @interfaces: (transfer none) (array zero-terminated=1) (allow-none): network interfaces to run the clock on
+ *
+ * Initialize the GStreamer PTP subsystem and create a PTP ordinary clock in
+ * slave-only mode for all domains on the given @interfaces with the
+ * given @clock_id.
+ *
+ * If @clock_id is %GST_PTP_CLOCK_ID_NONE, a clock id is automatically
+ * generated from the MAC address of the first network interface.
+ *
+ * This function is automatically called by gst_ptp_clock_new() with default
+ * parameters if it wasn't called before.
+ *
+ * Returns: %TRUE if the GStreamer PTP clock subsystem could be initialized.
+ *
+ * Since: 1.6
+ */
+gboolean
+gst_ptp_init (guint64 clock_id, gchar ** interfaces)
+{
+  GstStructure *config;
+  gboolean ret;
+
+  config = gst_structure_new ("config/ptp",
+      "clock-id", G_TYPE_UINT64, clock_id,
+      "interfaces", G_TYPE_STRV, interfaces, NULL);
+  ret = gst_ptp_init_full (config);
+  gst_structure_free (config);
+
+  return ret;
+}
+
+/**
  * gst_ptp_deinit:
  *
  * Deinitialize the GStreamer PTP subsystem and stop the PTP clock. If there
@@ -2256,24 +3007,13 @@ gst_ptp_deinit (void)
 
   g_mutex_lock (&ptp_lock);
 
-  if (ptp_helper_pid) {
-#ifndef G_OS_WIN32
-    kill (ptp_helper_pid, SIGKILL);
-    waitpid (ptp_helper_pid, NULL, 0);
-#else
-    TerminateProcess (ptp_helper_pid, 1);
-    WaitForSingleObject (ptp_helper_pid, INFINITE);
-#endif
-    g_spawn_close_pid (ptp_helper_pid);
+  if (ptp_helper_process) {
+    g_clear_object (&stdin_pipe);
+    g_clear_object (&stdout_pipe);
+    g_clear_object (&stderr_pipe);
+    g_subprocess_force_exit (ptp_helper_process);
+    g_clear_object (&ptp_helper_process);
   }
-  ptp_helper_pid = 0;
-
-  if (stdin_channel)
-    g_io_channel_unref (stdin_channel);
-  stdin_channel = NULL;
-  if (stdout_channel)
-    g_io_channel_unref (stdout_channel);
-  stdout_channel = NULL;
 
   if (main_loop && ptp_helper_thread) {
     GThread *tmp = ptp_helper_thread;
@@ -2317,7 +3057,8 @@ gst_ptp_deinit (void)
   }
   g_list_free (domain_data);
   domain_data = NULL;
-  g_list_foreach (domain_clocks, (GFunc) g_free, NULL);
+  // The domain_clocks list is same as domain_data
+  // and the elements are freed above already
   g_list_free (domain_clocks);
   domain_clocks = NULL;
 
@@ -2553,7 +3294,7 @@ gst_ptp_clock_get_internal_time (GstClock * clock)
 
 /**
  * gst_ptp_clock_new:
- * @name: Name of the clock
+ * @name: (nullable): Name of the clock
  * @domain: PTP domain
  *
  * Creates a new PTP clock instance that exports the PTP time of the master
@@ -2568,7 +3309,7 @@ gst_ptp_clock_get_internal_time (GstClock * clock)
  * check this with gst_clock_wait_for_sync(), the GstClock::synced signal and
  * gst_clock_is_synced().
  *
- * Returns: (transfer full): A new #GstClock
+ * Returns: (transfer full) (nullable): A new #GstClock
  *
  * Since: 1.6
  */

@@ -34,7 +34,7 @@
  * There are a number of environment variables that influence the choice of
  * platform and window system specific functionality.
  * - GST_GL_WINDOW influences the window system to use.  Common values are
- *   'x11', 'wayland', 'win32' or 'cocoa'.
+ *   'x11', 'wayland', 'surfaceless', 'win32' or 'cocoa'.
  * - GST_GL_PLATFORM influences the OpenGL platform to use.  Common values are
  *   'egl', 'glx', 'wgl' or 'cgl'.
  * - GST_GL_API influences the OpenGL API requested by the OpenGL platform.
@@ -281,14 +281,8 @@ static GstGLDisplayType
 gst_gl_display_type_from_environment (void)
 {
   const char *env = g_getenv ("GST_GL_WINDOW");
-  const char *platform = g_getenv ("GST_GL_PLATFORM");
 
-  init_debug ();
-
-  GST_INFO ("creating a display, user choice:%s (platform: %s)",
-      GST_STR_NULL (env), GST_STR_NULL (platform));
-
-  if (!env && !platform)
+  if (!env)
     return GST_GL_DISPLAY_TYPE_ANY;
 
   if (env) {
@@ -314,8 +308,10 @@ gst_gl_display_type_from_environment (void)
       return GST_GL_DISPLAY_TYPE_EAGL;
     } else if (g_strstr_len (env, 7, "android")) {
       return GST_GL_DISPLAY_TYPE_EGL;
-    } else if (g_strstr_len (env, 4, "winrt")) {
+    } else if (g_strstr_len (env, 5, "winrt")) {
       return GST_GL_DISPLAY_TYPE_EGL;
+    } else if (g_strstr_len (env, 11, "surfaceless")) {
+      return GST_GL_DISPLAY_TYPE_EGL_SURFACELESS;
     } else {
       return GST_GL_DISPLAY_TYPE_NONE;
     }
@@ -372,7 +368,7 @@ gst_gl_display_new_with_type (GstGLDisplayType type)
 #endif
   custom_new_types |= GST_GL_DISPLAY_TYPE_X11;
 #if GST_GL_HAVE_WINDOW_VIV_FB
-  if (!display && (GST_GL_DISPLAY_TYPE_VIV_FB)) {
+  if (!display && (type & GST_GL_DISPLAY_TYPE_VIV_FB)) {
     const gchar *disp_idx_str = NULL;
     gint disp_idx = 0;
     disp_idx_str = g_getenv ("GST_GL_VIV_FB");
@@ -399,9 +395,14 @@ gst_gl_display_new_with_type (GstGLDisplayType type)
   if (!display && (type & GST_GL_DISPLAY_TYPE_EGL)) {
     display = GST_GL_DISPLAY (gst_gl_display_egl_new ());
   }
+
+  if (!display && (type & GST_GL_DISPLAY_TYPE_EGL_SURFACELESS)) {
+    display = GST_GL_DISPLAY (gst_gl_display_egl_new_surfaceless ());
+  }
 #endif
   custom_new_types |= GST_GL_DISPLAY_TYPE_EGL_DEVICE;
   custom_new_types |= GST_GL_DISPLAY_TYPE_EGL;
+  custom_new_types |= GST_GL_DISPLAY_TYPE_EGL_SURFACELESS;
   custom_new_types |= GST_GL_DISPLAY_TYPE_DISPMANX;
   custom_new_types |= GST_GL_DISPLAY_TYPE_WINRT;
   custom_new_types |= GST_GL_DISPLAY_TYPE_ANDROID;
@@ -620,7 +621,7 @@ gst_context_get_gl_display (GstContext * context, GstGLDisplay ** display)
 /**
  * gst_gl_display_create_context:
  * @display: a #GstGLDisplay
- * @other_context: (transfer none): other #GstGLContext to share resources with.
+ * @other_context: (transfer none) (nullable): other #GstGLContext to share resources with.
  * @p_context: (transfer full) (out): resulting #GstGLContext
  * @error: resulting #GError
  *
@@ -739,8 +740,8 @@ gst_gl_display_remove_window (GstGLDisplay * display, GstGLWindow * window)
 /**
  * gst_gl_display_find_window:
  * @display: a #GstGLDisplay
- * @data: (closure): some data to pass to @compare_func
- * @compare_func: (scope call): a comparison function to run
+ * @data: some data to pass to @compare_func
+ * @compare_func: (scope call) (closure data): a comparison function to run
  *
  * Execute @compare_func over the list of windows stored by @display.  The
  * first argument to @compare_func is the #GstGLWindow being checked and the
@@ -769,8 +770,8 @@ gst_gl_display_find_window (GstGLDisplay * display, gpointer data,
 /**
  * gst_gl_display_retrieve_window:
  * @display: a #GstGLDisplay
- * @data: (closure): some data to pass to @compare_func
- * @compare_func: (scope call): a comparison function to run
+ * @data: some data to pass to @compare_func
+ * @compare_func: (scope call) (closure data): a comparison function to run
  *
  * Execute @compare_func over the list of windows stored by @display.  The
  * first argument to @compare_func is the #GstGLWindow being checked and the
@@ -1013,4 +1014,58 @@ gst_gl_display_remove_context (GstGLDisplay * display, GstGLContext * needle)
 
   GST_WARNING_OBJECT (display, "%" GST_PTR_FORMAT " was not found in this "
       "display", needle);
+}
+
+
+/**
+ * gst_gl_display_ensure_context:
+ * @display: a #GstGLDisplay
+ * @other_context: (transfer none)(nullable): other #GstGLContext to share resources with.
+ * @context: (inout)(transfer full)(nullable): the resulting #GstGLContext
+ * @error: (out)(transfer full)(nullable): possible error
+ *
+ * Ensures that the display has a valid GL context for the current thread. If
+ * @context already contains a valid context, this does nothing.
+ *
+ * Returns: wether @context contains a valid context.
+ *
+ * Since: 1.24
+ */
+gboolean
+gst_gl_display_ensure_context (GstGLDisplay * display,
+    GstGLContext * other_context, GstGLContext ** context, GError ** error)
+{
+  gboolean ret = FALSE;
+
+  g_return_val_if_fail (GST_IS_GL_DISPLAY (display), FALSE);
+  g_return_val_if_fail (other_context == NULL
+      || GST_IS_GL_CONTEXT (other_context), FALSE);
+  g_return_val_if_fail (context != NULL, FALSE);
+  g_return_val_if_fail (*context == NULL
+      || GST_IS_GL_CONTEXT (*context), FALSE);
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+
+  if (*context && (*context)->display == display) {
+    return TRUE;
+  }
+
+  GST_OBJECT_LOCK (display);
+  do {
+    if (*context) {
+      gst_object_unref (*context);
+      *context = NULL;
+    }
+    /* just get a GL context.  we don't care */
+    *context = gst_gl_display_get_gl_context_for_thread (display, NULL);
+    if (!*context) {
+      if (!gst_gl_display_create_context (display, other_context, &*context,
+              error)) {
+        goto out;
+      }
+    }
+  } while (!gst_gl_display_add_context (display, *context));
+  ret = TRUE;
+out:
+  GST_OBJECT_UNLOCK (display);
+  return ret;
 }

@@ -72,14 +72,14 @@ directory.
 
 ## Why is mail traffic so low on gstreamer-devel?
 
-Our main arenas for coordination and discussion are IRC and Gitlab, not
-the mailing lists. Join us in [`#gstreamer`][irc-gstreamer] on irc.oftc.net.
-There is also a [webchat interface][webchat-gstreamer]. For larger picture
-questions or getting more input from more people, a mail to the gstreamer-devel
-mailing list is never a bad idea, however.
+Our main arenas for coordination and discussion are [Matrix][matrix] and
+[Gitlab][gitlab], not the mailing lists which are being phased out. For larger
+picture questions or getting more input from more people, starting a discussion
+on [Discourse][discourse] is the best place.
 
-[irc-gstreamer]: irc://irc.oftc.net/#gstreamer
-[webchat-gstreamer]: https://webchat.oftc.net/?channels=%23gstreamer
+[matrix]: https://matrix.to/#/#gstreamer:gstreamer.org
+[gitlab]: https://gitlab.freedesktop.org/gstreamer
+[discourse]: https://discourse.gstreamer.org/
 
 ## What kind of versioning scheme does GStreamer use?
 
@@ -106,46 +106,31 @@ want it to do.
 
 ## What is the coding style for GStreamer code?
 
-Basically, the core and almost all plugin modules use K\&R with 2-space
-indenting. Just follow what's already there and you'll be fine. We only require
-code files to be indented, header may be indented manually for better
-readability. Please use spaces for indenting, not tabs, even in header files.
+The indentation style for GStreamer C code is similar to K\&R with 2-space
+indenting.
 
-Individual plugins in gst-plugins-\* or plugins that you want considered
-for addition to these modules should use the same style. It's easier if
-everything is consistent. Consistency is, of course, the goal.
+Consistent indentaiton is enforced only for C source files, we generally do
+not indent header files.
+
+In header files indentation is free-form, but please always use spaces and
+not tabs since editor settings with regard to tabs will vary. Please do not
+run the indenter on existing header files when making changes.
+
+Rust source files (.rs files) are indented with the standard `rustfmt`.
 
 One way to make sure you are following our coding style is to run your code
-(remember, only the `*.c` files, not the headers) through GNU Indent using the
-following options:
-
-```
-indent \
-  --braces-on-if-line \
-  --case-brace-indentation0 \
-  --case-indentation2 \
-  --braces-after-struct-decl-line \
-  --line-length80 \
-  --no-tabs \
-  --cuddle-else \
-  --dont-line-up-parentheses \
-  --continuation-indentation4 \
-  --honour-newlines \
-  --tab-size8 \
-  --indent-level2
-```
-
-There is also a `gst-indent` script in the GStreamer core source tree in the
-tools directory which wraps GNU Indent and uses the right options.
+(remember, only the `*.c` files, not the headers) through the `gst-indent-1.0`
+tool, which can be installed with `pip install gst-indent`.
+Alternatively you can also get the tool from the
+[gst-indent repository](https://gitlab.freedesktop.org/gstreamer/gst-indent/)
+and build it yourself.
 
 The easiest way to get the indenting right is probably to develop against a git
 checkout. The local git commit hook will ensure correct indentation.
 
-Comments should be in `/* ANSI C comment style */` and code should generally
-be compatible with ANSI C89, so please declare all variables at the beginning
-of the block, etc.
+Merge requests should always be made against git `main` branch and filed
+in GitLab.
 
-Merge requests should ideally be made against git master or a recent release.
 Please don't send patches to the mailing list. They will likely get lost there.
 
 See [How to submit patches][submit-patches] for more details.

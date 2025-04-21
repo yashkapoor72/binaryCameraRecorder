@@ -365,7 +365,12 @@ G_DEFINE_TYPE (GstDiscovererInfo, gst_discoverer_info, G_TYPE_OBJECT);
 static void
 gst_discoverer_info_init (GstDiscovererInfo * info)
 {
+#if GLIB_CHECK_VERSION(2,74,0)
+  info->missing_elements_details =
+      g_ptr_array_new_null_terminated (16, g_free, TRUE);
+#else
   info->missing_elements_details = g_ptr_array_new_with_free_func (g_free);
+#endif
 }
 
 static void
@@ -387,8 +392,6 @@ gst_discoverer_info_finalize (GObject * object)
 
   if (info->toc)
     gst_toc_unref (info->toc);
-
-  g_free (info->cachefile);
 
   g_ptr_array_unref (info->missing_elements_details);
 
@@ -449,6 +452,14 @@ gst_discoverer_info_copy (GstDiscovererInfo * ptr)
 
   if (ptr->toc)
     ret->toc = gst_toc_ref (ptr->toc);
+
+  if (ptr->missing_elements_details->len > 0) {
+    guint i;
+
+    for (i = 0; i < ptr->missing_elements_details->len; i++)
+      g_ptr_array_add (ret->missing_elements_details,
+          g_strdup (ptr->missing_elements_details->pdata[i]));
+  }
 
   g_hash_table_destroy (stream_map);
   return ret;
@@ -693,7 +704,7 @@ gst_discoverer_stream_info_get_toc (GstDiscovererStreamInfo * info)
  * gst_discoverer_stream_info_get_stream_id:
  * @info: a #GstDiscovererStreamInfo
  *
- * Returns: (transfer none): the stream ID of this stream. If you wish to
+ * Returns: (transfer none) (nullable): the stream ID of this stream. If you wish to
  * use the stream ID after the life-time of @info you will need to copy it.
  */
 const gchar *
@@ -1179,18 +1190,11 @@ const gchar **
 gst_discoverer_info_get_missing_elements_installer_details (const
     GstDiscovererInfo * info)
 {
-
   if (info->result != GST_DISCOVERER_MISSING_PLUGINS) {
     GST_WARNING_OBJECT (info, "Trying to get missing element installed details "
         "but result is not 'MISSING_PLUGINS'");
 
     return NULL;
-  }
-
-  if (info->missing_elements_details->pdata[info->missing_elements_details->
-          len]) {
-    GST_DEBUG ("Adding NULL pointer to the end of missing_elements_details");
-    g_ptr_array_add (info->missing_elements_details, NULL);
   }
 
   return (const gchar **) info->missing_elements_details->pdata;

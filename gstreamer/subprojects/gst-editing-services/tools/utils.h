@@ -39,6 +39,7 @@ typedef struct
   gchar *outputuri;
   gchar *encoding_profile;
   gchar *profile_from;
+  gchar *container_profile;
   gchar *videosink;
   gchar *audiosink;
   gboolean list_transitions;
@@ -57,7 +58,6 @@ typedef struct
 gchar * sanitize_timeline_description (gchar **args, GESLauncherParsedOptions *opts);
 gboolean get_flags_from_string (GType type, const gchar * str_flags, guint *val);
 gchar * ensure_uri (const gchar * location);
-GstEncodingProfile * parse_encoding_profile (const gchar * format);
 void print_enum (GType enum_type);
 
 void ges_print (GstDebugColorFlags c, gboolean err, gboolean nline, const gchar * format, va_list var_args);

@@ -773,6 +773,16 @@ GST_START_TEST (test_flagset)
   g_value_unset (&dest);
   g_value_unset (&value);
   g_value_unset (&value2);
+
+  /* Check that we reject flagset looking string that holds 64 bit integers. */
+  g_value_init (&value, GST_TYPE_FLAG_SET);
+  string = g_strdup ("AB24:0x0100000000000002");
+
+  fail_if (gst_value_deserialize (&value, string),
+      "matched something that isn't a flagset %s", string);
+
+  g_free (string);
+  g_value_unset (&value);
 }
 
 GST_END_TEST;
@@ -819,28 +829,28 @@ GST_START_TEST (test_deserialize_string)
     const gchar *to;
   } tests[] = {
     {
-    "\"foo\"", "foo"}, {
-    "\"foo\\%\"", "foo%"}, {
-    "\"0123456789_-+/:.\"", "0123456789_-+/:."}, {
-    "\"Hello\\ World\"", "Hello World"}, {
-    "\"Hello\\ World", "\"Hello\\ World"}, {
-    "\"\\", "\"\\"}, {
-    "\"\\0", "\"\\0"}, {
-    "\"t\\303\\274t\"", "tüt"}, {
-      /* utf8 octal sequence */
-    "", ""},                    /* empty strings */
+        "\"foo\"", "foo"}, {
+        "\"foo\\%\"", "foo%"}, {
+        "\"0123456789_-+/:.\"", "0123456789_-+/:."}, {
+        "\"Hello\\ World\"", "Hello World"}, {
+        "\"Hello\\ World", "\"Hello\\ World"}, {
+        "\"\\", "\"\\"}, {
+        "\"\\0", "\"\\0"}, {
+        "\"t\\303\\274t\"", "tüt"}, {
+          /* utf8 octal sequence */
+        "", ""},                /* empty strings */
     {
-    "\"\"", ""}, {              /* quoted empty string -> empty string */
-    "\" \"", " "}, {            /* allow spaces to be not escaped */
-    "tüüt", "tüüt"},        /* allow special chars to be not escaped */
-        /* Expected FAILURES: */
+        "\"\"", ""}, {          /* quoted empty string -> empty string */
+        "\" \"", " "}, {        /* allow spaces to be not escaped */
+        "tüüt", "tüüt"},    /* allow special chars to be not escaped */
+    /* Expected FAILURES: */
     {
-    "\"\\0\"", NULL}, {         /* unfinished escaped character */
-    "\"", NULL}, {              /* solitary quote */
-    "\"\\380\"", NULL}, {       /* invalid octal sequence */
-    "\"\\344\\204\\062\"", NULL}, {
-      /* invalid utf8: wrong end byte */
-    "\"\\344\\204\"", NULL}     /* invalid utf8: wrong number of bytes */
+        "\"\\0\"", NULL}, {     /* unfinished escaped character */
+        "\"", NULL}, {          /* solitary quote */
+        "\"\\380\"", NULL}, {   /* invalid octal sequence */
+        "\"\\344\\204\\062\"", NULL}, {
+          /* invalid utf8: wrong end byte */
+        "\"\\344\\204\"", NULL} /* invalid utf8: wrong number of bytes */
   };
   guint i;
   GValue v = { 0, };
@@ -2656,24 +2666,72 @@ GST_START_TEST (test_fraction_range)
   fail_unless (gst_value_intersect (&dest, &src, &range) == TRUE);
   fail_unless (G_VALUE_TYPE (&dest) == GST_TYPE_FRACTION);
   fail_unless (gst_value_compare (&dest, &src) == GST_VALUE_EQUAL);
+  g_value_unset (&dest);
+
+  /* Check that union of fraction + range = range */
+  fail_unless (gst_value_union (&dest, &src, &range) == TRUE);
+  fail_unless (G_VALUE_TYPE (&dest) == GST_TYPE_FRACTION_RANGE);
+  fail_unless (gst_value_compare (&dest, &range) == GST_VALUE_EQUAL);
+  g_value_unset (&dest);
+
+  /* Check that union of fraction that is not in the range fails */
+  gst_value_set_fraction (&src, 1, 20);
+  fail_unless (gst_value_union (&dest, &src, &range) == FALSE);
+  g_value_unset (&dest);
 
   /* Check that a intersection selects the overlapping range */
   gst_value_set_fraction (&start, 1, 3);
   gst_value_set_fraction (&end, 2, 3);
   gst_value_set_fraction_range (&range2, &start, &end);
-  g_value_unset (&dest);
   fail_unless (gst_value_intersect (&dest, &range, &range2) == TRUE);
   fail_unless (G_VALUE_TYPE (&dest) == GST_TYPE_FRACTION_RANGE);
+  fail_unless (gst_value_compare (&dest, &range2) == GST_VALUE_EQUAL);
+  g_value_unset (&dest);
 
+  /* Fully enclosed union: [1/4, 2/3] ∪ [1/3, 2/3] = [1/4, 2/3] */
+  fail_unless (gst_value_union (&dest, &range, &range2) == TRUE);
+  fail_unless (G_VALUE_TYPE (&dest) == GST_TYPE_FRACTION_RANGE);
+  fail_unless (gst_value_compare (&dest, &range) == GST_VALUE_EQUAL);
+  g_value_unset (&dest);
+  /* Same, but swapped args */
+  fail_unless (gst_value_union (&dest, &range2, &range) == TRUE);
+  fail_unless (G_VALUE_TYPE (&dest) == GST_TYPE_FRACTION_RANGE);
+  fail_unless (gst_value_compare (&dest, &range) == GST_VALUE_EQUAL);
+  g_value_unset (&dest);
+
+  /* Extend union: [1/5, 1/2] ∪ [1/3, 2/3] = [1/5, 2/3] */
+  gst_value_set_fraction (&start, 1, 5);
+  gst_value_set_fraction (&end, 1, 2);
+  gst_value_set_fraction_range (&range2, &start, &end);
+  fail_unless (gst_value_union (&dest, &range, &range2) == TRUE);
+  fail_unless (G_VALUE_TYPE (&dest) == GST_TYPE_FRACTION_RANGE);
+  gst_value_set_fraction (&start, 1, 5);
+  gst_value_set_fraction (&end, 2, 3);
   gst_value_set_fraction_range (&range2, &start, &end);
   fail_unless (gst_value_compare (&dest, &range2) == GST_VALUE_EQUAL);
+  g_value_unset (&dest);
+  /* Same, but swapped args */
+  gst_value_set_fraction (&start, 1, 5);
+  gst_value_set_fraction (&end, 1, 2);
+  gst_value_set_fraction_range (&range2, &start, &end);
+  fail_unless (gst_value_union (&dest, &range2, &range) == TRUE);
+  fail_unless (G_VALUE_TYPE (&dest) == GST_TYPE_FRACTION_RANGE);
+  gst_value_set_fraction (&start, 1, 5);
+  gst_value_set_fraction (&end, 2, 3);
+  gst_value_set_fraction_range (&range2, &start, &end);
+  fail_unless (gst_value_compare (&dest, &range2) == GST_VALUE_EQUAL);
+  g_value_unset (&dest);
 
   /* Check that non intersection ranges don't intersect */
   gst_value_set_fraction (&start, 4, 2);
   gst_value_set_fraction (&end, 5, 2);
   gst_value_set_fraction_range (&range2, &start, &end);
-  g_value_unset (&dest);
   fail_unless (gst_value_intersect (&dest, &range, &range2) == FALSE);
+
+  /* [1/4, 2/3] ∪ [4/2, 5/2] should fail */
+  fail_unless (gst_value_union (&dest, &range, &range2) == FALSE);
+  /* Same, but swapped args */
+  fail_unless (gst_value_union (&dest, &range2, &range) == FALSE);
 
   g_value_unset (&start);
   g_value_unset (&end);
@@ -2758,7 +2816,8 @@ GST_START_TEST (test_compare_caps)
 {
   GValue value = { 0 }
   , value2 = {
-  0};
+    0
+  };
 
   g_value_init (&value, GST_TYPE_CAPS);
   g_value_init (&value2, GST_TYPE_CAPS);
@@ -3232,21 +3291,22 @@ GST_START_TEST (test_stepped_int_range_ops)
     const gchar *result;
   } ranges[] = {
     {
-    "[16, 4096, 16]", "inter", "[100, 200, 10]", "160"}, {
-    "[16, 4096, 16]", "inter", "[100, 200, 100]", NULL}, {
-    "[16, 4096, 16]", "inter", "[0, 512, 256]", "[256, 512, 256]"}, {
-    "[16, 32, 16]", "union", "[32, 96, 16]", "[16, 96, 16]"}, {
-    "[16, 32, 16]", "union", "[48, 96, 16]", "[16, 96, 16]"}, {
-    "[112, 192, 16]", "union", "[48, 96, 16]", "[48, 192, 16]"}, {
-    "[16, 32, 16]", "union", "[64, 96, 16]", NULL}, {
-    "[112, 192, 16]", "union", "[48, 96, 8]", NULL}, {
-    "[10, 20, 5]", "union", "10", "[10, 20, 5]"}, {
-    "[10, 20, 5]", "union", "20", "[10, 20, 5]"}, {
-    "[10, 20, 5]", "union", "15", "[10, 20, 5]"}, {
-    "[10, 20, 5]", "union", "5", "[5, 20, 5]"}, {
-    "[10, 20, 5]", "union", "12", NULL}, {
-    "[10, 20, 5]", "union", "30", NULL}, {
-  "[10, 20, 5]", "union", "25", "[10, 25, 5]"},};
+        "[16, 4096, 16]", "inter", "[100, 200, 10]", "160"}, {
+        "[16, 4096, 16]", "inter", "[100, 200, 100]", NULL}, {
+        "[16, 4096, 16]", "inter", "[0, 512, 256]", "[256, 512, 256]"}, {
+        "[16, 32, 16]", "union", "[32, 96, 16]", "[16, 96, 16]"}, {
+        "[16, 32, 16]", "union", "[48, 96, 16]", "[16, 96, 16]"}, {
+        "[112, 192, 16]", "union", "[48, 96, 16]", "[48, 192, 16]"}, {
+        "[16, 32, 16]", "union", "[64, 96, 16]", NULL}, {
+        "[112, 192, 16]", "union", "[48, 96, 8]", NULL}, {
+        "[10, 20, 5]", "union", "10", "[10, 20, 5]"}, {
+        "[10, 20, 5]", "union", "20", "[10, 20, 5]"}, {
+        "[10, 20, 5]", "union", "15", "[10, 20, 5]"}, {
+        "[10, 20, 5]", "union", "5", "[5, 20, 5]"}, {
+        "[10, 20, 5]", "union", "12", NULL}, {
+        "[10, 20, 5]", "union", "30", NULL}, {
+        "[10, 20, 5]", "union", "25", "[10, 25, 5]"},
+  };
 
   for (n = 0; n < G_N_ELEMENTS (ranges); ++n) {
     gchar *end = NULL;
@@ -3349,8 +3409,9 @@ GST_START_TEST (test_structure_single_ops)
     gboolean can_fixate;
   } single_struct[] = {
     {
-    "foo,bar=(int)1", TRUE, TRUE}, {
-  "foo,bar=(int)[1,2]", FALSE, TRUE},};
+        "foo,bar=(int)1", TRUE, TRUE}, {
+        "foo,bar=(int)[1,2]", FALSE, TRUE},
+  };
   gint i;
 
   for (i = 0; i < G_N_ELEMENTS (single_struct); i++) {
@@ -3751,7 +3812,7 @@ GST_END_TEST;
 GST_START_TEST (test_serialize_deserialize_caps_features)
 {
   GstCapsFeatures *test_feats[] = {
-    gst_caps_features_new ("abc:val1", "xyz:val2", NULL),
+    gst_caps_features_new_static_str ("abc:val1", "xyz:val2", NULL),
     gst_caps_features_new ("feat:val", NULL),
     gst_caps_features_new_any (),
     gst_caps_features_new_empty ()
@@ -3940,6 +4001,68 @@ GST_START_TEST (test_serialize_deserialize_sample)
 
 GST_END_TEST;
 
+GST_START_TEST (test_serialize_deserialize_strv)
+{
+  GValue v = G_VALUE_INIT;
+  g_value_init (&v, G_TYPE_STRV);
+
+  fail_if (gst_value_deserialize (&v, "<"));
+  fail_if (gst_value_deserialize (&v, "< foo"));
+  fail_if (gst_value_deserialize (&v, "< \"foo"));
+  fail_if (gst_value_deserialize (&v, "< \"foo\\"));
+  fail_if (gst_value_deserialize (&v, "< \"foo\""));
+  fail_if (gst_value_deserialize (&v, "< \"foo\","));
+
+  struct
+  {
+    const gchar *str;
+    const gchar *deserialized[3];
+    const gchar *serialized;
+  } tests[] = {
+    {"", {NULL}, "<>"},
+    {"foo", {"foo", NULL}, "<\"foo\">"},
+    {"foo ", {"foo ", NULL}, "<\"foo \">"},
+    {"foo ,", {"foo ", "", NULL}, "<\"foo \",\"\">"},
+    {"foo , ", {"foo ", " ", NULL}, "<\"foo \",\" \">"},
+    {"foo,bar", {"foo", "bar", NULL}, "<\"foo\",\"bar\">"},
+    {"<>", {NULL}, "<>"},
+    {"<\"\">", {"", NULL}, "<\"\">"},
+    {"< \" \" > ", {" ", NULL}, "<\" \">"},
+    {"<\"foo\",> ", {"foo", NULL}, "<\"foo\">"},
+    {"<\"foo\" , > ", {"foo", NULL}, "<\"foo\">"},
+    {"<\"foo\",\"bar\"> ", {"foo", "bar", NULL}, "<\"foo\",\"bar\">"},
+    {"<\"foo\" , \"bar\"> ", {"foo", "bar", NULL}, "<\"foo\",\"bar\">"},
+    {"<\"\\\"\\\\,<>\">", {"\"\\,<>", NULL}, "<\"\\\"\\\\,<>\">"},
+  };
+
+  for (int i = 0; i < G_N_ELEMENTS (tests); i++) {
+    const gchar *str = tests[i].str;
+    const gchar *const *deserialized = tests[i].deserialized;
+
+    /* Deserialize */
+    if (!gst_value_deserialize (&v, str))
+      fail ("Failed to deserialize %dth '%s'", i, str);
+    const gchar *const *strv = g_value_get_boxed (&v);
+    if (!g_strv_equal (strv, deserialized)) {
+      gchar *strv_str = g_strjoinv (", ", (gchar **) strv);
+      gchar *expected_str = g_strjoinv (", ", (gchar **) deserialized);
+      fail ("Deserialized %dth '%s' to '%s', expected '%s'", i, str, strv_str,
+          expected_str);
+    }
+
+    /* Re-serialize */
+    gchar *serialized = gst_value_serialize (&v);
+    if (!g_str_equal (serialized, tests[i].serialized))
+      fail ("Serialized %dth '%s' to '%s', expected '%s'", i, str, serialized,
+          tests[i].serialized);
+    g_free (serialized);
+
+    g_value_reset (&v);
+  }
+}
+
+GST_END_TEST;
+
 static Suite *
 gst_value_suite (void)
 {
@@ -4002,6 +4125,7 @@ gst_value_suite (void)
   tcase_add_test (tc_chain, test_serialize_deserialize_caps_features);
   tcase_add_test (tc_chain, test_serialize_deserialize_tag_list);
   tcase_add_test (tc_chain, test_serialize_deserialize_sample);
+  tcase_add_test (tc_chain, test_serialize_deserialize_strv);
 
   return s;
 }

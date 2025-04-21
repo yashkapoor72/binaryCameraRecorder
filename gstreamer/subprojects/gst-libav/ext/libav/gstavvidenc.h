@@ -40,7 +40,8 @@ struct _GstFFMpegVidEnc
 
   AVCodecContext *context;
   AVFrame *picture;
-  gboolean opened;
+  GstClockTime pts_offset;
+  gint64 last_pts_ff;
   gboolean need_reopen;
   gboolean discont;
   guint pass;

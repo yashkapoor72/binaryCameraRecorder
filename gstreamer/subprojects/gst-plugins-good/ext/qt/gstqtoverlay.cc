@@ -19,7 +19,7 @@
  */
 
 /**
- * SECTION:gstqtoverlay
+ * SECTION:element-qmlgloverlay
  *
  * qmlgloverlay provides a way to render an almost-arbitrary QML scene within
  * GStreamer pipeline using the same OpenGL context that GStreamer uses
@@ -91,11 +91,40 @@
 #define GST_CAT_DEFAULT gst_debug_qt_gl_overlay
 GST_DEBUG_CATEGORY (GST_CAT_DEFAULT);
 
+/* *INDENT-OFF* */
+static GstStaticPadTemplate qt_overlay_src_pad_template =
+GST_STATIC_PAD_TEMPLATE ("src",
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS ("video/x-raw(" GST_CAPS_FEATURE_MEMORY_GL_MEMORY "), "
+      "format = (string) RGBA, "
+      "width = " GST_VIDEO_SIZE_RANGE ", "
+      "height = " GST_VIDEO_SIZE_RANGE ", "
+      "framerate = " GST_VIDEO_FPS_RANGE ","
+      "texture-target = (string) 2D"
+    ));
+
+static GstStaticPadTemplate qt_overlay_sink_pad_template =
+GST_STATIC_PAD_TEMPLATE ("sink",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS ("video/x-raw(ANY), "
+      "format = (string) { RGBA, BGRA, YV12 }, "
+      "width = " GST_VIDEO_SIZE_RANGE ", "
+      "height = " GST_VIDEO_SIZE_RANGE ", "
+      "framerate = " GST_VIDEO_FPS_RANGE ","
+      "texture-target = (string) 2D"
+    ));
+/* *INDENT-ON* */
+
 static void gst_qt_overlay_finalize (GObject * object);
 static void gst_qt_overlay_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * param_spec);
 static void gst_qt_overlay_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * param_spec);
+
+static GstCaps * gst_qt_overlay_transform_internal_caps (GstGLFilter * filter,
+    GstPadDirection direction, GstCaps * caps, GstCaps * filter_caps);
 
 static gboolean gst_qt_overlay_gl_start (GstGLBaseFilter * bfilter);
 static void gst_qt_overlay_gl_stop (GstGLBaseFilter * bfilter);
@@ -116,6 +145,7 @@ enum
   PROP_WIDGET,
   PROP_QML_SCENE,
   PROP_ROOT_ITEM,
+  PROP_DEPTH_AND_STENCIL_BUFFER,
 };
 
 enum
@@ -176,6 +206,23 @@ gst_qt_overlay_class_init (GstQtOverlayClass * klass)
           (GParamFlags) (G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
 
   /**
+   * GstQtOverlay:depth-buffer:
+   *
+   * Instructs QML to not use a depth or stencil buffer when rendering.
+   *
+   * WARNING: Disabling the depth and stencil buffer may cause QML to
+   * incorrectly render the provided scene.
+   *
+   * Since: 1.26
+   */
+  g_object_class_install_property (gobject_class, PROP_DEPTH_AND_STENCIL_BUFFER,
+      g_param_spec_boolean ("depth-buffer", "Depth and Stencil Buffer",
+          "Use depth and stencil buffer for the rendering of the scene. "
+          "Might corrupt the rendering when set to FALSE! "
+          "Only set to FALSE after carefully checking the targeted QML scene.", TRUE,
+          (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY)));
+
+  /**
    * GstQmlGLOverlay::qml-scene-initialized
    * @element: the #GstQmlGLOverlay
    * @user_data: user provided data
@@ -193,7 +240,10 @@ gst_qt_overlay_class_init (GstQtOverlayClass * klass)
       g_signal_new ("qml-scene-destroyed", G_TYPE_FROM_CLASS (klass),
       G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
 
-  gst_gl_filter_add_rgba_pad_templates (glfilter_class);
+  gst_element_class_add_static_pad_template (element_class,
+      &qt_overlay_src_pad_template);
+  gst_element_class_add_static_pad_template (element_class,
+      &qt_overlay_sink_pad_template);
 
   btrans_class->prepare_output_buffer = gst_qt_overlay_prepare_output_buffer;
   btrans_class->transform = gst_qt_overlay_transform;
@@ -202,6 +252,8 @@ gst_qt_overlay_class_init (GstQtOverlayClass * klass)
   glbasefilter_class->gl_stop = gst_qt_overlay_gl_stop;
   glbasefilter_class->gl_set_caps = gst_qt_overlay_gl_set_caps;
 
+  glfilter_class->transform_internal_caps = gst_qt_overlay_transform_internal_caps;
+
   element_class->change_state = gst_qt_overlay_change_state;
 }
 
@@ -209,6 +261,7 @@ static void
 gst_qt_overlay_init (GstQtOverlay * qt_overlay)
 {
   qt_overlay->widget = QSharedPointer<QtGLVideoItemInterface>();
+  qt_overlay->depth_buffer = TRUE;
   qt_overlay->qml_scene = NULL;
 }
 
@@ -243,6 +296,9 @@ gst_qt_overlay_set_property (GObject * object, guint prop_id,
     case PROP_QML_SCENE:
       g_free (qt_overlay->qml_scene);
       qt_overlay->qml_scene = g_value_dup_string (value);
+      break;
+    case PROP_DEPTH_AND_STENCIL_BUFFER:
+      qt_overlay->depth_buffer = g_value_get_boolean (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -282,6 +338,9 @@ gst_qt_overlay_get_property (GObject * object, guint prop_id,
       }
       GST_OBJECT_UNLOCK (qt_overlay);
       break;
+     case PROP_DEPTH_AND_STENCIL_BUFFER:
+      g_value_set_boolean(value, qt_overlay->depth_buffer);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -307,7 +366,7 @@ gst_qt_overlay_gl_start (GstGLBaseFilter * bfilter)
 
   GST_OBJECT_LOCK (bfilter);
   qt_overlay->renderer = new GstQuickRenderer;
-  if (!qt_overlay->renderer->init (bfilter->context, &error)) {
+  if (!qt_overlay->renderer->init (bfilter->context, qt_overlay->depth_buffer, &error)) {
     GST_ELEMENT_ERROR (GST_ELEMENT (bfilter), RESOURCE, NOT_FOUND,
         ("%s", error->message), (NULL));
     delete qt_overlay->renderer;
@@ -396,6 +455,24 @@ gst_qt_overlay_gl_set_caps (GstGLBaseFilter * bfilter, GstCaps * in_caps,
       GST_VIDEO_INFO_HEIGHT (&filter->out_info));
 
   return TRUE;
+}
+
+static GstCaps *
+gst_qt_overlay_transform_internal_caps (GstGLFilter * filter,
+    GstPadDirection direction, GstCaps * caps, GstCaps * filter_caps)
+{
+  GstCaps *tmp = GST_GL_FILTER_CLASS (parent_class)->transform_internal_caps (filter, direction, caps, filter_caps);
+  int i, n;
+
+  n = gst_caps_get_size (tmp);
+  for (i = 0; i < n; i++) {
+    GstStructure *s = gst_caps_get_structure (tmp, i);
+
+    gst_structure_remove_fields (s, "format", "colorimetry", "chroma-site",
+        "texture-target", NULL);
+  }
+
+  return tmp;
 }
 
 static GstFlowReturn

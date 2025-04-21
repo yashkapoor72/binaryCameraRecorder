@@ -69,7 +69,9 @@ static GstStaticPadTemplate webm_videosink_templ =
     GST_PAD_SINK,
     GST_PAD_REQUEST,
     GST_STATIC_CAPS ("video/x-vp8, " COMMON_VIDEO_CAPS ";"
-        "video/x-vp9, " COMMON_VIDEO_CAPS ";" "video/x-av1, " COMMON_VIDEO_CAPS)
+        "video/x-vp9, " COMMON_VIDEO_CAPS ";" "video/x-av1, "
+        "stream-format = (string) \"obu-stream\", "
+        "alignment = (string) \"tu\", " COMMON_VIDEO_CAPS)
     );
 
 static GstStaticPadTemplate webm_audiosink_templ =
@@ -85,10 +87,10 @@ gst_webm_mux_class_init (GstWebMMuxClass * klass)
 {
   GstElementClass *gstelement_class = (GstElementClass *) klass;
 
-  gst_element_class_add_static_pad_template (gstelement_class,
-      &webm_videosink_templ);
-  gst_element_class_add_static_pad_template (gstelement_class,
-      &webm_audiosink_templ);
+  gst_element_class_add_static_pad_template_with_gtype (gstelement_class,
+      &webm_videosink_templ, GST_TYPE_MATROSKA_MUX_PAD);
+  gst_element_class_add_static_pad_template_with_gtype (gstelement_class,
+      &webm_audiosink_templ, GST_TYPE_MATROSKA_MUX_PAD);
   gst_element_class_add_static_pad_template (gstelement_class, &webm_src_templ);
   gst_element_class_set_static_metadata (gstelement_class, "WebM muxer",
       "Codec/Muxer",

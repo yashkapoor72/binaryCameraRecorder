@@ -31,6 +31,7 @@
 #include <errno.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavutil/cpu.h>
 #include <libavutil/opt.h>
 
 #include <gst/gst.h>
@@ -47,6 +48,8 @@ enum
   PROP_0,
   PROP_CFG_BASE,
 };
+
+GST_DEBUG_CATEGORY_STATIC (GST_CAT_PERFORMANCE);
 
 static void gst_ffmpegaudenc_class_init (GstFFMpegAudEncClass * klass);
 static void gst_ffmpegaudenc_base_init (GstFFMpegAudEncClass * klass);
@@ -150,6 +153,8 @@ gst_ffmpegaudenc_class_init (GstFFMpegAudEncClass * klass)
       GST_DEBUG_FUNCPTR (gst_ffmpegaudenc_set_format);
   gstaudioencoder_class->handle_frame =
       GST_DEBUG_FUNCPTR (gst_ffmpegaudenc_handle_frame);
+
+  GST_DEBUG_CATEGORY_GET (GST_CAT_PERFORMANCE, "GST_PERFORMANCE");
 }
 
 static void
@@ -161,10 +166,7 @@ gst_ffmpegaudenc_init (GstFFMpegAudEnc * ffmpegaudenc)
   GST_PAD_SET_ACCEPT_TEMPLATE (GST_AUDIO_ENCODER_SINK_PAD (ffmpegaudenc));
 
   /* ffmpeg objects */
-  ffmpegaudenc->context = avcodec_alloc_context3 (klass->in_plugin);
   ffmpegaudenc->refcontext = avcodec_alloc_context3 (klass->in_plugin);
-  ffmpegaudenc->opened = FALSE;
-  ffmpegaudenc->frame = av_frame_alloc ();
 
   gst_audio_encoder_set_drainable (GST_AUDIO_ENCODER (ffmpegaudenc), TRUE);
 }
@@ -186,18 +188,12 @@ static gboolean
 gst_ffmpegaudenc_start (GstAudioEncoder * encoder)
 {
   GstFFMpegAudEnc *ffmpegaudenc = (GstFFMpegAudEnc *) encoder;
-  GstFFMpegAudEncClass *oclass =
-      (GstFFMpegAudEncClass *) G_OBJECT_GET_CLASS (ffmpegaudenc);
-
-  ffmpegaudenc->opened = FALSE;
-  ffmpegaudenc->need_reopen = FALSE;
 
   avcodec_free_context (&ffmpegaudenc->context);
-  ffmpegaudenc->context = avcodec_alloc_context3 (oclass->in_plugin);
-  if (ffmpegaudenc->context == NULL) {
-    GST_DEBUG_OBJECT (ffmpegaudenc, "Failed to set context defaults");
-    return FALSE;
-  }
+  av_frame_free (&ffmpegaudenc->frame);
+  ffmpegaudenc->need_reopen = FALSE;
+
+  ffmpegaudenc->frame = av_frame_alloc ();
 
   return TRUE;
 }
@@ -208,8 +204,8 @@ gst_ffmpegaudenc_stop (GstAudioEncoder * encoder)
   GstFFMpegAudEnc *ffmpegaudenc = (GstFFMpegAudEnc *) encoder;
 
   /* close old session */
-  gst_ffmpeg_avcodec_close (ffmpegaudenc->context);
-  ffmpegaudenc->opened = FALSE;
+  avcodec_free_context (&ffmpegaudenc->context);
+  av_frame_free (&ffmpegaudenc->frame);
   ffmpegaudenc->need_reopen = FALSE;
 
   return TRUE;
@@ -220,7 +216,7 @@ gst_ffmpegaudenc_flush (GstAudioEncoder * encoder)
 {
   GstFFMpegAudEnc *ffmpegaudenc = (GstFFMpegAudEnc *) encoder;
 
-  if (ffmpegaudenc->opened) {
+  if (ffmpegaudenc->context) {
     avcodec_flush_buffers (ffmpegaudenc->context);
   }
 }
@@ -239,14 +235,11 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
   ffmpegaudenc->need_reopen = FALSE;
 
   /* close old session */
-  if (ffmpegaudenc->opened) {
-    avcodec_free_context (&ffmpegaudenc->context);
-    ffmpegaudenc->opened = FALSE;
-    ffmpegaudenc->context = avcodec_alloc_context3 (oclass->in_plugin);
-    if (ffmpegaudenc->context == NULL) {
-      GST_DEBUG_OBJECT (ffmpegaudenc, "Failed to set context defaults");
-      return FALSE;
-    }
+  avcodec_free_context (&ffmpegaudenc->context);
+  ffmpegaudenc->context = avcodec_alloc_context3 (oclass->in_plugin);
+  if (ffmpegaudenc->context == NULL) {
+    GST_DEBUG_OBJECT (ffmpegaudenc, "Failed to set context defaults");
+    return FALSE;
   }
 
   gst_ffmpeg_cfg_fill_context (G_OBJECT (ffmpegaudenc), ffmpegaudenc->context);
@@ -256,9 +249,21 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
   if (!ffmpegaudenc->context->time_base.den) {
     ffmpegaudenc->context->time_base.den = GST_AUDIO_INFO_RATE (info);
     ffmpegaudenc->context->time_base.num = 1;
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(60, 31, 100)
     ffmpegaudenc->context->ticks_per_frame = 1;
+#endif
   }
-
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
+  if (ffmpegaudenc->context->ch_layout.order != AV_CHANNEL_ORDER_UNSPEC) {
+    gst_ffmpeg_channel_layout_to_gst (&ffmpegaudenc->context->ch_layout,
+        ffmpegaudenc->context->ch_layout.nb_channels,
+        ffmpegaudenc->ffmpeg_layout);
+    ffmpegaudenc->needs_reorder =
+        (memcmp (ffmpegaudenc->ffmpeg_layout, info->position,
+            sizeof (GstAudioChannelPosition) *
+            ffmpegaudenc->context->ch_layout.nb_channels) != 0);
+  }
+#else
   if (ffmpegaudenc->context->channel_layout) {
     gst_ffmpeg_channel_layout_to_gst (ffmpegaudenc->context->channel_layout,
         ffmpegaudenc->context->channels, ffmpegaudenc->ffmpeg_layout);
@@ -267,6 +272,7 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
             sizeof (GstAudioChannelPosition) *
             ffmpegaudenc->context->channels) != 0);
   }
+#endif
 
   /* some codecs support more than one format, first auto-choose one */
   GST_DEBUG_OBJECT (ffmpegaudenc, "picking an output format ...");
@@ -285,12 +291,8 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
   /* open codec */
   if (gst_ffmpeg_avcodec_open (ffmpegaudenc->context, oclass->in_plugin) < 0) {
     gst_caps_unref (allowed_caps);
-    avcodec_free_context (&ffmpegaudenc->context);
     GST_DEBUG_OBJECT (ffmpegaudenc, "avenc_%s: Failed to open FFMPEG codec",
         oclass->in_plugin->name);
-    ffmpegaudenc->context = avcodec_alloc_context3 (oclass->in_plugin);
-    if (ffmpegaudenc->context == NULL)
-      GST_DEBUG_OBJECT (ffmpegaudenc, "Failed to set context defaults");
 
     if ((oclass->in_plugin->capabilities & AV_CODEC_CAP_EXPERIMENTAL) &&
         ffmpegaudenc->context->strict_std_compliance !=
@@ -302,6 +304,7 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
               "or of good quality. If you must use it anyway, set the "
               "compliance property to experimental"));
     }
+    avcodec_free_context (&ffmpegaudenc->context);
     return FALSE;
   }
 
@@ -313,9 +316,6 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
     gst_caps_unref (allowed_caps);
     avcodec_free_context (&ffmpegaudenc->context);
     GST_DEBUG ("Unsupported codec - no caps found");
-    ffmpegaudenc->context = avcodec_alloc_context3 (oclass->in_plugin);
-    if (ffmpegaudenc->context == NULL)
-      GST_DEBUG_OBJECT (ffmpegaudenc, "Failed to set context defaults");
     return FALSE;
   }
 
@@ -324,6 +324,7 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
   gst_caps_unref (other_caps);
   if (gst_caps_is_empty (icaps)) {
     gst_caps_unref (icaps);
+    avcodec_free_context (&ffmpegaudenc->context);
     return FALSE;
   }
   icaps = gst_caps_fixate (icaps);
@@ -332,9 +333,6 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
           icaps)) {
     avcodec_free_context (&ffmpegaudenc->context);
     gst_caps_unref (icaps);
-    ffmpegaudenc->context = avcodec_alloc_context3 (oclass->in_plugin);
-    if (ffmpegaudenc->context == NULL)
-      GST_DEBUG_OBJECT (ffmpegaudenc, "Failed to set context defaults");
     return FALSE;
   }
   gst_caps_unref (icaps);
@@ -372,8 +370,6 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
   }
 
   /* success! */
-  ffmpegaudenc->opened = TRUE;
-  ffmpegaudenc->need_reopen = FALSE;
 
   return TRUE;
 }
@@ -381,8 +377,7 @@ gst_ffmpegaudenc_set_format (GstAudioEncoder * encoder, GstAudioInfo * info)
 static void
 gst_ffmpegaudenc_free_avpacket (gpointer pkt)
 {
-  av_packet_unref ((AVPacket *) pkt);
-  g_slice_free (AVPacket, pkt);
+  av_packet_free ((AVPacket **) & pkt);
 }
 
 typedef struct
@@ -390,7 +385,7 @@ typedef struct
   GstBuffer *buffer;
   GstMapInfo map;
 
-  guint8 **ext_data_array, *ext_data;
+  guint8 *ext_data;
 } BufferInfo;
 
 static void
@@ -403,9 +398,8 @@ buffer_info_free (void *opaque, guint8 * data)
     gst_buffer_unref (info->buffer);
   } else {
     av_freep (&info->ext_data);
-    av_freep (&info->ext_data_array);
   }
-  g_slice_free (BufferInfo, info);
+  g_free (info);
 }
 
 static GstFlowReturn
@@ -425,7 +419,7 @@ gst_ffmpegaudenc_send_frame (GstFFMpegAudEnc * ffmpegaudenc, GstBuffer * buffer)
   ctx = ffmpegaudenc->context;
 
   if (buffer != NULL) {
-    BufferInfo *buffer_info = g_slice_new0 (BufferInfo);
+    BufferInfo *buffer_info = g_new0 (BufferInfo, 1);
     guint8 *audio_in;
     guint in_size;
 
@@ -441,8 +435,13 @@ gst_ffmpegaudenc_send_frame (GstFFMpegAudEnc * ffmpegaudenc, GstBuffer * buffer)
     planar = av_sample_fmt_is_planar (ffmpegaudenc->context->sample_fmt);
     frame->format = ffmpegaudenc->context->sample_fmt;
     frame->sample_rate = ffmpegaudenc->context->sample_rate;
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
+    av_channel_layout_copy (&frame->ch_layout,
+        &ffmpegaudenc->context->ch_layout);
+#else
     frame->channels = ffmpegaudenc->context->channels;
     frame->channel_layout = ffmpegaudenc->context->channel_layout;
+#endif
 
     if (planar && info->channels > 1) {
       gint channels;
@@ -455,7 +454,7 @@ gst_ffmpegaudenc_send_frame (GstFFMpegAudEnc * ffmpegaudenc, GstBuffer * buffer)
           av_buffer_create (NULL, 0, buffer_info_free, buffer_info, 0);
 
       if (info->channels > AV_NUM_DATA_POINTERS) {
-        buffer_info->ext_data_array = frame->extended_data =
+        frame->extended_data =
             av_malloc_array (info->channels, sizeof (uint8_t *));
       } else {
         frame->extended_data = frame->data;
@@ -523,7 +522,27 @@ gst_ffmpegaudenc_send_frame (GstFFMpegAudEnc * ffmpegaudenc, GstBuffer * buffer)
       gst_buffer_unref (buffer);
       buffer_info->buffer = NULL;
     } else {
-      frame->data[0] = audio_in;
+      // This is the worst case requirement. It might be possible to query the
+      // specific alignment requirement for the encoder and transforms in use.
+      size_t min_align = av_cpu_max_align ();
+
+      if (((size_t) audio_in & (min_align - 1)) == 0) {
+        frame->data[0] = audio_in;
+      } else {
+        GST_CAT_TRACE_OBJECT (GST_CAT_PERFORMANCE, ffmpegaudenc,
+            "Copying input data at %p to ensure minimum alignment of %zu bytes",
+            audio_in, min_align);
+
+        buffer_info->ext_data = av_memdup (audio_in, in_size);
+        frame->data[0] = buffer_info->ext_data;
+
+        // Todo: could probably avoid the buffer_info helper struct allocation
+        // in this case (and above too)
+        gst_buffer_unmap (buffer, &buffer_info->map);
+        gst_buffer_unref (buffer);
+        buffer_info->buffer = NULL;
+      }
+
       frame->extended_data = frame->data;
       frame->linesize[0] = in_size;
       frame->nb_samples = nsamples = in_size / info->bpf;
@@ -579,8 +598,7 @@ gst_ffmpegaudenc_receive_packet (GstFFMpegAudEnc * ffmpegaudenc,
 
   ctx = ffmpegaudenc->context;
 
-  pkt = g_slice_new0 (AVPacket);
-
+  pkt = av_packet_alloc ();
   res = avcodec_receive_packet (ctx, pkt);
 
   if (res == 0) {
@@ -619,7 +637,7 @@ gst_ffmpegaudenc_receive_packet (GstFFMpegAudEnc * ffmpegaudenc,
     *got_packet = TRUE;
   } else {
     GST_LOG_OBJECT (ffmpegaudenc, "no output produced");
-    g_slice_free (AVPacket, pkt);
+    av_packet_free (&pkt);
     ret = GST_FLOW_OK;
     *got_packet = FALSE;
   }
@@ -632,6 +650,9 @@ gst_ffmpegaudenc_drain (GstFFMpegAudEnc * ffmpegaudenc)
 {
   GstFlowReturn ret = GST_FLOW_OK;
   gboolean got_packet;
+
+  if (!ffmpegaudenc->context)
+    return GST_FLOW_OK;
 
   ret = gst_ffmpegaudenc_send_frame (ffmpegaudenc, NULL);
 
@@ -666,7 +687,7 @@ gst_ffmpegaudenc_handle_frame (GstAudioEncoder * encoder, GstBuffer * inbuf)
 
   ffmpegaudenc = (GstFFMpegAudEnc *) encoder;
 
-  if (G_UNLIKELY (!ffmpegaudenc->opened))
+  if (G_UNLIKELY (!ffmpegaudenc->context))
     goto not_negotiated;
 
   if (!inbuf)
@@ -735,7 +756,7 @@ gst_ffmpegaudenc_set_property (GObject * object,
 
   ffmpegaudenc = (GstFFMpegAudEnc *) (object);
 
-  if (ffmpegaudenc->opened) {
+  if (ffmpegaudenc->context) {
     GST_WARNING_OBJECT (ffmpegaudenc,
         "Can't change properties once encoder is setup !");
     return;
@@ -793,6 +814,11 @@ gst_ffmpegaudenc_register (GstPlugin * plugin)
     /* Skip non-AV codecs */
     if (in_plugin->type != AVMEDIA_TYPE_AUDIO)
       continue;
+
+    /* Skip formats we don't handle */
+    if (!gst_ffmpeg_codecid_is_known (in_plugin->id)) {
+      continue;
+    }
 
     /* no quasi codecs, please */
     if (in_plugin->id == AV_CODEC_ID_PCM_S16LE_PLANAR ||

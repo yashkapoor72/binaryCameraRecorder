@@ -72,6 +72,12 @@ nle_object_translate_incoming_seek (NleObject * object, GstEvent * event)
   if (G_UNLIKELY (format != GST_FORMAT_TIME))
     goto invalid_format;
 
+
+  if (NLE_IS_SOURCE (object) && NLE_SOURCE (object)->reverse) {
+    GST_DEBUG_OBJECT (object, "Reverse playback! %d", seqnum);
+    rate = -rate;
+  }
+
   /* convert cur */
   ncurtype = GST_SEEK_TYPE_SET;
   if (G_LIKELY ((curtype == GST_SEEK_TYPE_SET)
@@ -589,7 +595,7 @@ ghostpad_query_function (GstPad * ghostpad, GstObject * parent,
 static void
 internal_pad_finalizing (NlePadPrivate * priv, GObject * pad G_GNUC_UNUSED)
 {
-  g_slice_free (NlePadPrivate, priv);
+  g_free (priv);
 }
 
 static inline GstPad *
@@ -630,7 +636,7 @@ control_internal_pad (GstPad * ghostpad, NleObject * object)
   if (G_UNLIKELY (!(priv = gst_pad_get_element_private (internal)))) {
     GST_DEBUG_OBJECT (internal,
         "Creating a NlePadPrivate to put in element_private");
-    priv = g_slice_new0 (NlePadPrivate);
+    priv = g_new0 (NlePadPrivate, 1);
 
     /* Remember existing pad functions */
     priv->eventfunc = GST_PAD_EVENTFUNC (internal);
@@ -729,7 +735,7 @@ nle_object_ghost_pad_no_target (NleObject * object, const gchar * name,
 
 
   /* remember the existing ghostpad event/query/link/unlink functions */
-  priv = g_slice_new0 (NlePadPrivate);
+  priv = g_new0 (NlePadPrivate, 1);
   priv->dir = dir;
   priv->object = object;
 
@@ -763,7 +769,7 @@ nle_object_remove_ghost_pad (NleObject * object, GstPad * ghost)
   gst_ghost_pad_set_target (GST_GHOST_PAD (ghost), NULL);
   gst_element_remove_pad (GST_ELEMENT (object), ghost);
   if (priv)
-    g_slice_free (NlePadPrivate, priv);
+    g_free (priv);
 }
 
 gboolean

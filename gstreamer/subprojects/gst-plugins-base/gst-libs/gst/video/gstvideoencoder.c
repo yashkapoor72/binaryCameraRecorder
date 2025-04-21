@@ -137,8 +137,12 @@ struct _GstVideoEncoderPrivate
   /* Tracks whether the latency message was posted at least once */
   gboolean posted_latency_msg;
 
+  /* events that should apply to the current frame */
   /* FIXME 2.0: Use a GQueue or similar, see GstVideoCodecFrame::events */
   GList *current_frame_events;
+  /* events that should be pushed before the next frame */
+  /* FIXME 2.0: Use a GQueue or similar, see GstVideoCodecFrame::events */
+  GList *pending_events;
 
   GList *headers;
   gboolean new_headers;         /* Whether new headers were just set */
@@ -198,14 +202,14 @@ struct _ForcedKeyUnitEvent
 static void
 forced_key_unit_event_free (ForcedKeyUnitEvent * evt)
 {
-  g_slice_free (ForcedKeyUnitEvent, evt);
+  g_free (evt);
 }
 
 static ForcedKeyUnitEvent *
 forced_key_unit_event_new (GstClockTime running_time, gboolean all_headers,
     guint count)
 {
-  ForcedKeyUnitEvent *evt = g_slice_new0 (ForcedKeyUnitEvent);
+  ForcedKeyUnitEvent *evt = g_new0 (ForcedKeyUnitEvent, 1);
 
   evt->running_time = running_time;
   evt->all_headers = all_headers;
@@ -280,6 +284,11 @@ static gboolean gst_video_encoder_propose_allocation_default (GstVideoEncoder *
 static gboolean gst_video_encoder_negotiate_default (GstVideoEncoder * encoder);
 static gboolean gst_video_encoder_negotiate_unlocked (GstVideoEncoder *
     encoder);
+
+static void gst_video_encoder_post_qos_drop (GstVideoEncoder * enc,
+    GstVideoCodecFrame * frame);
+static void gst_video_encoder_push_pending_unlocked (GstVideoEncoder * encoder,
+    GstVideoCodecFrame * frame, gboolean dropping);
 
 static gboolean gst_video_encoder_sink_query_default (GstVideoEncoder * encoder,
     GstQuery * query);
@@ -503,9 +512,11 @@ gst_video_encoder_reset (GstVideoEncoder * encoder, gboolean hard)
       priv->allocator = NULL;
     }
 
-    g_list_foreach (priv->current_frame_events, (GFunc) gst_event_unref, NULL);
-    g_list_free (priv->current_frame_events);
+    g_list_free_full (priv->current_frame_events,
+        (GDestroyNotify) gst_event_unref);
     priv->current_frame_events = NULL;
+    g_list_free_full (priv->pending_events, (GDestroyNotify) gst_event_unref);
+    priv->pending_events = NULL;
 
     GST_OBJECT_LOCK (encoder);
     priv->proportion = 0.5;
@@ -634,12 +645,12 @@ _new_output_state (GstCaps * caps, GstVideoCodecState * reference)
 {
   GstVideoCodecState *state;
 
-  state = g_slice_new0 (GstVideoCodecState);
+  state = g_new0 (GstVideoCodecState, 1);
   state->ref_count = 1;
   gst_video_info_init (&state->info);
 
   if (!gst_video_info_set_format (&state->info, GST_VIDEO_FORMAT_ENCODED, 0, 0)) {
-    g_slice_free (GstVideoCodecState, state);
+    g_free (state);
     return NULL;
   }
 
@@ -669,12 +680,14 @@ _new_output_state (GstCaps * caps, GstVideoCodecState * reference)
     GST_VIDEO_INFO_MULTIVIEW_FLAGS (tgt) = GST_VIDEO_INFO_MULTIVIEW_FLAGS (ref);
 
     if (reference->mastering_display_info) {
-      state->mastering_display_info = g_slice_dup (GstVideoMasteringDisplayInfo,
-          reference->mastering_display_info);
+      state->mastering_display_info =
+          g_memdup2 (reference->mastering_display_info,
+          sizeof (GstVideoMasteringDisplayInfo));
     }
     if (reference->content_light_level) {
-      state->content_light_level = g_slice_dup (GstVideoContentLightLevel,
-          reference->content_light_level);
+      state->content_light_level =
+          g_memdup2 (reference->content_light_level,
+          sizeof (GstVideoContentLightLevel));
     }
   }
 
@@ -688,7 +701,7 @@ _new_input_state (GstCaps * caps)
   GstStructure *c_struct;
   const gchar *s;
 
-  state = g_slice_new0 (GstVideoCodecState);
+  state = g_new0 (GstVideoCodecState, 1);
   state->ref_count = 1;
   gst_video_info_init (&state->info);
   if (G_UNLIKELY (!gst_video_info_from_caps (&state->info, caps)))
@@ -698,12 +711,12 @@ _new_input_state (GstCaps * caps)
   c_struct = gst_caps_get_structure (caps, 0);
 
   if ((s = gst_structure_get_string (c_struct, "mastering-display-info"))) {
-    state->mastering_display_info = g_slice_new (GstVideoMasteringDisplayInfo);
+    state->mastering_display_info = g_new (GstVideoMasteringDisplayInfo, 1);
     gst_video_mastering_display_info_from_string (state->mastering_display_info,
         s);
   }
   if ((s = gst_structure_get_string (c_struct, "content-light-level"))) {
-    state->content_light_level = g_slice_new (GstVideoContentLightLevel);
+    state->content_light_level = g_new (GstVideoContentLightLevel, 1);
     gst_video_content_light_level_from_string (state->content_light_level, s);
   }
 
@@ -711,7 +724,7 @@ _new_input_state (GstCaps * caps)
 
 parse_fail:
   {
-    g_slice_free (GstVideoCodecState, state);
+    g_free (state);
     return NULL;
   }
 }
@@ -887,6 +900,12 @@ gst_video_encoder_propose_allocation_default (GstVideoEncoder * encoder,
       gst_query_add_allocation_param (query, allocator, &params);
 
     pool = gst_video_buffer_pool_new ();
+    {
+      gchar *name =
+          g_strdup_printf ("%s-propose-pool", GST_OBJECT_NAME (encoder));
+      g_object_set (pool, "name", name, NULL);
+      g_free (name);
+    }
 
     structure = gst_buffer_pool_get_config (pool);
     gst_buffer_pool_config_set_params (structure, caps, size, 0, 0);
@@ -1359,7 +1378,8 @@ gst_video_encoder_src_event_default (GstVideoEncoder * encoder,
       priv->proportion = proportion;
       if (G_LIKELY (GST_CLOCK_TIME_IS_VALID (timestamp))) {
         if (G_UNLIKELY (diff > 0)) {
-          priv->earliest_time = timestamp + 2 * diff + priv->qos_frame_duration;
+          priv->earliest_time =
+              timestamp + MIN (2 * diff, GST_SECOND) + priv->qos_frame_duration;
         } else {
           priv->earliest_time = timestamp + diff;
         }
@@ -1495,7 +1515,7 @@ gst_video_encoder_new_frame (GstVideoEncoder * encoder, GstBuffer * buf,
   GstVideoEncoderPrivate *priv = encoder->priv;
   GstVideoCodecFrame *frame;
 
-  frame = g_slice_new0 (GstVideoCodecFrame);
+  frame = g_new0 (GstVideoCodecFrame, 1);
 
   frame->ref_count = 1;
 
@@ -1855,7 +1875,9 @@ gst_video_encoder_negotiate_default (GstVideoEncoder * encoder)
 
     gst_caps_set_simple (state->caps, "interlace-mode", G_TYPE_STRING,
         gst_video_interlace_mode_to_string (info->interlace_mode), NULL);
-    if (info->interlace_mode == GST_VIDEO_INTERLACE_MODE_INTERLEAVED &&
+    if ((info->interlace_mode == GST_VIDEO_INTERLACE_MODE_INTERLEAVED ||
+            info->interlace_mode == GST_VIDEO_INTERLACE_MODE_FIELDS ||
+            info->interlace_mode == GST_VIDEO_INTERLACE_MODE_ALTERNATE) &&
         GST_VIDEO_INFO_FIELD_ORDER (info) != GST_VIDEO_FIELD_ORDER_UNKNOWN)
       gst_caps_set_simple (state->caps, "field-order", G_TYPE_STRING,
           gst_video_field_order_to_string (GST_VIDEO_INFO_FIELD_ORDER (info)),
@@ -2133,7 +2155,7 @@ gst_video_encoder_allocate_output_frame (GstVideoEncoder *
 }
 
 static void
-gst_video_encoder_release_frame (GstVideoEncoder * enc,
+gst_video_encoder_release_frame_unlocked (GstVideoEncoder * enc,
     GstVideoCodecFrame * frame)
 {
   GList *link;
@@ -2144,8 +2166,71 @@ gst_video_encoder_release_frame (GstVideoEncoder * enc,
     gst_video_codec_frame_unref (frame);
     g_queue_delete_link (&enc->priv->frames, link);
   }
+  if (frame->events) {
+    enc->priv->pending_events =
+        g_list_concat (frame->events, enc->priv->pending_events);
+    frame->events = NULL;
+  }
+
   /* unref because this function takes ownership */
   gst_video_codec_frame_unref (frame);
+}
+
+/**
+ * gst_video_encoder_release_frame:
+ * @encoder: a #GstVideoEncoder
+ * @frame: (transfer full): a #GstVideoCodecFrame
+ *
+ * Removes @frame from list of pending frames and releases it, similar
+ * to calling gst_video_encoder_finish_frame() without a buffer attached
+ * to the frame, but does not post a QoS message or do any additional
+ * processing. Events from @frame are moved to the pending events list.
+ *
+ * Since: 1.26
+ */
+void
+gst_video_encoder_release_frame (GstVideoEncoder * enc,
+    GstVideoCodecFrame * frame)
+{
+  g_return_if_fail (GST_IS_VIDEO_ENCODER (enc));
+  g_return_if_fail (frame != NULL);
+
+  GST_LOG_OBJECT (enc, "Releasing frame %p", frame);
+
+  GST_VIDEO_ENCODER_STREAM_LOCK (enc);
+  gst_video_encoder_release_frame_unlocked (enc, frame);
+  GST_VIDEO_ENCODER_STREAM_UNLOCK (enc);
+}
+
+/**
+ * gst_video_encoder_drop_frame:
+ * @encoder: a #GstVideoEncoder
+ * @frame: (transfer full): a #GstVideoCodecFrame
+ *
+ * Removes @frame from the list of pending frames, releases it
+ * and posts a QoS message with the frame's details on the bus.
+ * Similar to calling gst_video_encoder_finish_frame() without a buffer
+ * attached to @frame, but this function additionally stores events
+ * from @frame as pending, to be pushed out alongside the next frame
+ * submitted via gst_video_encoder_finish_frame().
+ *
+ * Since: 1.26
+ */
+void
+gst_video_encoder_drop_frame (GstVideoEncoder * enc, GstVideoCodecFrame * frame)
+{
+  g_return_if_fail (GST_IS_VIDEO_ENCODER (enc));
+  g_return_if_fail (frame != NULL);
+
+  GST_VIDEO_ENCODER_STREAM_LOCK (enc);
+
+  GST_LOG_OBJECT (enc, "Dropping frame %p", frame);
+
+  gst_video_encoder_push_pending_unlocked (enc, frame, TRUE);
+  gst_video_encoder_post_qos_drop (enc, frame);
+  gst_video_encoder_release_frame_unlocked (enc, frame);
+
+  GST_VIDEO_ENCODER_STREAM_UNLOCK (enc);
 }
 
 static gboolean
@@ -2215,8 +2300,10 @@ foreach_metadata (GstBuffer * inbuf, GstMeta ** meta, gpointer user_data)
   return TRUE;
 }
 
+/* called with STREAM_LOCK */
 static void
-gst_video_encoder_drop_frame (GstVideoEncoder * enc, GstVideoCodecFrame * frame)
+gst_video_encoder_post_qos_drop (GstVideoEncoder * enc,
+    GstVideoCodecFrame * frame)
 {
   GstVideoEncoderPrivate *priv = enc->priv;
   GstClockTime stream_time, jitter, earliest_time, qostime, timestamp;
@@ -2281,27 +2368,46 @@ gst_video_encoder_can_push_unlocked (GstVideoEncoder * encoder)
 }
 
 static void
+gst_video_encoder_push_event_list (GstVideoEncoder * encoder, GList * events)
+{
+  GList *l;
+
+  /* events are stored in reverse order */
+  for (l = g_list_last (events); l; l = g_list_previous (l)) {
+    GST_LOG_OBJECT (encoder, "pushing %s event", GST_EVENT_TYPE_NAME (l->data));
+    gst_video_encoder_push_event (encoder, l->data);
+  }
+  g_list_free (events);
+}
+
+static void
 gst_video_encoder_push_pending_unlocked (GstVideoEncoder * encoder,
-    GstVideoCodecFrame * frame)
+    GstVideoCodecFrame * frame, gboolean dropping)
 {
   GstVideoEncoderPrivate *priv = encoder->priv;
-  GList *l;
+  GList *l, *events = NULL;
 
   /* Push all pending events that arrived before this frame */
   for (l = priv->frames.head; l; l = l->next) {
     GstVideoCodecFrame *tmp = l->data;
 
     if (tmp->events) {
-      GList *k;
-
-      for (k = g_list_last (tmp->events); k; k = k->prev)
-        gst_video_encoder_push_event (encoder, k->data);
-      g_list_free (tmp->events);
+      events = g_list_concat (tmp->events, events);
       tmp->events = NULL;
     }
 
     if (tmp == frame)
       break;
+  }
+
+  if (dropping) {
+    /* Push before the next frame that is not dropped */
+    priv->pending_events = g_list_concat (events, priv->pending_events);
+  } else {
+    gst_video_encoder_push_event_list (encoder, priv->pending_events);
+    priv->pending_events = NULL;
+
+    gst_video_encoder_push_event_list (encoder, events);
   }
 
   gst_video_encoder_check_and_push_tags (encoder);
@@ -2499,6 +2605,10 @@ gst_video_encoder_send_key_unit_unlocked (GstVideoEncoder * encoder,
  * It is subsequently pushed downstream or provided to @pre_push.
  * In any case, the frame is considered finished and released.
  *
+ * If @frame does not have a buffer attached, it will be dropped, and
+ * a QoS message will be posted on the bus. Events from @frame will be
+ * pushed out immediately.
+ *
  * After calling this function the output buffer of the frame is to be
  * considered read-only. This function will also change the metadata
  * of the buffer.
@@ -2539,11 +2649,11 @@ gst_video_encoder_finish_frame (GstVideoEncoder * encoder,
     goto done;
 
   if (frame->abidata.ABI.num_subframes == 0)
-    gst_video_encoder_push_pending_unlocked (encoder, frame);
+    gst_video_encoder_push_pending_unlocked (encoder, frame, FALSE);
 
   /* no buffer data means this frame is skipped/dropped */
   if (!frame->output_buffer) {
-    gst_video_encoder_drop_frame (encoder, frame);
+    gst_video_encoder_post_qos_drop (encoder, frame);
     goto done;
   }
 
@@ -2624,7 +2734,7 @@ gst_video_encoder_finish_frame (GstVideoEncoder * encoder,
    * if possible, i.e. if the subclass does not hold additional references
    * to the frame
    */
-  gst_video_encoder_release_frame (encoder, frame);
+  gst_video_encoder_release_frame_unlocked (encoder, frame);
   frame = NULL;
 
   if (ret == GST_FLOW_OK) {
@@ -2636,7 +2746,7 @@ gst_video_encoder_finish_frame (GstVideoEncoder * encoder,
 done:
   /* handed out */
   if (frame)
-    gst_video_encoder_release_frame (encoder, frame);
+    gst_video_encoder_release_frame_unlocked (encoder, frame);
 
   GST_VIDEO_ENCODER_STREAM_UNLOCK (encoder);
 
@@ -2702,7 +2812,7 @@ gst_video_encoder_finish_subframe (GstVideoEncoder * encoder,
    * Push new incoming events on finish_frame otherwise.
    */
   if (frame->abidata.ABI.num_subframes == 0)
-    gst_video_encoder_push_pending_unlocked (encoder, frame);
+    gst_video_encoder_push_pending_unlocked (encoder, frame, FALSE);
 
   if (GST_VIDEO_CODEC_FRAME_IS_SYNC_POINT (frame)
       && frame->abidata.ABI.num_subframes == 0) {

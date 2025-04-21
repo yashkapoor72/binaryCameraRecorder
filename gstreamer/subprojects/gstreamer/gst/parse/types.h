@@ -30,12 +30,22 @@ typedef struct {
   GSList *presets;
 } element_t;
 
+/* Filled from a bus sync handler if a error message is posted during the
+ * construction of the chain.
+ * The mutex is necessary as the bus could -- at least in principle -- have
+ * messages posted from several threads simultaneously. */
+typedef struct {
+  GMutex mutex;
+  gchar *reason; /* owned by the struct */
+} reason_receiver_t;
+
 
 typedef struct _graph_t graph_t;
 struct _graph_t {
   chain_t *chain; /* links are supposed to be done now */
   GSList *links;
   GError **error;
+  reason_receiver_t *error_probable_reason_receiver;
   GstParseContext *ctx; /* may be NULL */
   GstParseFlags flags;
 };
@@ -75,12 +85,12 @@ G_GNUC_INTERNAL  void	__gst_parse_element_free (element_t *data);
 #else /* __GST_PARSE_TRACE */
 #  define gst_parse_strdup g_strdup
 #  define gst_parse_strfree g_free
-#  define gst_parse_link_new() g_slice_new0 (link_t)
-#  define gst_parse_link_free(l) g_slice_free (link_t, l)
-#  define gst_parse_chain_new() g_slice_new0 (chain_t)
-#  define gst_parse_chain_free(c) g_slice_free (chain_t, c)
-#  define gst_parse_element_new() g_slice_new0 (element_t)
-#  define gst_parse_element_free(e) g_slice_free (element_t, e)
+#  define gst_parse_link_new() g_new0 (link_t, 1)
+#  define gst_parse_link_free(l) g_free (l)
+#  define gst_parse_chain_new() g_new0 (chain_t, 1)
+#  define gst_parse_chain_free(c) g_free (c)
+#  define gst_parse_element_new() g_new0 (element_t, 1)
+#  define gst_parse_element_free(e) g_free (e)
 #endif /* __GST_PARSE_TRACE */
 
 static inline void

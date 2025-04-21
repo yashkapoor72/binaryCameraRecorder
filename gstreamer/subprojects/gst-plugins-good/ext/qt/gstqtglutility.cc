@@ -44,7 +44,7 @@
 #include <gst/gl/wayland/gstgldisplay_wayland.h>
 #endif
 
-#if GST_GL_HAVE_WINDOW_VIV_FB
+#if GST_GL_HAVE_WINDOW_VIV_FB && defined (HAVE_QT_VIV_FB)
 #include <gst/gl/viv-fb/gstgldisplay_viv_fb.h>
 #endif
 
@@ -102,12 +102,18 @@ gst_qt_get_gl_display (gboolean sink)
   if (QString::fromUtf8 ("wayland") == app->platformName()
         || QString::fromUtf8 ("wayland-egl") == app->platformName()){
     struct wl_display * wayland_display;
+    GstGLDisplayEGL *display_egl;
     QPlatformNativeInterface *native =
         QGuiApplication::platformNativeInterface();
     wayland_display = (struct wl_display *)
         native->nativeResourceForWindow("display", NULL);
     display = (GstGLDisplay *)
         gst_gl_display_wayland_new_with_display (wayland_display);
+
+    display_egl = gst_gl_display_egl_from_gl_display (display);
+    if (display_egl)
+      gst_gl_display_egl_set_foreign (display_egl, TRUE);
+    gst_clear_object (&display_egl);
   }
 #endif
 #if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_WINDOW_ANDROID
@@ -117,7 +123,7 @@ gst_qt_get_gl_display (gboolean sink)
   }
 #elif GST_GL_HAVE_PLATFORM_EGL && defined (HAVE_QT_EGLFS)
   if (QString::fromUtf8("eglfs") == app->platformName()) {
-#if GST_GL_HAVE_WINDOW_VIV_FB
+#if GST_GL_HAVE_WINDOW_VIV_FB && defined (HAVE_QT_VIV_FB)
     /* FIXME: Could get the display directly from Qt like this
      * QPlatformNativeInterface *native =
      *     QGuiApplication::platformNativeInterface();
@@ -144,8 +150,11 @@ gst_qt_get_gl_display (gboolean sink)
         QGuiApplication::platformNativeInterface();
     EGLDisplay egl_display = (EGLDisplay)
         native->nativeResourceForWindow("egldisplay", NULL);
-    if (egl_display != EGL_NO_DISPLAY)
-      display = (GstGLDisplay *) gst_gl_display_egl_new_with_egl_display (egl_display);
+    if (egl_display != EGL_NO_DISPLAY) {
+      GstGLDisplayEGL *display_egl = gst_gl_display_egl_new_with_egl_display (egl_display);
+      gst_gl_display_egl_set_foreign (display_egl, TRUE);
+      display = (GstGLDisplay *) display_egl;
+    }
 #else
     EGLDisplay egl_display = (EGLDisplay) gst_gl_display_egl_get_from_native (GST_GL_DISPLAY_TYPE_ANY, 0);
     display = (GstGLDisplay *) gst_gl_display_egl_new_with_egl_display (egl_display);
@@ -202,7 +211,7 @@ gst_qt_get_gl_wrapcontext (GstGLDisplay * display,
   }
 #endif
 #if GST_GL_HAVE_PLATFORM_EGL && defined (HAVE_QT_EGLFS)
-#if GST_GL_HAVE_WINDOW_VIV_FB
+#if GST_GL_HAVE_WINDOW_VIV_FB && defined (HAVE_QT_VIV_FB)
   if (GST_IS_GL_DISPLAY_VIV_FB (display)) {
 #else
   if (GST_IS_GL_DISPLAY_EGL (display)) {
@@ -248,6 +257,7 @@ gst_qt_get_gl_wrapcontext (GstGLDisplay * display,
     gst_gl_context_activate(*wrap_glcontext, TRUE);
     if (!gst_gl_context_fill_info (*wrap_glcontext, &error)) {
       GST_ERROR ("failed to retrieve qt context info: %s", error->message);
+      gst_gl_context_activate(*wrap_glcontext, FALSE);
       gst_clear_object (wrap_glcontext);
       return FALSE;
     }

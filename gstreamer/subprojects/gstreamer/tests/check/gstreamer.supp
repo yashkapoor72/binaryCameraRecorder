@@ -2574,6 +2574,17 @@
    fun:getaddrinfo
 }
 
+## Fedora 34 getaddrinfo context tls leak (probably some thread teardown race)
+## https://codebrowser.dev/glibc/glibc/resolv/resolv_context.c.html#current
+{
+   <Context Leaked>
+   Memcheck:Leak
+   ...
+   fun:maybe_init
+   ...
+   fun:getaddrinfo
+}
+
 ## Dynamic pad templates in mxfmux
 {
    <Dynamic pad templates in mxfmux>
@@ -4073,4 +4084,42 @@
   fun:_ULx86_64_step
   fun:generate_unwind_trace
   fun:gst_debug_get_stack_trace
+}
+
+# since glib 2.65 https://gitlab.gnome.org/GNOME/glib/-/merge_requests/1400
+{
+  glib 2.65+: program may exit before all cancellable sources are freed
+  Memcheck:Leak
+  ...
+  fun:g_cancellable_source_new
+  ...
+  fun:g_socket_create_source
+}
+
+{
+   And more dlopen work leaks
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:dl_open_worker_begin
+   ...
+   fun:dl_open_worker
+}
+
+{
+   ducktape shows up from glib-networking calling into libproxy if there's a proxy setup, like in the CI
+   Memcheck:ReallocZero
+   fun:realloc
+   fun:duk_heap_mem_realloc_indirect.lto_priv.0
+   fun:duk_hbuffer_resize.lto_priv.0
+}
+
+{
+   And more dlopen work leaks
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:dl_open_worker_begin
+   ...
+   fun:dl_open_worker
 }

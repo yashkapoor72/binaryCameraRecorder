@@ -9,6 +9,16 @@ install_headers(gst_sdp_headers, subdir : 'gstreamer-1.0/gst/sdp/')
 
 sdp_deps = [rtp_dep, gst_dep, gio_dep, pbutils_dep]
 gst_sdp_sources = files(['gstsdpmessage.c', 'gstmikey.c'])
+
+doc_sources = []
+foreach s: gst_sdp_sources + gst_sdp_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'sdp': pathsep.join(doc_sources)
+}
+
 gstsdp = library('gstsdp-@0@'.format(api_version),
   gst_sdp_sources,
   c_args : gst_plugins_base_args + ['-DBUILDING_GST_SDP', '-DG_LOG_DOMAIN="GStreamer-SDP"'],
@@ -49,6 +59,7 @@ if build_gir
   library_def = {'lib': library_def['lib'], 'gir': [gir]}
   if not static_build
     sdp_gir = gnome.generate_gir(gstsdp, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [sdp_gir]}
     sdp_gen_sources += [sdp_gir]
   endif
 endif

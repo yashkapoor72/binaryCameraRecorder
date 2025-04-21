@@ -69,6 +69,7 @@
 
 #include <gst/mpegts/mpegts.h>
 #include <gst/base/gstbytewriter.h>
+#include <gst/mpegtsdemux/gstmpegdesc.h>
 
 #include "tsmuxcommon.h"
 #include "tsmuxstream.h"
@@ -96,23 +97,34 @@ struct TsMuxStreamBuffer
   void *user_data;
 };
 
+static void
+tsmux_stream_get_es_descrs_default (TsMuxStream * stream,
+    GstMpegtsPMTStream * pmt_stream, gpointer user_data)
+{
+  tsmux_stream_default_get_es_descrs (stream, pmt_stream);
+}
+
 /**
  * tsmux_stream_new:
  * @pid: a PID
  * @stream_type: the stream type
+ * @stream_number: stream number
  *
- * Create a new stream with PID of @pid and @stream_type.
+ * Create a new stream with PID of @pid and @stream_type,
+ * with stream number @stream_number.
  *
  * Returns: a new #TsMuxStream.
  */
 TsMuxStream *
-tsmux_stream_new (guint16 pid, guint stream_type)
+tsmux_stream_new (guint16 pid, guint stream_type, guint stream_number)
 {
-  TsMuxStream *stream = g_slice_new0 (TsMuxStream);
+  TsMuxStream *stream = g_new0 (TsMuxStream, 1);
+  gboolean supports_user_specified_stream_number = FALSE;
 
   stream->state = TSMUX_STREAM_STATE_HEADER;
   stream->pi.pid = pid;
   stream->stream_type = stream_type;
+  stream->internal_stream_type = stream_type;
 
   stream->pes_payload_size = 0;
   stream->cur_pes_payload_size = 0;
@@ -125,23 +137,47 @@ tsmux_stream_new (guint16 pid, guint stream_type)
     case TSMUX_ST_VIDEO_MPEG4:
     case TSMUX_ST_VIDEO_H264:
     case TSMUX_ST_VIDEO_HEVC:
-      /* FIXME: Assign sequential IDs? */
-      stream->id = 0xE0;
+    case TSMUX_ST_VIDEO_VVC:
+      if (stream_number > 0xF) {
+        GST_WARNING
+            ("video stream number %d is greater than 0xF. Setting to 0.",
+            stream_number);
+        stream_number = 0;
+      }
+      stream->id = 0xE0 | stream_number;
       stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
-      stream->is_video_stream = TRUE;
+      stream->gst_stream_type = GST_STREAM_TYPE_VIDEO;
+      supports_user_specified_stream_number = TRUE;
       break;
     case TSMUX_ST_VIDEO_JP2K:
       stream->id = 0xBD;
       stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
-      stream->is_video_stream = TRUE;
+      stream->gst_stream_type = GST_STREAM_TYPE_VIDEO;
+      break;
+    case TSMUX_ST_VIDEO_JPEG_XS:
+      stream->id = 0xBD;        /* Private Stream 1 */
+      stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
+      stream->gst_stream_type = GST_STREAM_TYPE_VIDEO;
+      break;
+    case TSMUX_ST_PS_VP9:
+      stream->id = 0xBD;        /* Private Stream 1 */
+      stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
+      stream->stream_type = TSMUX_ST_PRIVATE_DATA;
+      stream->gst_stream_type = GST_STREAM_TYPE_VIDEO;
       break;
     case TSMUX_ST_AUDIO_AAC:
     case TSMUX_ST_AUDIO_MPEG1:
     case TSMUX_ST_AUDIO_MPEG2:
-      /* FIXME: Assign sequential IDs? */
-      stream->is_audio = TRUE;
-      stream->id = 0xC0;
+      if (stream_number > 0x1F) {
+        GST_WARNING
+            ("audio stream number %d is greater than 0x1F. Setting to 0.",
+            stream_number);
+        stream_number = 0;
+      }
+      stream->gst_stream_type = GST_STREAM_TYPE_AUDIO;
+      stream->id = 0xC0 | stream_number;
       stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
+      supports_user_specified_stream_number = TRUE;
       break;
     case TSMUX_ST_VIDEO_DIRAC:
     case TSMUX_ST_PS_AUDIO_LPCM:
@@ -152,18 +188,18 @@ tsmux_stream_new (guint16 pid, guint stream_type)
       switch (stream_type) {
         case TSMUX_ST_VIDEO_DIRAC:
           stream->id_extended = 0x60;
-          stream->is_video_stream = TRUE;
+          stream->gst_stream_type = GST_STREAM_TYPE_VIDEO;
           break;
         case TSMUX_ST_PS_AUDIO_LPCM:
-          stream->is_audio = TRUE;
+          stream->gst_stream_type = GST_STREAM_TYPE_AUDIO;
           stream->id_extended = 0x80;
           break;
         case TSMUX_ST_PS_AUDIO_AC3:
-          stream->is_audio = TRUE;
+          stream->gst_stream_type = GST_STREAM_TYPE_AUDIO;
           stream->id_extended = 0x71;
           break;
         case TSMUX_ST_PS_AUDIO_DTS:
-          stream->is_audio = TRUE;
+          stream->gst_stream_type = GST_STREAM_TYPE_AUDIO;
           stream->id_extended = 0x82;
           break;
         default:
@@ -191,22 +227,54 @@ tsmux_stream_new (guint16 pid, guint stream_type)
       /* FIXME: assign sequential extended IDs? */
       stream->id = 0xBD;
       stream->stream_type = TSMUX_ST_PRIVATE_DATA;
-      stream->is_meta = TRUE;
       stream->pi.flags |=
           TSMUX_PACKET_FLAG_PES_FULL_HEADER |
+          TSMUX_PACKET_FLAG_PES_DATA_ALIGNMENT;
+      break;
+    case TSMUX_ST_PS_ST_2038:
+      /* FIXME: assign sequential extended IDs? */
+      stream->id = 0xBD;
+      stream->stream_type = TSMUX_ST_PRIVATE_DATA;
+      stream->pi.flags |=
+          TSMUX_PACKET_FLAG_PES_FULL_HEADER |
+          TSMUX_PACKET_FLAG_PES_DATA_ALIGNMENT;
+      break;
+    case TSMUX_ST_PS_ID3:
+      stream->id = 0xBD;        // private stream
+      stream->stream_type = TSMUX_ST_PES_METADATA;
+      stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER |
           TSMUX_PACKET_FLAG_PES_DATA_ALIGNMENT;
       break;
     case TSMUX_ST_PS_OPUS:
       /* FIXME: assign sequential extended IDs? */
       stream->id = 0xBD;
-      stream->is_audio = TRUE;
+      stream->gst_stream_type = GST_STREAM_TYPE_AUDIO;
       stream->stream_type = TSMUX_ST_PRIVATE_DATA;
-      stream->is_opus = TRUE;
+      stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
+      break;
+    case TSMUX_ST_PS_S302M:
+      /* FIXME: assign sequential extended IDs? */
+      stream->id = 0xBD;
+      stream->gst_stream_type = GST_STREAM_TYPE_AUDIO;
+      stream->stream_type = TSMUX_ST_PRIVATE_DATA;
+      stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
+      break;
+    case TSMUX_ST_PS_VIDEO_AV1:
+      /* FIXME: assign sequential extended IDs? */
+      stream->id = 0xBD;
+      stream->gst_stream_type = GST_STREAM_TYPE_VIDEO;
+      stream->stream_type = TSMUX_ST_PRIVATE_DATA;
       stream->pi.flags |= TSMUX_PACKET_FLAG_PES_FULL_HEADER;
       break;
     default:
       /* Might be a custom stream type implemented by a subclass */
       break;
+  }
+
+  if (!supports_user_specified_stream_number && stream_number != 0) {
+    GST_WARNING
+        ("Attempt to set stream number %d for unsupported stream type %d",
+        stream_number, stream_type);
   }
 
   stream->first_ts = GST_CLOCK_STIME_NONE;
@@ -217,8 +285,7 @@ tsmux_stream_new (guint16 pid, guint stream_type)
   stream->pcr_ref = 0;
   stream->next_pcr = -1;
 
-  stream->get_es_descrs =
-      (TsMuxStreamGetESDescriptorsFunc) tsmux_stream_default_get_es_descrs;
+  stream->get_es_descrs = tsmux_stream_get_es_descrs_default;
   stream->get_es_descrs_data = NULL;
 
   return stream;
@@ -259,11 +326,13 @@ tsmux_stream_free (TsMuxStream * stream)
 
     if (stream->buffer_release)
       stream->buffer_release (tmbuf->data, tmbuf->user_data);
-    g_slice_free (TsMuxStreamBuffer, tmbuf);
+    g_free (tmbuf);
   }
   g_list_free (stream->buffers);
 
-  g_slice_free (TsMuxStream, stream);
+  if (stream->pmt_descriptor)
+    gst_mpegts_descriptor_free (stream->pmt_descriptor);
+  g_free (stream);
 }
 
 /**
@@ -331,7 +400,7 @@ tsmux_stream_consume (TsMuxStream * stream, guint len)
           stream->cur_buffer->user_data);
     }
 
-    g_slice_free (TsMuxStreamBuffer, stream->cur_buffer);
+    g_free (stream->cur_buffer);
     stream->cur_buffer = NULL;
     /* FIXME: As a hack, for unbounded streams, start a new PES packet for each
      * incoming packet we receive. This assumes that incoming data is
@@ -458,7 +527,7 @@ tsmux_stream_initialize_pes_packet (TsMuxStream * stream)
     }
   }
 
-  if (stream->is_video_stream) {
+  if (stream->gst_stream_type == GST_STREAM_TYPE_VIDEO) {
     guint8 hdr_len;
 
     hdr_len = tsmux_stream_pes_header_length (stream);
@@ -466,6 +535,10 @@ tsmux_stream_initialize_pes_packet (TsMuxStream * stream)
     /* Unbounded for video streams if pes packet length is over 16 bit */
     if ((stream->cur_pes_payload_size + hdr_len - 6) > G_MAXUINT16)
       stream->cur_pes_payload_size = 0;
+  }
+  // stream_type specific flags
+  if (stream->stream_type == TSMUX_ST_PES_METADATA) {
+    stream->pi.flags |= TSMUX_PACKET_FLAG_PES_DATA_ALIGNMENT;
   }
 
   return TRUE;
@@ -691,6 +764,79 @@ tsmux_stream_write_pes_header (TsMuxStream * stream, guint8 * data)
   }
 }
 
+static GstMpegtsDescriptor *
+j2k_descriptor (TsMuxStream * stream)
+{
+  GstMpegtsDescriptor *descriptor;
+  /* J2K video descriptor
+   * descriptor_tag             8 uimsbf
+   * descriptor_length          8 uimsbf
+   * profile_and_level         16 uimsbf
+   * horizontal_size           32 uimsbf
+   * vertical_size             32 uimsbf
+   * max_bit_rate              32 uimsbf
+   * max_buffer_size           32 uimsbf
+   * DEN_frame_rate            16 uimsbf
+   * NUM_frame_rate            16 uimsbf
+   * color_specification        8 bslbf
+   * still_mode                 1 bslbf
+   * interlace_video            1 bslbf
+   * reserved                   6 bslbf
+   * private_data_byte          8 bslbf
+   */
+  gint8 still_interlace_reserved = 0x00;
+  int wr_size = 0;
+  guint8 *add_info = NULL;
+  guint8 level = stream->profile_and_level & 0xF;
+  guint32 max_buffer_size = 0;
+  GstByteWriter writer;
+  gst_byte_writer_init_with_size (&writer, 32, FALSE);
+
+  switch (level) {
+    case 1:
+    case 2:
+    case 3:
+      max_buffer_size = 1250000;
+      break;
+    case 4:
+      max_buffer_size = 2500000;
+      break;
+    case 5:
+      max_buffer_size = 5000000;
+      break;
+    case 6:
+      max_buffer_size = 10000000;
+      break;
+    default:
+      break;
+  }
+
+  gst_byte_writer_put_uint16_be (&writer, stream->profile_and_level);
+  gst_byte_writer_put_uint32_be (&writer, stream->horizontal_size);
+  gst_byte_writer_put_uint32_be (&writer, stream->vertical_size);
+  gst_byte_writer_put_uint32_be (&writer, max_buffer_size);
+  gst_byte_writer_put_uint32_be (&writer, stream->max_bitrate);
+  gst_byte_writer_put_uint16_be (&writer, stream->den);
+  gst_byte_writer_put_uint16_be (&writer, stream->num);
+  gst_byte_writer_put_uint8 (&writer, stream->color_spec);
+
+  if (stream->interlace_mode)
+    still_interlace_reserved |= 0x40;
+
+  gst_byte_writer_put_uint8 (&writer, still_interlace_reserved);
+  gst_byte_writer_put_uint8 (&writer, 0x00);    /* private data byte */
+
+  wr_size = gst_byte_writer_get_size (&writer);
+  add_info = gst_byte_writer_reset_and_get_data (&writer);
+
+  descriptor =
+      gst_mpegts_descriptor_from_custom (GST_MTS_DESC_J2K_VIDEO, add_info,
+      wr_size);
+  g_free (add_info);
+
+  return descriptor;
+}
+
 /**
  * tsmux_stream_add_data:
  * @stream: a #TsMuxStream
@@ -716,7 +862,7 @@ tsmux_stream_add_data (TsMuxStream * stream, guint8 * data, guint len,
 
   g_return_if_fail (stream != NULL);
 
-  packet = g_slice_new (TsMuxStreamBuffer);
+  packet = g_new (TsMuxStreamBuffer, 1);
   packet->data = data;
   packet->size = len;
   packet->user_data = user_data;
@@ -754,7 +900,8 @@ tsmux_stream_default_get_es_descrs (TsMuxStream * stream,
   g_return_if_fail (stream != NULL);
   g_return_if_fail (pmt_stream != NULL);
 
-  if (stream->is_audio && stream->language[0] != '\0') {
+  if (stream->gst_stream_type == GST_STREAM_TYPE_AUDIO
+      && stream->language[0] != '\0') {
     descriptor = gst_mpegts_descriptor_from_iso_639_language (stream->language);
     g_ptr_array_add (pmt_stream->descriptors, descriptor);
     descriptor = NULL;
@@ -787,211 +934,29 @@ tsmux_stream_default_get_es_descrs (TsMuxStream * stream,
       break;
     case TSMUX_ST_VIDEO_JP2K:
     {
-      /* J2K video descriptor
-       * descriptor_tag             8 uimsbf
-       * descriptor_length          8 uimsbf
-       * profile_and_level         16 uimsbf
-       * horizontal_size           32 uimsbf
-       * vertical_size             32 uimsbf
-       * max_bit_rate              32 uimsbf
-       * max_buffer_size           32 uimsbf
-       * DEN_frame_rate            16 uimsbf
-       * NUM_frame_rate            16 uimsbf
-       * color_specification        8 bslbf
-       * still_mode                 1 bslbf
-       * interlace_video            1 bslbf
-       * reserved                   6 bslbf
-       * private_data_byte          8 bslbf
-       */
-      gint8 still_interlace_reserved = 0x00;
-      int wr_size = 0;
-      guint8 *add_info = NULL;
-      guint8 level = stream->profile_and_level & 0xF;
-      guint32 max_buffer_size = 0;
-      GstByteWriter writer;
-      gst_byte_writer_init_with_size (&writer, 32, FALSE);
-
-      switch (level) {
-        case 1:
-        case 2:
-        case 3:
-          max_buffer_size = 1250000;
-          break;
-        case 4:
-          max_buffer_size = 2500000;
-          break;
-        case 5:
-          max_buffer_size = 5000000;
-          break;
-        case 6:
-          max_buffer_size = 10000000;
-          break;
-        default:
-          break;
-      }
-
-      gst_byte_writer_put_uint16_be (&writer, stream->profile_and_level);
-      gst_byte_writer_put_uint32_be (&writer, stream->horizontal_size);
-      gst_byte_writer_put_uint32_be (&writer, stream->vertical_size);
-      gst_byte_writer_put_uint32_be (&writer, max_buffer_size);
-      gst_byte_writer_put_uint32_be (&writer, stream->max_bitrate);
-      gst_byte_writer_put_uint16_be (&writer, stream->den);
-      gst_byte_writer_put_uint16_be (&writer, stream->num);
-      gst_byte_writer_put_uint8 (&writer, stream->color_spec);
-
-      if (stream->interlace_mode)
-        still_interlace_reserved |= 0x40;
-
-      gst_byte_writer_put_uint8 (&writer, still_interlace_reserved);
-      gst_byte_writer_put_uint8 (&writer, 0x00);        /* private data byte */
-
-      wr_size = gst_byte_writer_get_size (&writer);
-      add_info = gst_byte_writer_reset_and_get_data (&writer);
-
-      descriptor =
-          gst_mpegts_descriptor_from_custom (GST_MTS_DESC_J2K_VIDEO, add_info,
-          wr_size);
+      descriptor = j2k_descriptor (stream);
       g_ptr_array_add (pmt_stream->descriptors, descriptor);
+    }
+      break;
+    case TSMUX_ST_VIDEO_JPEG_XS:
+    {
+      g_ptr_array_add (pmt_stream->descriptors,
+          gst_mpegts_descriptor_copy (stream->pmt_descriptor));
     }
       break;
     case TSMUX_ST_PS_AUDIO_AC3:
     {
-      guint8 add_info[6];
-      guint8 *pos;
+      /* This is only called for DVB, ATSC ignores this case in favour of its
+       * special handling for the 0x81 descriptor */
+      /* We choose to provide no optional information */
+      guint8 add_info[1] = { 0x00 };
 
-      pos = add_info;
-
-      /* audio_stream_descriptor () | ATSC A/52-2001 Annex A
-       *
-       * descriptor_tag       8 uimsbf
-       * descriptor_length    8 uimsbf
-       * sample_rate_code     3 bslbf
-       * bsid                 5 bslbf
-       * bit_rate_code        6 bslbf
-       * surround_mode        2 bslbf
-       * bsmod                3 bslbf
-       * num_channels         4 bslbf
-       * full_svc             1 bslbf
-       * langcod              8 bslbf
-       * [...]
-       */
-      *pos++ = 0x81;
-      *pos++ = 0x04;
-
-      /* 3 bits sample_rate_code, 5 bits hardcoded bsid (default ver 8) */
-      switch (stream->audio_sampling) {
-        case 48000:
-          *pos++ = 0x08;
-          break;
-        case 44100:
-          *pos++ = 0x28;
-          break;
-        case 32000:
-          *pos++ = 0x48;
-          break;
-        default:
-          *pos++ = 0xE8;
-          break;                /* 48, 44.1 or 32 Khz */
-      }
-
-      /* 1 bit bit_rate_limit, 5 bits bit_rate_code, 2 bits suround_mode */
-      switch (stream->audio_bitrate) {
-        case 32:
-          *pos++ = 0x00 << 2;
-          break;
-        case 40:
-          *pos++ = 0x01 << 2;
-          break;
-        case 48:
-          *pos++ = 0x02 << 2;
-          break;
-        case 56:
-          *pos++ = 0x03 << 2;
-          break;
-        case 64:
-          *pos++ = 0x04 << 2;
-          break;
-        case 80:
-          *pos++ = 0x05 << 2;
-          break;
-        case 96:
-          *pos++ = 0x06 << 2;
-          break;
-        case 112:
-          *pos++ = 0x07 << 2;
-          break;
-        case 128:
-          *pos++ = 0x08 << 2;
-          break;
-        case 160:
-          *pos++ = 0x09 << 2;
-          break;
-        case 192:
-          *pos++ = 0x0A << 2;
-          break;
-        case 224:
-          *pos++ = 0x0B << 2;
-          break;
-        case 256:
-          *pos++ = 0x0C << 2;
-          break;
-        case 320:
-          *pos++ = 0x0D << 2;
-          break;
-        case 384:
-          *pos++ = 0x0E << 2;
-          break;
-        case 448:
-          *pos++ = 0x0F << 2;
-          break;
-        case 512:
-          *pos++ = 0x10 << 2;
-          break;
-        case 576:
-          *pos++ = 0x11 << 2;
-          break;
-        case 640:
-          *pos++ = 0x12 << 2;
-          break;
-        default:
-          *pos++ = 0x32 << 2;
-          break;                /* 640 Kb/s upper limit */
-      }
-
-      /* 3 bits bsmod, 4 bits num_channels, 1 bit full_svc */
-      switch (stream->audio_channels) {
-        case 1:
-          *pos++ = 0x01 << 1;
-          break;                /* 1/0 */
-        case 2:
-          *pos++ = 0x02 << 1;
-          break;                /* 2/0 */
-        case 3:
-          *pos++ = 0x0A << 1;
-          break;                /* <= 3 */
-        case 4:
-          *pos++ = 0x0B << 1;
-          break;                /* <= 4 */
-        case 5:
-          *pos++ = 0x0C << 1;
-          break;                /* <= 5 */
-        case 6:
-        default:
-          *pos++ = 0x0D << 1;
-          break;                /* <= 6 */
-      }
-
-      *pos++ = 0x00;
-
-      descriptor = gst_mpegts_descriptor_from_registration ("AC-3",
-          add_info, 6);
+      descriptor = gst_mpegts_descriptor_from_registration ("AC-3", NULL, 0);
       g_ptr_array_add (pmt_stream->descriptors, descriptor);
 
       descriptor =
-          gst_mpegts_descriptor_from_custom (GST_MTS_DESC_AC3_AUDIO_STREAM,
-          add_info, 6);
+          gst_mpegts_descriptor_from_custom (GST_MTS_DESC_DVB_AC3, add_info, 1);
       g_ptr_array_add (pmt_stream->descriptors, descriptor);
-
       break;
     }
     case TSMUX_ST_PS_AUDIO_DTS:
@@ -1007,6 +972,35 @@ tsmux_stream_default_get_es_descrs (TsMuxStream * stream,
           gst_mpegts_descriptor_from_custom (GST_MTS_DESC_DVB_TELETEXT, 0, 1);
 
       g_ptr_array_add (pmt_stream->descriptors, descriptor);
+      break;
+
+    case TSMUX_ST_PES_METADATA:
+
+      if (stream->internal_stream_type == TSMUX_ST_PS_ID3) {
+        // metadata_descriptor
+        GstMpegtsMetadataDescriptor metadata_descriptor;
+
+        metadata_descriptor.metadata_application_format =
+            GST_MPEGTS_METADATA_APPLICATION_FORMAT_IDENTIFIER_FIELD;
+        metadata_descriptor.metadata_format =
+            GST_MPEGTS_METADATA_FORMAT_IDENTIFIER_FIELD;
+        metadata_descriptor.metadata_format_identifier = DRF_ID_ID3;
+        metadata_descriptor.metadata_service_id = 0;
+        metadata_descriptor.decoder_config_flags = 0x00;
+        metadata_descriptor.dsm_cc_flag = FALSE;
+
+        descriptor = gst_mpegts_descriptor_from_metadata (&metadata_descriptor);
+        g_ptr_array_add (pmt_stream->descriptors, descriptor);
+
+        // registration_descriptor
+        guint32 format_identifier = 0;
+        GST_WRITE_UINT32_BE (&format_identifier,
+            metadata_descriptor.metadata_format_identifier);
+
+        descriptor = gst_mpegts_descriptor_from_registration ((const char *)
+            &format_identifier, NULL, 0);
+        g_ptr_array_add (pmt_stream->descriptors, descriptor);
+      }
       break;
     case TSMUX_ST_PS_DVB_SUBPICTURE:
       /* fallthrough ...
@@ -1026,21 +1020,45 @@ tsmux_stream_default_get_es_descrs (TsMuxStream * stream,
         g_ptr_array_add (pmt_stream->descriptors, descriptor);
         break;
       }
-      if (stream->is_opus) {
+      if (stream->internal_stream_type == TSMUX_ST_PS_OPUS) {
         descriptor = gst_mpegts_descriptor_from_registration ("Opus", NULL, 0);
         g_ptr_array_add (pmt_stream->descriptors, descriptor);
 
         descriptor =
             gst_mpegts_descriptor_from_custom_with_extension
             (GST_MTS_DESC_DVB_EXTENSION, 0x80,
-            &stream->opus_channel_config_code, 1);
+            stream->opus_channel_config, stream->opus_channel_config_len);
 
         g_ptr_array_add (pmt_stream->descriptors, descriptor);
       }
-      if (stream->is_meta) {
+      if (stream->internal_stream_type == TSMUX_ST_PS_KLV) {
         descriptor = gst_mpegts_descriptor_from_registration ("KLVA", NULL, 0);
         GST_DEBUG ("adding KLVA registration descriptor");
         g_ptr_array_add (pmt_stream->descriptors, descriptor);
+      }
+      if (stream->internal_stream_type == TSMUX_ST_PS_ST_2038) {
+        descriptor = gst_mpegts_descriptor_from_registration ("VANC", NULL, 0);
+        GST_DEBUG ("adding VANC registration descriptor");
+        g_ptr_array_add (pmt_stream->descriptors, descriptor);
+        descriptor = gst_mpegts_descriptor_from_custom (0xc4, NULL, 0);
+        g_ptr_array_add (pmt_stream->descriptors, descriptor);
+      }
+      if (stream->internal_stream_type == TSMUX_ST_PS_S302M) {
+        descriptor = gst_mpegts_descriptor_from_registration ("BSSD", NULL, 0);
+        GST_DEBUG ("adding SMPTE 302M registration descriptor");
+        g_ptr_array_add (pmt_stream->descriptors, descriptor);
+      }
+      if (stream->internal_stream_type == TSMUX_ST_PS_VP9) {
+        descriptor = gst_mpegts_descriptor_from_registration ("VP09", NULL, 0);
+        GST_DEBUG ("adding VP09 registration descriptor");
+        g_ptr_array_add (pmt_stream->descriptors, descriptor);
+      }
+      if (stream->internal_stream_type == TSMUX_ST_PS_VIDEO_AV1) {
+        /* AV1G is our custom non-bytestream format ! */
+        descriptor = gst_mpegts_descriptor_from_registration ("AV1G", NULL, 0);
+        g_ptr_array_add (pmt_stream->descriptors, descriptor);
+        if (stream->pmt_descriptor)
+          g_ptr_array_add (pmt_stream->descriptors, stream->pmt_descriptor);
       }
     default:
       break;

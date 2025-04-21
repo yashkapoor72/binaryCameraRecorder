@@ -35,7 +35,7 @@
  * The following example creates a buffer that can hold a given video frame
  * with a given width, height and bits per plane.
  *
- * ``` C 
+ * ``` C
  *   GstBuffer *buffer;
  *   GstMemory *memory;
  *   gint size, width, height, bpp;
@@ -145,7 +145,6 @@ GType _gst_buffer_type = 0;
 
 #define GST_BUFFER_MEM_MAX         16
 
-#define GST_BUFFER_SLICE_SIZE(b)   (((GstBufferImpl *)(b))->slice_size)
 #define GST_BUFFER_MEM_LEN(b)      (((GstBufferImpl *)(b))->len)
 #define GST_BUFFER_MEM_ARRAY(b)    (((GstBufferImpl *)(b))->mem)
 #define GST_BUFFER_MEM_PTR(b,i)    (((GstBufferImpl *)(b))->mem[i])
@@ -156,8 +155,6 @@ GType _gst_buffer_type = 0;
 typedef struct
 {
   GstBuffer buffer;
-
-  gsize slice_size;
 
   /* the memory blocks */
   guint len;
@@ -175,7 +172,14 @@ typedef struct
 static gint64 meta_seq;         /* 0 *//* ATOMIC */
 
 /* TODO: use GLib's once https://gitlab.gnome.org/GNOME/glib/issues/1076 lands */
-#if defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8)
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
+#include <stdatomic.h>
+static inline gint64
+gst_atomic_int64_inc (gint64 * atomic)
+{
+  return atomic_fetch_add ((_Atomic gint64 *) atomic, 1);
+}
+#elif defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8)
 static inline gint64
 gst_atomic_int64_inc (gint64 * atomic)
 {
@@ -546,6 +550,7 @@ gst_buffer_copy_into (GstBuffer * dest, GstBuffer * src,
   GstMetaItem *walk;
   gsize bufsize;
   gboolean region = FALSE;
+  gboolean sharing_mem = FALSE;
 
   g_return_val_if_fail (dest != NULL, FALSE);
   g_return_val_if_fail (src != NULL, FALSE);
@@ -649,6 +654,9 @@ gst_buffer_copy_into (GstBuffer * dest, GstBuffer * src,
           return FALSE;
         }
 
+        /* Indicates if dest references any of src memories. */
+        sharing_mem |= (newmem == mem);
+
         _memory_add (dest, -1, newmem);
         left -= tocopy;
       }
@@ -662,6 +670,10 @@ gst_buffer_copy_into (GstBuffer * dest, GstBuffer * src,
         gst_buffer_remove_memory_range (dest, dest_len, -1);
         return FALSE;
       }
+
+      /* If we were sharing memory and the merge is no-op, we are still sharing. */
+      sharing_mem &= (mem == GST_BUFFER_MEM_PTR (dest, 0));
+
       _replace_memory (dest, len, 0, len, mem);
     }
   }
@@ -691,7 +703,8 @@ gst_buffer_copy_into (GstBuffer * dest, GstBuffer * src,
       } else if (deep && gst_meta_api_type_has_tag (info->api,
               _gst_meta_tag_memory_reference)) {
         GST_CAT_DEBUG (GST_CAT_BUFFER,
-            "don't copy meta with memory references %" GST_PTR_FORMAT, meta);
+            "don't copy memory reference meta %p of API type %s", meta,
+            g_type_name (info->api));
       } else if (info->transform_func) {
         GstMetaTransformCopy copy_data;
 
@@ -707,6 +720,14 @@ gst_buffer_copy_into (GstBuffer * dest, GstBuffer * src,
         }
       }
     }
+  }
+
+  if (sharing_mem && src->pool != NULL) {
+    /* The new buffer references some of src's memories. We have to ensure that
+     * src buffer does not return to its buffer pool as long as its memories are
+     * used by other buffers. That would cause the buffer to be discarted by the
+     * pool because its memories are not writable. */
+    gst_buffer_add_parent_buffer_meta (dest, src);
   }
 
   return TRUE;
@@ -746,7 +767,7 @@ _gst_buffer_copy (const GstBuffer * buffer)
  * Creates a copy of the given buffer. This will make a newly allocated
  * copy of the data the source buffer contains.
  *
- * Returns: (transfer full): a new copy of @buf.
+ * Returns: (transfer full) (nullable): a new copy of @buf if the copy succeeded, %NULL otherwise.
  *
  * Since: 1.6
  */
@@ -782,11 +803,19 @@ _gst_buffer_free (GstBuffer * buffer)
 {
   GstMetaItem *walk, *next;
   guint i, len;
-  gsize msize;
 
   g_return_if_fail (buffer != NULL);
 
   GST_CAT_LOG (GST_CAT_BUFFER, "finalize %p", buffer);
+
+  /* free our memory */
+  len = GST_BUFFER_MEM_LEN (buffer);
+  for (i = 0; i < len; i++) {
+    gst_memory_unlock (GST_BUFFER_MEM_PTR (buffer, i), GST_LOCK_FLAG_EXCLUSIVE);
+    gst_mini_object_remove_parent (GST_MINI_OBJECT_CAST (GST_BUFFER_MEM_PTR
+            (buffer, i)), GST_MINI_OBJECT_CAST (buffer));
+    gst_memory_unref (GST_BUFFER_MEM_PTR (buffer, i));
+  }
 
   /* free metadata */
   for (walk = GST_BUFFER_META (buffer); walk; walk = next) {
@@ -799,42 +828,22 @@ _gst_buffer_free (GstBuffer * buffer)
 
     next = walk->next;
     /* and free the slice */
-    g_slice_free1 (ITEM_SIZE (info), walk);
+    g_free (walk);
   }
 
-  /* get the size, when unreffing the memory, we could also unref the buffer
-   * itself */
-  msize = GST_BUFFER_SLICE_SIZE (buffer);
-
-  /* free our memory */
-  len = GST_BUFFER_MEM_LEN (buffer);
-  for (i = 0; i < len; i++) {
-    gst_memory_unlock (GST_BUFFER_MEM_PTR (buffer, i), GST_LOCK_FLAG_EXCLUSIVE);
-    gst_mini_object_remove_parent (GST_MINI_OBJECT_CAST (GST_BUFFER_MEM_PTR
-            (buffer, i)), GST_MINI_OBJECT_CAST (buffer));
-    gst_memory_unref (GST_BUFFER_MEM_PTR (buffer, i));
-  }
-
-  /* we set msize to 0 when the buffer is part of the memory block */
-  if (msize) {
 #ifdef USE_POISONING
-    memset (buffer, 0xff, msize);
+  memset (buffer, 0xff, sizeof (GstBufferImpl));
 #endif
-    g_slice_free1 (msize, buffer);
-  } else {
-    gst_memory_unref (GST_BUFFER_BUFMEM (buffer));
-  }
+  g_free (buffer);
 }
 
 static void
-gst_buffer_init (GstBufferImpl * buffer, gsize size)
+gst_buffer_init (GstBufferImpl * buffer)
 {
   gst_mini_object_init (GST_MINI_OBJECT_CAST (buffer), 0, _gst_buffer_type,
       (GstMiniObjectCopyFunction) _gst_buffer_copy,
       (GstMiniObjectDisposeFunction) _gst_buffer_dispose,
       (GstMiniObjectFreeFunction) _gst_buffer_free);
-
-  GST_BUFFER_SLICE_SIZE (buffer) = size;
 
   GST_BUFFER (buffer)->pool = NULL;
   GST_BUFFER_PTS (buffer) = GST_CLOCK_TIME_NONE;
@@ -859,10 +868,10 @@ gst_buffer_new (void)
 {
   GstBufferImpl *newbuf;
 
-  newbuf = g_slice_new (GstBufferImpl);
+  newbuf = g_new (GstBufferImpl, 1);
   GST_CAT_LOG (GST_CAT_BUFFER, "new %p", newbuf);
 
-  gst_buffer_init (newbuf, sizeof (GstBufferImpl));
+  gst_buffer_init (newbuf);
 
   return GST_BUFFER_CAST (newbuf);
 }
@@ -918,7 +927,7 @@ gst_buffer_new_allocate (GstAllocator * allocator, gsize size,
 
 #if 0
   asize = sizeof (GstBufferImpl) + size;
-  data = g_slice_alloc (asize);
+  data = g_malloc (asize);
   if (G_UNLIKELY (data == NULL))
     goto no_memory;
 
@@ -1977,7 +1986,7 @@ gst_buffer_fill (GstBuffer * buffer, gsize offset, gconstpointer src,
  * @offset: the offset to extract
  * @dest: (out caller-allocates) (array length=size) (element-type guint8):
  *     the destination address
- * @size: the size to extract
+ * @size: (in): the size to extract
  *
  * Copies @size bytes starting from @offset in @buffer to @dest.
  *
@@ -2311,9 +2320,9 @@ gst_buffer_add_meta (GstBuffer * buffer, const GstMetaInfo * info,
    * uninitialized memory
    */
   if (!info->init_func)
-    item = g_slice_alloc0 (size);
+    item = g_malloc0 (size);
   else
-    item = g_slice_alloc (size);
+    item = g_malloc (size);
   result = &item->meta;
   result->info = info;
   result->flags = GST_META_FLAG_NONE;
@@ -2341,7 +2350,7 @@ gst_buffer_add_meta (GstBuffer * buffer, const GstMetaInfo * info,
 
 init_failed:
   {
-    g_slice_free1 (size, item);
+    g_free (item);
     return NULL;
   }
 }
@@ -2392,7 +2401,7 @@ gst_buffer_remove_meta (GstBuffer * buffer, GstMeta * meta)
         info->free_func (m, buffer);
 
       /* and free the slice */
-      g_slice_free1 (ITEM_SIZE (info), walk);
+      g_free (walk);
       break;
     }
     prev = walk;
@@ -2481,8 +2490,8 @@ gst_buffer_iterate_meta_filtered (GstBuffer * buffer, gpointer * state,
 /**
  * gst_buffer_foreach_meta:
  * @buffer: a #GstBuffer
- * @func: (scope call): a #GstBufferForeachMetaFunc to call
- * @user_data: (closure): user data passed to @func
+ * @func: (scope call) (closure user_data): a #GstBufferForeachMetaFunc to call
+ * @user_data: user data passed to @func
  *
  * Calls @func with @user_data for each meta in @buffer.
  *
@@ -2540,7 +2549,7 @@ gst_buffer_foreach_meta (GstBuffer * buffer, GstBufferForeachMetaFunc func,
         info->free_func (m, buffer);
 
       /* and free the slice */
-      g_slice_free1 (ITEM_SIZE (info), walk);
+      g_free (walk);
     } else {
       prev = walk;
     }
@@ -2795,12 +2804,28 @@ static gboolean
 _gst_reference_timestamp_meta_transform (GstBuffer * dest, GstMeta * meta,
     GstBuffer * buffer, GQuark type, gpointer data)
 {
-  GstReferenceTimestampMeta *dmeta, *smeta;
+  const GstReferenceTimestampMeta *smeta, *ometa;
+  GstReferenceTimestampMeta *dmeta;
+  gpointer iter = NULL;
 
   /* we copy over the reference timestamp meta, independent of transformation
    * that happens. If it applied to the original buffer, it still applies to
    * the new buffer as it refers to the time when the media was captured */
-  smeta = (GstReferenceTimestampMeta *) meta;
+  smeta = (const GstReferenceTimestampMeta *) meta;
+
+  while ((ometa = (const GstReferenceTimestampMeta *)
+          gst_buffer_iterate_meta_filtered (dest, &iter,
+              GST_REFERENCE_TIMESTAMP_META_API_TYPE))) {
+    if (ometa->timestamp == smeta->timestamp
+        && ometa->duration == smeta->duration
+        && gst_caps_is_equal (ometa->reference, smeta->reference)) {
+      GST_CAT_TRACE (gst_reference_timestamp_meta_debug,
+          "Not copying reference timestamp metadata from buffer %p to %p because equal meta already exists",
+          buffer, dest);
+      return TRUE;
+    }
+  }
+
   dmeta =
       gst_buffer_add_reference_timestamp_meta (dest, smeta->reference,
       smeta->timestamp, smeta->duration);
@@ -2858,6 +2883,49 @@ gst_reference_timestamp_meta_api_get_type (void)
   return type;
 }
 
+static gboolean
+timestamp_meta_serialize (const GstMeta * meta, GstByteArrayInterface * data,
+    guint8 * version)
+{
+  const GstReferenceTimestampMeta *rtmeta =
+      (const GstReferenceTimestampMeta *) meta;
+  gchar *caps_str = gst_caps_to_string (rtmeta->reference);
+  gsize caps_str_len = strlen (caps_str);
+
+  gsize size = 16 + caps_str_len + 1;
+  guint8 *ptr = gst_byte_array_interface_append (data, size);
+  if (ptr == NULL) {
+    g_free (caps_str);
+    return FALSE;
+  }
+
+  GST_WRITE_UINT64_LE (ptr, rtmeta->timestamp);
+  GST_WRITE_UINT64_LE (ptr + 8, rtmeta->duration);
+  memcpy (ptr + 16, caps_str, caps_str_len + 1);
+  g_free (caps_str);
+
+  return TRUE;
+}
+
+static GstMeta *
+timestamp_meta_deserialize (const GstMetaInfo * info, GstBuffer * buffer,
+    const guint8 * data, gsize size, guint8 version)
+{
+  /* Sanity check: caps_str must be 0-terminated. */
+  if (version != 0 || size < 2 * sizeof (guint64) + 1 || data[size - 1] != '\0')
+    return NULL;
+
+  guint64 timestamp = GST_READ_UINT64_LE (data);
+  guint64 duration = GST_READ_UINT64_LE (data + 8);
+  const gchar *caps_str = (const gchar *) data + 16;
+  GstCaps *reference = gst_caps_from_string (caps_str);
+  GstMeta *meta = (GstMeta *) gst_buffer_add_reference_timestamp_meta (buffer,
+      reference, timestamp, duration);
+  gst_caps_unref (reference);
+
+  return meta;
+}
+
 /**
  * gst_reference_timestamp_meta_get_info:
  *
@@ -2873,13 +2941,17 @@ gst_reference_timestamp_meta_get_info (void)
   static const GstMetaInfo *meta_info = NULL;
 
   if (g_once_init_enter ((GstMetaInfo **) & meta_info)) {
-    const GstMetaInfo *meta =
-        gst_meta_register (gst_reference_timestamp_meta_api_get_type (),
+    const GstMetaInfo *meta = NULL;
+    GstMetaInfo *info =
+        gst_meta_info_new (gst_reference_timestamp_meta_api_get_type (),
         "GstReferenceTimestampMeta",
-        sizeof (GstReferenceTimestampMeta),
-        (GstMetaInitFunction) _gst_reference_timestamp_meta_init,
-        (GstMetaFreeFunction) _gst_reference_timestamp_meta_free,
-        _gst_reference_timestamp_meta_transform);
+        sizeof (GstReferenceTimestampMeta));
+    info->init_func = (GstMetaInitFunction) _gst_reference_timestamp_meta_init;
+    info->free_func = (GstMetaFreeFunction) _gst_reference_timestamp_meta_free;
+    info->transform_func = _gst_reference_timestamp_meta_transform;
+    info->serialize_func = timestamp_meta_serialize;
+    info->deserialize_func = timestamp_meta_deserialize;
+    meta = gst_meta_info_register (info);
     g_once_init_leave ((GstMetaInfo **) & meta_info, (GstMetaInfo *) meta);
   }
 
@@ -3009,7 +3081,7 @@ gst_clear_buffer (GstBuffer ** buf_ptr)
  * Check gst_buffer_copy_deep() if you want to force the data
  * to be copied to newly allocated memory.
  *
- * Returns: (transfer full): a new copy of @buf.
+ * Returns: (transfer full) (nullable): a new copy of @buf if the copy succeeded, %NULL otherwise.
  */
 GstBuffer *
 gst_buffer_copy (const GstBuffer * buf)

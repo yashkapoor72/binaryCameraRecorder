@@ -23,6 +23,15 @@ mpegts_headers = files(
 )
 install_headers(mpegts_headers, subdir : 'gstreamer-1.0/gst/mpegts')
 
+doc_sources = []
+foreach s: mpegts_sources + mpegts_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'mpegts': pathsep.join(doc_sources)
+}
+
 mpegts_enums = gnome.mkenums_simple('gstmpegts-enumtypes',
   sources : mpegts_headers,
   body_prefix : '#ifdef HAVE_CONFIG_H\n#include "config.h"\n#endif',
@@ -43,7 +52,7 @@ gstmpegts = library('gstmpegts-' + api_version,
   soversion : soversion,
   darwin_versions : osxversion,
   install : true,
-  dependencies : [gst_dep],
+  dependencies : [gst_dep, gstbase_dep],
 )
 
 library_def = {'lib': gstmpegts}
@@ -72,6 +81,7 @@ if build_gir
   library_def += {'gir': [gir]}
   if not static_build
     mpegts_gir = gnome.generate_gir(gstmpegts, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [mpegts_gir]}
     gen_sources += mpegts_gir
   endif
 endif

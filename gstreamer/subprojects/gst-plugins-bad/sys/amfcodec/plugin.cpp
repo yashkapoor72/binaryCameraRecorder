@@ -35,6 +35,9 @@
 #include "gstamfutils.h"
 #include "gstamfh264enc.h"
 #include "gstamfh265enc.h"
+#include "gstamfav1enc.h"
+
+#include <glib/gi18n-lib.h>
 
 /* *INDENT-OFF* */
 using namespace Microsoft::WRL;
@@ -47,20 +50,28 @@ plugin_init (GstPlugin * plugin)
   AMFFactory *amf_factory;
   ComPtr < IDXGIFactory1 > factory;
   HRESULT hr;
+  bool have_amd_gpu = false;
 
-  if (!IsWindows8OrGreater ())
+  if (!IsWindows8OrGreater ()) {
+    gst_plugin_add_status_warning (plugin,
+        N_("This plugin requires at least Windows 8 or newer."));
     return TRUE;
+  }
 
-  if (!gst_amf_init_once ())
+  if (!gst_amf_init_once () || !gst_amf_get_factory ()) {
+    gst_plugin_add_status_warning (plugin,
+        "AMF runtime library \"" AMF_DLL_NAMEA "\" was not found.");
     return TRUE;
+  }
 
   amf_factory = (AMFFactory *) gst_amf_get_factory ();
-  if (!amf_factory)
-    return TRUE;
 
   hr = CreateDXGIFactory1 (IID_PPV_ARGS (&factory));
-  if (FAILED (hr))
+  if (FAILED (hr)) {
+    /* Shouldn't happen, this means all DirectX bits would not be functional */
+    gst_plugin_add_status_error (plugin, N_("Unable to enumerate GPUs."));
     return TRUE;
+  }
 
   /* Enumerate AMD GPUs */
   for (guint idx = 0;; idx++) {
@@ -85,6 +96,7 @@ plugin_init (GstPlugin * plugin)
     if (desc.VendorId != 0x1002 && desc.VendorId != 0x1022)
       continue;
 
+    have_amd_gpu = true;
     luid = gst_d3d11_luid_to_int64 (&desc.AdapterLuid);
     device = gst_d3d11_device_new_for_adapter_luid (luid,
         D3D11_CREATE_DEVICE_BGRA_SUPPORT);
@@ -108,9 +120,18 @@ plugin_init (GstPlugin * plugin)
           (gpointer) context.GetPtr (), GST_RANK_PRIMARY);
       gst_amf_h265_enc_register_d3d11 (plugin, device,
           (gpointer) context.GetPtr (), GST_RANK_PRIMARY);
+      gst_amf_av1_enc_register_d3d11 (plugin, device,
+          (gpointer) context.GetPtr (), GST_RANK_NONE);
     }
 
     gst_clear_object (&device);
+  }
+
+  if (!have_amd_gpu) {
+    /* A little unexpected case. AMF runtime (part of driver) is installed
+     * but AMD GPU is not detected */
+    gst_plugin_add_status_warning (plugin,
+        N_("No AMD graphics cards detected!"));
   }
 
   return TRUE;

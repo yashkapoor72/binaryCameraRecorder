@@ -6,6 +6,7 @@
 # Demo gstreamer app for negotiating and streaming a sendrecv webrtc stream
 # with a browser JS app, implemented in Python.
 
+from websockets.version import version as wsv
 import random
 import ssl
 import websockets
@@ -17,11 +18,11 @@ import argparse
 
 import gi
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst
+from gi.repository import Gst  # NOQA
 gi.require_version('GstWebRTC', '1.0')
-from gi.repository import GstWebRTC
+from gi.repository import GstWebRTC  # NOQA
 gi.require_version('GstSdp', '1.0')
-from gi.repository import GstSdp
+from gi.repository import GstSdp  # NOQA
 
 # Ensure that gst-python is installed
 try:
@@ -31,16 +32,45 @@ except ImportError:
     raise
 
 # These properties all mirror the ones in webrtc-sendrecv.c, see there for explanations
-PIPELINE_DESC = '''
-webrtcbin name=sendrecv bundle-policy=max-bundle stun-server=stun://stun.l.google.com:19302
- videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! \
+WEBRTCBIN = 'webrtcbin name=sendrecv latency=0 \
+ stun-server=stun://stun.l.google.com:19302 \
+ turn-server=turn://gstreamer:IsGreatWhenYouCanGetItToWork@webrtc.nirbheek.in:3478'
+PIPELINE_DESC_VP8 = WEBRTCBIN + '''
+ {vsrc} ! videoconvert ! queue !
   vp8enc deadline=1 keyframe-max-dist=2000 ! rtpvp8pay picture-id-mode=15-bit !
-  queue ! application/x-rtp,media=video,encoding-name=VP8,payload={vp8_pt} ! sendrecv.
- audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay !
-  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload={opus_pt} ! sendrecv.
+  queue ! application/x-rtp,media=video,encoding-name=VP8,payload={video_pt} ! sendrecv.
+ {asrc} ! audioconvert ! audioresample ! queue ! opusenc perfect-timestamp=true ! rtpopuspay !
+  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload={audio_pt} ! sendrecv.
 '''
-
-from websockets.version import version as wsv
+PIPELINE_DESC_H264 = WEBRTCBIN + '''
+ {vsrc} ! videoconvert ! queue !
+  x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 intra-refresh=true !
+  rtph264pay aggregate-mode=zero-latency config-interval=-1 !
+  queue ! application/x-rtp,media=video,encoding-name=H264,payload={video_pt} ! sendrecv.
+ {asrc} ! audioconvert ! audioresample ! queue ! opusenc perfect-timestamp=true ! rtpopuspay !
+  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload={audio_pt} ! sendrecv.
+'''
+# Force I420 because dav1d bundled with Chrome doesn't support 10-bit choma/luma (I420_10LE)
+PIPELINE_DESC_AV1 = WEBRTCBIN + '''
+ {vsrc} ! videoconvert ! queue !
+  video/x-raw,format=I420 ! svtav1enc preset=13 ! av1parse ! rtpav1pay !
+  queue ! application/x-rtp,media=video,encoding-name=AV1,payload={video_pt} ! sendrecv.
+ {asrc} ! audioconvert ! audioresample ! queue ! opusenc perfect-timestamp=true ! rtpopuspay !
+  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload={audio_pt} ! sendrecv.
+'''
+PIPELINE_DESC = {
+    'AV1': PIPELINE_DESC_AV1,
+    'H264': PIPELINE_DESC_H264,
+    'VP8': PIPELINE_DESC_VP8,
+}
+VSRC = {
+    'test': 'videotestsrc is-live=true pattern=ball',
+    'camera': 'autovideosrc ! video/x-raw,framerate=[25/1,30/1]',
+}
+ASRC = {
+    'test': 'audiotestsrc is-live=true',
+    'camera': 'autoaudiosrc',
+}
 
 
 def print_status(msg):
@@ -79,7 +109,7 @@ def get_payload_types(sdpmsg, video_encoding, audio_encoding):
 
 
 class WebRTCClient:
-    def __init__(self, loop, our_id, peer_id, server, remote_is_offerer):
+    def __init__(self, loop, our_id, peer_id, server, remote_is_offerer, video_encoding, source_type):
         self.conn = None
         self.pipe = None
         self.webrtc = None
@@ -93,6 +123,11 @@ class WebRTCClient:
         self.peer_id = peer_id
         # Whether we will send the offer or the remote peer will
         self.remote_is_offerer = remote_is_offerer
+        # Video encoding: VP8, H264, etc
+        self.video_encoding = video_encoding.upper()
+        # Audio and video source to use
+        self.asrc = ASRC[source_type]
+        self.vsrc = VSRC[source_type]
 
     async def send(self, msg):
         assert self.conn
@@ -114,6 +149,23 @@ class WebRTCClient:
     def send_soon(self, msg):
         asyncio.run_coroutine_threadsafe(self.send(msg), self.event_loop)
 
+    def on_bus_poll_cb(self, bus):
+        def remove_bus_poll():
+            self.event_loop.remove_reader(bus.get_pollfd().fd)
+            self.event_loop.stop()
+        while bus.peek():
+            msg = bus.pop()
+            if msg.type == Gst.MessageType.ERROR:
+                err = msg.parse_error()
+                print("ERROR:", err.gerror, err.debug)
+                remove_bus_poll()
+                break
+            elif msg.type == Gst.MessageType.EOS:
+                remove_bus_poll()
+                break
+            elif msg.type == Gst.MessageType.LATENCY:
+                self.pipe.recalculate_latency()
+
     def send_sdp(self, offer):
         text = offer.sdp.as_text()
         if offer.type == GstWebRTC.WebRTCSDPType.OFFER:
@@ -127,7 +179,7 @@ class WebRTCClient:
         self.send_soon(msg)
 
     def on_offer_created(self, promise, _, __):
-        assert(promise.wait() == Gst.PromiseResult.REPLIED)
+        assert promise.wait() == Gst.PromiseResult.REPLIED
         reply = promise.get_reply()
         offer = reply['offer']
         promise = Gst.Promise.new()
@@ -190,9 +242,15 @@ class WebRTCClient:
         decodebin.sync_state_with_parent()
         pad.link(decodebin.get_static_pad('sink'))
 
-    def start_pipeline(self, create_offer=True, opus_pt=96, vp8_pt=97):
+    def start_pipeline(self, create_offer=True, audio_pt=96, video_pt=97):
         print_status(f'Creating pipeline, create_offer: {create_offer}')
-        self.pipe = Gst.parse_launch(PIPELINE_DESC.format(vp8_pt=vp8_pt, opus_pt=opus_pt))
+        desc = PIPELINE_DESC[self.video_encoding].format(video_pt=video_pt,
+                                                         audio_pt=audio_pt,
+                                                         vsrc=self.vsrc,
+                                                         asrc=self.asrc)
+        self.pipe = Gst.parse_launch(desc)
+        bus = self.pipe.get_bus()
+        self.event_loop.add_reader(bus.get_pollfd().fd, self.on_bus_poll_cb, bus)
         self.webrtc = self.pipe.get_by_name('sendrecv')
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed, create_offer)
         self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
@@ -201,7 +259,7 @@ class WebRTCClient:
         self.pipe.set_state(Gst.State.PLAYING)
 
     def on_answer_created(self, promise, _, __):
-        assert(promise.wait() == Gst.PromiseResult.REPLIED)
+        assert promise.wait() == Gst.PromiseResult.REPLIED
         reply = promise.get_reply()
         answer = reply['answer']
         promise = Gst.Promise.new()
@@ -210,7 +268,7 @@ class WebRTCClient:
         self.send_sdp(answer)
 
     def on_offer_set(self, promise, _, __):
-        assert(promise.wait() == Gst.PromiseResult.REPLIED)
+        assert promise.wait() == Gst.PromiseResult.REPLIED
         promise = Gst.Promise.new_with_change_func(self.on_answer_created, None, None)
         self.webrtc.emit('create-answer', None, promise)
 
@@ -224,31 +282,29 @@ class WebRTCClient:
             sdp = msg['sdp']['sdp']
             if msg['sdp']['type'] == 'answer':
                 print_status('Received answer:\n%s' % sdp)
-                res, sdpmsg = GstSdp.SDPMessage.new()
-                GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
+                res, sdpmsg = GstSdp.SDPMessage.new_from_text(sdp)
                 answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg)
                 promise = Gst.Promise.new()
                 self.webrtc.emit('set-remote-description', answer, promise)
                 promise.interrupt()  # we don't care about the result, discard it
             else:
                 print_status('Received offer:\n%s' % sdp)
-                res, sdpmsg = GstSdp.SDPMessage.new()
-                GstSdp.sdp_message_parse_buffer(bytes(sdp.encode()), sdpmsg)
+                res, sdpmsg = GstSdp.SDPMessage.new_from_text(sdp)
 
                 if not self.webrtc:
                     print_status('Incoming call: received an offer, creating pipeline')
-                    pts = get_payload_types(sdpmsg, video_encoding='VP8', audio_encoding='OPUS')
-                    assert('VP8' in pts)
-                    assert('OPUS' in pts)
-                    self.start_pipeline(create_offer=False, vp8_pt=pts['VP8'], opus_pt=pts['OPUS'])
+                    pts = get_payload_types(sdpmsg, video_encoding=self.video_encoding, audio_encoding='OPUS')
+                    assert self.video_encoding in pts
+                    assert 'OPUS' in pts
+                    self.start_pipeline(create_offer=False, video_pt=pts[self.video_encoding], audio_pt=pts['OPUS'])
 
-                assert(self.webrtc)
+                assert self.webrtc
 
                 offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdpmsg)
                 promise = Gst.Promise.new_with_change_func(self.on_offer_set, None, None)
                 self.webrtc.emit('set-remote-description', offer, promise)
         elif 'ice' in msg:
-            assert(self.webrtc)
+            assert self.webrtc
             ice = msg['ice']
             candidate = ice['candidate']
             sdpmlineindex = ice['sdpMLineIndex']
@@ -303,34 +359,58 @@ class WebRTCClient:
         self.conn = None
 
 
-def check_plugins():
-    needed = ["opus", "vpx", "nice", "webrtc", "dtls", "srtp", "rtp",
-              "rtpmanager", "videotestsrc", "audiotestsrc"]
-    missing = list(filter(lambda p: Gst.Registry.get().find_plugin(p) is None, needed))
-    if len(missing):
-        print_error('Missing gstreamer plugins:', missing)
+def check_plugin_features(source_type, video_encoding):
+    """ensure we have all the plugins/features we need"""
+    needed = ['opusenc', 'nicesink', 'webrtcbin', 'dtlssrtpenc', 'srtpenc',
+              'rtpbin', 'rtpopuspay']
+
+    if source_type == 'camera':
+        needed += ['autoaudiosrc', 'autovideosrc']
+    else:
+        needed += ['audiotestsrc', 'videotestsrc']
+
+    if video_encoding == 'vp8':
+        needed += ['vp8enc', 'vp8dec']
+    elif video_encoding == 'h264':
+        needed += ['x264enc', 'h264parse']
+    elif video_encoding == 'av1':
+        needed += ['svtav1enc', 'av1parse']
+
+    missing = []
+    reg = Gst.Registry.get()
+    for fname in needed:
+        feature = reg.find_feature(fname, Gst.ElementFactory.__gtype__)
+        if not feature:
+            missing.append(fname)
+    if missing:
+        print("Missing gstreamer elements:", *missing)
         return False
     return True
 
 
 if __name__ == '__main__':
     Gst.init(None)
-    if not check_plugins():
-        sys.exit(1)
     parser = argparse.ArgumentParser()
+    parser.add_argument('--video-encoding', default='vp8', nargs='?', choices=['vp8', 'h264', 'av1'],
+                        help='Video encoding to negotiate')
+    parser.add_argument('--camera', default='test', const='camera', action='store_const',
+                        dest='source_type',
+                        help='Use an attached camera and mic instead of test sources')
     parser.add_argument('--peer-id', help='String ID of the peer to connect to')
     parser.add_argument('--our-id', help='String ID that the peer can use to connect to us')
-    parser.add_argument('--server', default='wss://webrtc.nirbheek.in:8443',
+    parser.add_argument('--server', default='wss://webrtc.gstreamer.net:8443',
                         help='Signalling server to connect to, eg "wss://127.0.0.1:8443"')
     parser.add_argument('--remote-offerer', default=False, action='store_true',
                         dest='remote_is_offerer',
                         help='Request that the peer generate the offer and we\'ll answer')
     args = parser.parse_args()
+    if not check_plugin_features(args.source_type, args.video_encoding):
+        sys.exit(1)
     if not args.peer_id and not args.our_id:
         print('You must pass either --peer-id or --our-id')
         sys.exit(1)
     loop = asyncio.new_event_loop()
-    c = WebRTCClient(loop, args.our_id, args.peer_id, args.server, args.remote_is_offerer)
+    c = WebRTCClient(loop, args.our_id, args.peer_id, args.server, args.remote_is_offerer, args.video_encoding, args.source_type)
     loop.run_until_complete(c.connect())
     res = loop.run_until_complete(c.loop())
     sys.exit(res)

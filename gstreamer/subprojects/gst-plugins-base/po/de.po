@@ -7,19 +7,19 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gst-plugins-base 1.19.2\n"
+"Project-Id-Version: gst-plugins-base-1.24.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-09-23 01:33+0100\n"
-"PO-Revision-Date: 2021-11-06 23:14+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
+"PO-Revision-Date: 2024-03-16 23:45+0100\n"
 "Last-Translator: Christian Kirbach <christian.kirbach@gmail.com>\n"
 "Language-Team: German <translation-team-de@lists.sourceforge.net>\n"
 "Language: de\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"X-Bugs: Report translation errors to the Language-Team address.\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: Poedit 3.0\n"
+"X-Bugs: Report translation errors to the Language-Team address.\n"
+"X-Generator: Poedit 3.4.2\n"
 
 msgid "Could not open device for playback in mono mode."
 msgstr "Gerät konnte nicht zur Wiedergabe in Mono geöffnet werden."
@@ -90,9 +90,6 @@ msgstr ""
 msgid "Could not create \"uridecodebin\" element."
 msgstr "Das Element »uridecodebin« konnte nicht erstellt werden."
 
-msgid "Could not create \"uridecodebin3\" element."
-msgstr "Das Element »uridecodebin3« konnte nicht erstellt werden."
-
 #, c-format
 msgid "Both autovideosink and %s elements are missing."
 msgstr "Beide Elemente »autovideosink« und »%s« fehlen."
@@ -157,8 +154,18 @@ msgstr "Dieser Datenstrom kann noch nicht abgespielt werden."
 msgid "No URI handler implemented for \"%s\"."
 msgstr "Es ist kein URI-Handler für »%s« implementiert."
 
+msgid "Source element can't be prepared"
+msgstr "Das Quellelement kann nicht vorbereitet werden"
+
 msgid "Source element is invalid."
 msgstr "Das Quellelement ist ungültig."
+
+#, c-format
+msgid "Failed to create download directory '%s'."
+msgstr "Das Anlegen des Download-Ordners »%s« ist fehlgeschlagen."
+
+msgid "Source element has no pads."
+msgstr "Das Quellelement hat keine Auffüllung."
 
 #, c-format
 msgid "Error while sending data to \"%s:%d\"."
@@ -170,14 +177,14 @@ msgstr "Der Ton kann nicht schnell genug aufgezeichnet werden"
 msgid "This CD has no audio tracks"
 msgstr "Auf dieser CD befinden sich keine Audio-Titel"
 
-msgid "failed to draw pattern"
-msgstr "Zeichnen des Musters ist gescheitert"
+msgid "An OpenGL error occurred"
+msgstr "Es ist ein OpenGL-Fehler aufgetreten"
 
-msgid "A GL error occurred"
-msgstr "Es ist ein GL-Fehler aufgetreten"
+msgid "The GL API is not compatible with the current GL context"
+msgstr "Die GL-API ist nicht mit dem aktuellen GL-Kontext kompatibel"
 
-msgid "format wasn't negotiated before get function"
-msgstr "Format wurde nicht vor der get-Funktion erkannt"
+msgid "Subclass failed to initialize."
+msgstr "Die Unterklasse konnte nicht initialisiert werden."
 
 msgid "ID3 tag"
 msgstr "ID3-Kennzeichnung"
@@ -495,6 +502,14 @@ msgstr "Weißabgleich"
 msgid "The white balance mode set when capturing an image"
 msgstr "Der eingestellte Weißabgleich bei Bildaufnahme"
 
+#, fuzzy
+msgid "capturing light source"
+msgstr "Aufnahmequelle"
+
+#, fuzzy
+msgid "The light source indicates the kind of light when capturing animage"
+msgstr "Die verwendete Motivwahl bei Bildaufnahme"
+
 msgid "capturing contrast"
 msgstr "Kontrast"
 
@@ -667,14 +682,14 @@ msgstr "Wiedergaberichtung ändern"
 msgid "enable/disable trick modes"
 msgstr "Trickmodi einschalten/ausschalten"
 
-msgid "change audio track"
-msgstr "Audio-Titel wechseln"
+msgid "change to previous/next audio track"
+msgstr "Zum vorherigen/folgenden Audio-Titel wechseln"
 
-msgid "change video track"
-msgstr "Videl-Titel wechseln"
+msgid "change to previous/next video track"
+msgstr "Zum vorherigen/folgenden Video-Titel wechseln"
 
-msgid "change subtitle track"
-msgstr "Untertitel wechseln"
+msgid "change to previous/next subtitle track"
+msgstr "Zum vorherigen/folgenden Untertitel wechseln"
 
 msgid "seek to beginning"
 msgstr "An den Anfang springen"
@@ -684,6 +699,10 @@ msgstr "Tastenkombinationen anzeigen"
 
 msgid "Interactive mode - keyboard controls:"
 msgstr "Interaktiver Modus - Tastatursteuerung:"
+
+#, c-format
+msgid "Use Windows high-resolution clock, precision: %u ms\n"
+msgstr "Hochgenaue Windows-Uhr verwenden. Präzision: %u ms\n"
 
 msgid "Output status information and property notifications"
 msgstr "Zustandsinformation und Eigenschaftsmitteilungen ausgeben"
@@ -700,6 +719,9 @@ msgstr "Zu verwendende Audio-Ziel (Voreinstellung ist »autoaudiosink«)"
 msgid "Enable gapless playback"
 msgstr "Lückenlose Wiedergabe einschalten"
 
+msgid "Enable instantaneous uri changes (only with playbin3)"
+msgstr "Unverzügliche Adressen-Wechsel einschalten (nur mit playbin3)"
+
 msgid "Shuffle playlist"
 msgstr "Wiedergabeliste mischen"
 
@@ -712,6 +734,9 @@ msgstr "Lautstärke"
 msgid "Start position in seconds."
 msgstr "Startposition in Sekunden."
 
+msgid "Enable accurate seeking"
+msgstr "Präzisen Suchlauf einschalten"
+
 msgid "Playlist file containing input media files"
 msgstr "Datei mit Wiedergabeliste enthält Eingabe-Mediendateien"
 
@@ -723,11 +748,11 @@ msgstr ""
 msgid "Do not print any output (apart from errors)"
 msgstr "Nichts ausgeben (außer Fehlermeldungen)"
 
-msgid "Use playbin3 pipeline"
-msgstr "playbin3-Weiterleitung verwenden"
+msgid "Use playbin3 pipeline (default)"
+msgstr "playbin2-Weiterleitung verwenden (Vorgabe)"
 
-msgid "(default varies depending on 'USE_PLAYBIN' env variable)"
-msgstr "(die Vorgabe hängt von der Umgebungsvariablen »USE_PLABIN« ab)"
+msgid "Use playbin2 pipeline"
+msgstr "playbin2-Weiterleitung verwenden"
 
 msgid ""
 "Keep showing the last frame on EOS until quit or playlist change command "
@@ -735,6 +760,9 @@ msgid ""
 msgstr ""
 "Bei Stromende das letzte Einzelbild dargestellt lassen bis zum Beenden oder "
 "Wechseln der Wiedergabeliste (lückenlose Wiedergabe wird ignoriert)"
+
+msgid "Do not print current position of pipeline"
+msgstr "Nicht die aktuelle Position der Weiterleitung ausgeben"
 
 #, c-format
 msgid "Usage: %s FILE1|URI1 [FILE2|URI2] [FILE3|URI3] ..."
@@ -747,6 +775,22 @@ msgstr ""
 
 msgid "Press 'k' to see a list of keyboard shortcuts.\n"
 msgstr "Geben Sie »k« ein, um die Liste der Tastenkombinationen zu sehen.\n"
+
+#~ msgid "failed to draw pattern"
+#~ msgstr "Zeichnen des Musters ist gescheitert"
+
+#~ msgid "format wasn't negotiated before get function"
+#~ msgstr "Format wurde nicht vor der get-Funktion erkannt"
+
+#~ msgid ""
+#~ "Use playbin3 pipeline (default varies depending on 'USE_PLAYBIN' env "
+#~ "variable)"
+#~ msgstr ""
+#~ "Die playbin3-Weiterleitung verwenden (die Voreinstellung hängt von der "
+#~ "Umgebungsvariablen »USE_PLABIN« ab)"
+
+#~ msgid "Could not create \"uridecodebin3\" element."
+#~ msgstr "Das Element »uridecodebin3« konnte nicht erstellt werden."
 
 #~ msgid "Could not create \"decodebin3\" element."
 #~ msgstr "Das Element »decodebin3« konnte nicht erstellt werden."

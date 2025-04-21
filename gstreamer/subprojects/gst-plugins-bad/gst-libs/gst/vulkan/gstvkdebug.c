@@ -26,6 +26,7 @@
 
 #include "gstvkerror.h"
 #include "gstvkdebug.h"
+#include "gstvkapi.h"
 #include "gstvkdebug-private.h"
 
 /**
@@ -94,7 +95,7 @@ static const struct
  *
  * Since: 1.18
  */
-FLAGS_TO_STRING(memory_heap, VkMemoryHeapFlagBits);
+FLAGS_TO_STRING(memory_heap, VkMemoryHeapFlags);
 
 static const struct 
 {
@@ -107,6 +108,10 @@ static const struct
   {VK_QUEUE_SPARSE_BINDING_BIT, "sparse-binding"},
 #if VK_HEADER_VERSION >= 70
   {VK_QUEUE_PROTECTED_BIT, "protected"},
+#endif
+#if GST_VULKAN_HAVE_VIDEO_EXTENSIONS
+  {VK_QUEUE_VIDEO_DECODE_BIT_KHR, "decode"},
+  {VK_QUEUE_VIDEO_ENCODE_BIT_KHR, "encode"}
 #endif
 };
 /**

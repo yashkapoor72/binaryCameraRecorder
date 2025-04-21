@@ -73,18 +73,6 @@ gst_ffmpeg_avcodec_open (AVCodecContext * avctx, const AVCodec * codec)
 }
 
 int
-gst_ffmpeg_avcodec_close (AVCodecContext * avctx)
-{
-  int ret;
-
-  g_mutex_lock (&gst_avcodec_mutex);
-  ret = avcodec_close (avctx);
-  g_mutex_unlock (&gst_avcodec_mutex);
-
-  return ret;
-}
-
-int
 gst_ffmpeg_av_find_stream_info (AVFormatContext * ic)
 {
   int ret;
@@ -162,6 +150,7 @@ plugin_init (GstPlugin * plugin)
   gst_ffmpegdemux_register (plugin);
   gst_ffmpegmux_register (plugin);
   gst_ffmpegdeinterlace_register (plugin);
+  gst_ffmpegvidcmp_register (plugin);
 
   /* Now we can return the pointer to the newly created Plugin object. */
   return TRUE;

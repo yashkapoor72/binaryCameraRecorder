@@ -43,6 +43,7 @@ import shutil
 import uuid
 from itertools import cycle
 from fractions import Fraction
+from pathlib import Path
 
 from .utils import GstCaps, which
 from . import reporters
@@ -79,6 +80,63 @@ EXITING_SIGNALS.update({(v, k) for k, v in EXITING_SIGNALS.items()})
 
 
 CI_ARTIFACTS_URL = os.environ.get('CI_ARTIFACTS_URL')
+DEBUGGER = None
+
+
+def get_debugger():
+    global DEBUGGER
+    if DEBUGGER is not None:
+        return DEBUGGER
+
+    gdb = shutil.which('gdb')
+    if gdb:
+        DEBUGGER = GDBDebugger(gdb)
+    else:
+        lldb = shutil.which('lldb')
+        DEBUGGER = LLDBDebugger(lldb)
+
+    return DEBUGGER
+
+
+class Debugger:
+    def __init__(self, executable):
+        self.executable = executable
+
+    def get_args(self, args, non_stop) -> list:
+        raise NotImplementedError
+
+    def get_attach_args(self, pid):
+        raise NotImplementedError
+
+
+class GDBDebugger(Debugger):
+    def get_args(self, args, non_stop) -> list:
+        if non_stop:
+            return [
+                self.executable,
+                "-ex",
+                "run",
+                "-ex",
+                "bt",
+                "-ex",
+                "quit",
+                "--args",
+            ] + args
+        else:
+            return [self.executable, "--args"] + args
+
+    def get_attach_args(self, pid):
+        return [self.executable, "-p", str(pid)]
+
+
+class LLDBDebugger(Debugger):
+    def get_args(self, args, non_stop) -> list:
+        if non_stop:
+            return [self.executable, "-o", "run", "-o", "bt", "-o", "quit", "--"] + args
+        return [self.executable, "--"] + args
+
+    def get_attach_args(self, pid):
+        return [self.executable, "-p", str(pid)]
 
 
 class Test(Loggable):
@@ -134,6 +192,14 @@ class Test(Loggable):
 
         self.clean()
 
+    def remove_logs(self):
+        for logfile in set([self.logfile]) | self.extra_logfiles:
+            try:
+                os.remove(logfile)
+                self.info("Removed %s after test passed.", logfile)
+            except FileNotFoundError:
+                pass
+
     def _generate_expected_issues(self):
         return ''
 
@@ -168,6 +234,7 @@ class Test(Loggable):
             copied_test._uuid = None
             copied_test.options = copy.copy(self.options)
             copied_test.options.logsdir = os.path.join(copied_test.options.logsdir, str(nth))
+            copied_test.extra_logfiles = set()
             os.makedirs(copied_test.options.logsdir, exist_ok=True)
 
         return copied_test
@@ -251,14 +318,18 @@ class Test(Loggable):
             for logfile in self.extra_logfiles:
                 # Only copy over extra logfile content if it's below a certain threshold
                 # Avoid copying gigabytes of data if a lot of debugging is activated
-                if os.path.getsize(logfile) < 500 * 1024:
-                    self.out.write('\n\n## %s:\n\n```\n%s\n```\n' % (
-                        os.path.basename(logfile), self.get_extra_log_content(logfile))
-                    )
-                else:
-                    self.out.write('\n\n## %s:\n\n**Log file too big.**\n  %s\n\n Check file content directly\n\n' % (
-                        os.path.basename(logfile), logfile)
-                    )
+                try:
+                    if os.path.getsize(logfile) < 500 * 1024:
+                        self.out.write('\n\n## %s:\n\n```\n%s\n```\n' % (
+                            os.path.basename(logfile), self.get_extra_log_content(logfile))
+                        )
+                    else:
+                        self.out.write('\n\n## %s:\n\n**Log file too big.**\n  %s\n\n Check file content directly\n\n' % (
+                            os.path.basename(logfile), logfile)
+                        )
+                except FileNotFoundError as e:
+                    self.info(f"Failed to copy logfile {logfile}: {e}")
+                    pass
 
             if self.rr_logdir:
                 self.out.write('\n\n## rr trace:\n\n```\nrr replay %s/latest-trace\n```\n' % (
@@ -282,11 +353,8 @@ class Test(Loggable):
         self.out = None
 
     def _get_file_content(self, file_name):
-        f = open(file_name, 'r+')
-        value = f.read()
-        f.close()
-
-        return value
+        with open(file_name, 'r', encoding='utf-8', errors='replace') as f:
+            return f.read()
 
     def get_log_content(self):
         return self._get_file_content(self.logfile)
@@ -349,7 +417,7 @@ class Test(Loggable):
             info = ""
 
         info += "\n\n**You can mark the issues as 'known' by adding the " \
-            + " following lines to the list of known issues**\n" \
+            + f" following lines to the list of known issues of the testsuite called \"{self.classname.split('.')[0]}\"**\n" \
             + "\n\n``` python\n%s\n```" % (self.generate_expected_issues())
 
         if self.options.redirect_logs:
@@ -368,6 +436,7 @@ class Test(Loggable):
                                                                     message, error))
 
         if result is Result.TIMEOUT:
+            self.add_stack_trace_to_logfile()
             if self.options.debug is True:
                 if self.options.gdb:
                     printc("Timeout, you should process <ctrl>c to get into gdb",
@@ -376,11 +445,21 @@ class Test(Loggable):
                     self.process.communicate()
                 else:
                     pname = self.command[0]
-                    input("%sTimeout happened  on %s you can attach gdb doing:\n $gdb %s %d%s\n"
-                          "Press enter to continue" % (Colors.FAIL, self.classname,
-                          pname, self.process.pid, Colors.ENDC))
-            else:
-                self.add_stack_trace_to_logfile()
+                    while True:
+                        debugger = get_debugger()
+                        if not debugger:
+                            res = input(f"{Colors.FAIL}Timeout happened on {self.classname} no known debugger found but the process PID is {self.process.pid}\n"
+                                f"You can find log file at {self.logfile}\n"
+                                f"Press 'ok(o)' enter to continue\n\n")
+                        else:
+                            res = input(f"{Colors.FAIL}Timeout happened on {self.classname} you can attach the debugger doing:\n"
+                                    f"   $ {' '.join([shlex.quote(a) for a in debugger.get_attach_args(self.process.pid)])}\n"
+                                    f"You can find log file at {self.logfile}\n"
+                                    f"**Press ok(o) to continue**{Colors.ENDC}\n\n")
+
+                        if res.lower() in ['o', 'ok']:
+                            print("Continuing...\n")
+                            break
 
         self.result = result
         self.message = message
@@ -388,6 +467,13 @@ class Test(Loggable):
 
         if result not in [Result.PASSED, Result.NOT_RUN, Result.SKIPPED]:
             self.add_known_issue_information()
+
+    def expected_return_codes(self):
+        res = []
+        for issue in self.expected_issues:
+            if 'returncode' in issue:
+                res.append(issue['returncode'])
+        return res
 
     def check_results(self):
         if self.result is Result.FAILED or self.result is Result.TIMEOUT:
@@ -397,6 +483,10 @@ class Test(Loggable):
         if self.options.rr and self.process.returncode == -signal.SIGPIPE:
             self.set_result(Result.SKIPPED, "SIGPIPE received under `rr`, known issue.")
         elif self.process.returncode == 0:
+            for issue in self.expected_issues:
+                if issue['returncode'] != 0 and not issue.get("sometimes", False):
+                    self.set_result(Result.ERROR, "Expected return code %d" % issue['returncode'])
+                    return
             self.set_result(Result.PASSED)
         elif self.process.returncode in EXITING_SIGNALS:
             self.add_stack_trace_to_logfile()
@@ -405,6 +495,8 @@ class Test(Loggable):
                                 EXITING_SIGNALS[self.process.returncode]))
         elif self.process.returncode == VALGRIND_ERROR_CODE:
             self.set_result(Result.FAILED, "Valgrind reported errors")
+        elif self.process.returncode in self.expected_return_codes():
+            self.set_result(Result.KNOWN_ERROR)
         else:
             self.set_result(Result.FAILED,
                             "Application returned %d" % (self.process.returncode))
@@ -534,10 +626,8 @@ class Test(Loggable):
             self.timeout = sys.maxsize
             self.hard_timeout = sys.maxsize
 
-        args = ["gdb"]
-        if self.options.gdb_non_stop:
-            args += ["-ex", "run", "-ex", "backtrace", "-ex", "quit"]
-        args += ["--args"] + command
+        assert DEBUGGER is not None
+        args = DEBUGGER.get_args(command, self.options.gdb_non_stop)
         return args
 
     def use_rr(self, command, subenv):
@@ -562,6 +652,7 @@ class Test(Loggable):
 
         for o, v in [('trace-children', 'yes'),
                      ('tool', 'memcheck'),
+                     ('fair-sched', 'try'),
                      ('leak-check', 'full'),
                      ('leak-resolution', 'high'),
                      # TODO: errors-for-leak-kinds should be set to all instead of definite
@@ -670,7 +761,7 @@ class Test(Loggable):
             self.out.write("# `%s`\n\n"
                            "## Command\n\n``` bash\n%s\n```\n\n" % (
                                self.classname, self.get_command_repr()))
-            self.out.write("## %s output\n\n``` \n\n" % os.path.basename(self.application))
+            self.out.write("## %s output\n\n``` log \n\n" % os.path.basename(self.application))
             self.out.flush()
         else:
             message = "Launching: %s%s\n" \
@@ -707,7 +798,11 @@ class Test(Loggable):
         self.logfile = shutil.copy(self.logfile, path)
         extra_logs = []
         for logfile in self.extra_logfiles:
-            extra_logs.append(shutil.copy(logfile, path))
+            try:
+                extra_logs.append(shutil.copy(logfile, path))
+            except FileNotFoundError as e:
+                self.info(f"Failed to copy logfile {logfile}: {e}")
+                pass
         self.extra_logfiles = extra_logs
 
     def test_end(self, retry_on_failures=False):
@@ -728,10 +823,6 @@ class Test(Loggable):
         for n in self.__env_variable:
             clean_env[n] = self.proc_env.get(n, None)
         self.proc_env = clean_env
-
-        # Don't keep around JSON report objects, they were processed
-        # in check_results already
-        self.reports = []
 
         return self.result
 
@@ -853,6 +944,7 @@ class GstValidateTest(Test):
         self.media_descriptor = media_descriptor
         self.server = None
         self.criticals = []
+        self.dotfilesdir = None
 
         override_path = self.get_override_file(media_descriptor)
         if override_path:
@@ -942,12 +1034,14 @@ class GstValidateTest(Test):
         subproc_env["GST_VALIDATE_UUID"] = self.get_uuid()
         subproc_env["GST_VALIDATE_LOGSDIR"] = self.options.logsdir
 
-        if 'GST_DEBUG' in os.environ and not self.options.redirect_logs:
+        no_color = True
+        if 'GST_DEBUG' in os.environ and not self.options.redirect_logs and not self.options.debug:
             gstlogsfile = os.path.splitext(self.logfile)[0] + '.gstdebug'
             self.extra_logfiles.add(gstlogsfile)
             subproc_env["GST_DEBUG_FILE"] = gstlogsfile
+            no_color = self.options.no_color
 
-        if self.options.no_color:
+        if no_color:
             subproc_env["GST_DEBUG_NO_COLOR"] = '1'
 
         # Ensure XInitThreads is called, see bgo#731525
@@ -955,6 +1049,12 @@ class GstValidateTest(Test):
         self.add_env_variable('GST_GL_XINITTHREADS', '1')
         subproc_env['GST_XINITTHREADS'] = '1'
         self.add_env_variable('GST_XINITTHREADS', '1')
+
+        vaildateconfigs_path = os.environ.get('GST_VALIDATE_TEST_CONFIG_PATH', "")
+        extra_configs = os.path.join(self.options.logsdir, "_validate_test_extra_configs")
+        vaildateconfigs_path = f"{extra_configs}{os.pathsep}{vaildateconfigs_path}"
+        subproc_env['GST_VALIDATE_TEST_CONFIG_PATH'] = vaildateconfigs_path
+        self.add_env_variable('GST_VALIDATE_TEST_CONFIG_PATH', vaildateconfigs_path)
 
         if self.scenario is not None:
             scenario = self.scenario.get_execution_name()
@@ -968,16 +1068,20 @@ class GstValidateTest(Test):
                 pass
 
         if not subproc_env.get('GST_DEBUG_DUMP_DOT_DIR'):
-            dotfilesdir = os.path.join(self.options.logsdir,
-                                self.classname.replace(".", os.sep) + '.pipelines_dot_files')
-            mkdir(dotfilesdir)
-            subproc_env['GST_DEBUG_DUMP_DOT_DIR'] = dotfilesdir
+            self.dotfilesdir = os.path.splitext(self.logfile)[0] + '.pipelines_dot_files'
+            mkdir(self.dotfilesdir)
+            subproc_env['GST_DEBUG_DUMP_DOT_DIR'] = self.dotfilesdir
             if CI_ARTIFACTS_URL:
-                dotfilesurl = CI_ARTIFACTS_URL + os.path.relpath(dotfilesdir,
+                dotfilesurl = CI_ARTIFACTS_URL + os.path.relpath(self.dotfilesdir,
                                                                  self.options.logsdir)
                 subproc_env['GST_VALIDATE_DEBUG_DUMP_DOT_URL'] = dotfilesurl
 
         return subproc_env
+
+    def remove_logs(self):
+        super().remove_logs()
+        if self.dotfilesdir:
+            shutil.rmtree(self.dotfilesdir, ignore_errors=True)
 
     def clean(self):
         Test.clean(self)
@@ -986,6 +1090,11 @@ class GstValidateTest(Test):
         self.media_duration = -1
         self.speed = 1.0
         self.actions_infos = []
+
+    def copy(self, nth=None):
+        new_test = super().copy(nth=nth)
+        new_test.reports = copy.deepcopy(self.reports)
+        return new_test
 
     def build_arguments(self):
         super(GstValidateTest, self).build_arguments()
@@ -1131,7 +1240,7 @@ class GstValidateTest(Test):
         msg = ""
         result = Result.PASSED
         if self.result == Result.TIMEOUT:
-            with open(self.logfile) as f:
+            with open(self.logfile, errors="surrogateescape") as f:
                 signal_fault_info = self.fault_sig_regex.findall(f.read())
                 if signal_fault_info:
                     result = Result.FAILED
@@ -1218,6 +1327,15 @@ class GstValidateTest(Test):
         result = super(GstValidateTest, self).get_valgrind_suppressions()
         result.extend(utils.get_gst_build_valgrind_suppressions())
         return result
+
+    def test_end(self, retry_on_failures=False):
+        ret = super().test_end(retry_on_failures=retry_on_failures)
+
+        # Don't keep around JSON report objects, they were processed
+        # in check_results already
+        self.reports = []
+
+        return ret
 
 
 class VariableFramerateMode(Enum):
@@ -1565,9 +1683,13 @@ class TestsManager(Loggable):
                 self.blacklisted_tests_patterns.append(re.compile(pattern))
 
     def set_default_blacklist(self, default_blacklist):
-        for test_regex, reason in default_blacklist:
+        for test_regex, reason, *re_flags in default_blacklist:
+            re_flags = re_flags[0] if re_flags else None
+
             if not test_regex.startswith(self.loading_testsuite + '.'):
                 test_regex = self.loading_testsuite + '.' + test_regex
+            if re_flags is not None:
+                test_regex = re_flags + test_regex
             self.blacklisted_tests.append((test_regex, reason))
             self._add_blacklist(test_regex)
 
@@ -1594,6 +1716,10 @@ class TestsManager(Loggable):
         if options.blacklisted_tests:
             for patterns in options.blacklisted_tests:
                 self._add_blacklist(patterns)
+
+        if options.gdb:
+            if get_debugger() is None:
+                raise RuntimeError("No debugger found, can't run tests with --gdb")
 
     def check_blacklists(self):
         if self.options.check_bugs_status:
@@ -1926,6 +2052,10 @@ class _TestsLauncher(Loggable):
         if self.needs_http_server() or options.httponly is True:
             self.httpsrv = HTTPServer(options)
             self.httpsrv.start()
+            configsdir = Path(options.logsdir) / "_validate_test_extra_configs"
+            os.makedirs(configsdir, exist_ok=True)
+            with open(configsdir / "http_server_port.var", "w") as f:
+                f.write(f"set-globals,http_server_port={self.options.http_server_port}")
 
         if options.no_display:
             self.vfb_server = get_virual_frame_buffer_server(options)
@@ -2191,6 +2321,10 @@ class _TestsLauncher(Loggable):
                     total_num_tests=total_num_tests)
                 if to_report:
                     self.reporter.after_test(test)
+
+                if res == Result.PASSED and not self.options.keep_logs:
+                    test.remove_logs()
+
                 if self.start_new_job(tests_left):
                     jobs_running += 1
 
@@ -2219,6 +2353,7 @@ class _TestsLauncher(Loggable):
             self._stop_server()
 
     def run_tests(self):
+        os.environ["GST_VALIDATE_LAUNCHER_HTTP_SERVER_PATH"] = os.path.join(os.path.dirname(__file__), "RangeHTTPServer.py")
         r = 0
         try:
             self._start_server()
@@ -2267,14 +2402,6 @@ class _TestsLauncher(Loggable):
         for tester in self.testers:
             if tester.needs_http_server():
                 return True
-
-
-class NamedDic(object):
-
-    def __init__(self, props):
-        if props:
-            for name, value in props.items():
-                setattr(self, name, value)
 
 
 class Scenario(object):
@@ -2369,7 +2496,7 @@ class ScenarioManager(Loggable):
         mfile_bname = os.path.basename(mfile)
 
         for f in os.listdir(os.path.dirname(mfile)):
-            if re.findall("%s\..*\.%s$" % (re.escape(mfile_bname), self.FILE_EXTENSION), f):
+            if re.findall(r'%s\..*\.%s$' % (re.escape(mfile_bname), self.FILE_EXTENSION), f):
                 scenarios.append(os.path.join(os.path.dirname(mfile), f))
 
         if scenarios:
@@ -2399,7 +2526,7 @@ class ScenarioManager(Loggable):
 
         config = configparser.RawConfigParser()
         f = open(scenario_defs)
-        config.readfp(f)
+        config.read_file(f)
 
         for section in config.sections():
             name = None
@@ -2602,7 +2729,7 @@ class MediaDescriptor(Loggable):
     def can_play_reverse(self):
         raise NotImplemented
 
-    def prerrols(self):
+    def prerolls(self):
         return True
 
     def is_compatible(self, scenario):
@@ -2620,6 +2747,8 @@ class MediaDescriptor(Loggable):
             return False
 
         if not self.can_play_reverse() and scenario.does_reverse_playback():
+            self.debug("Do not run %s as %s can not play reverse ",
+                       scenario, self.get_uri())
             return False
 
         if not self.is_live() and scenario.needs_live_content():
@@ -2632,7 +2761,9 @@ class MediaDescriptor(Loggable):
                        scenario, self.get_uri())
             return False
 
-        if not self.prerrols() and getattr(scenario, 'needs_preroll', False):
+        if not self.prerolls() and getattr(scenario, 'needs_preroll', False):
+            self.debug("Do not run %s as %s does not support preroll",
+                       scenario, self.get_uri())
             return False
 
         if self.get_duration() and self.get_duration() / GST_SECOND < scenario.get_min_media_duration():
@@ -2645,7 +2776,7 @@ class MediaDescriptor(Loggable):
 
         for track_type in ['audio', 'subtitle', 'video']:
             if self.get_num_tracks(track_type) < scenario.get_min_tracks(track_type):
-                self.debug("%s -- %s | At least %s %s track needed  < %s"
+                self.debug("Do not run %s -- %s | At least %s %s track needed  < %s"
                            % (scenario, self.get_uri(), track_type,
                               scenario.get_min_tracks(track_type),
                               self.get_num_tracks(track_type)))

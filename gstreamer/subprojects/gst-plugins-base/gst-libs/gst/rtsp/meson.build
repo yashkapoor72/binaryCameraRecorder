@@ -22,6 +22,15 @@ rtsp_headers = files([
 ])
 install_headers(rtsp_headers, subdir : 'gstreamer-1.0/gst/rtsp/')
 
+doc_sources = []
+foreach s: rtsp_sources + rtsp_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'rtsp': pathsep.join(doc_sources)
+}
+
 rtsp_enums = gnome.mkenums_simple('gstrtsp-enumtypes',
   sources : rtsp_headers,
   body_prefix : '#ifdef HAVE_CONFIG_H\n#include "config.h"\n#endif',
@@ -79,6 +88,7 @@ if build_gir
   library_def = {'lib': library_def['lib'], 'gir': [gir]}
   if not static_build
     rtsp_gir = gnome.generate_gir(gst_rtsp, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [rtsp_gir]}
     rtsp_gen_sources += [rtsp_gir]
   endif
 endif

@@ -32,6 +32,7 @@
 #include <string.h>
 
 #include "gsthlsdemux.h"
+#include "gsthlsdemux-stream.h"
 
 GST_DEBUG_CATEGORY_EXTERN (gst_hls_demux2_debug);
 #define GST_CAT_DEFAULT gst_hls_demux2_debug
@@ -318,7 +319,7 @@ get_first_mpegts_time (const guint8 * data, gsize size, guint packet_size)
           if (GST_CLOCK_TIME_IS_VALID (pts)) {
             /* Only take the PTS if it's lower than the dts and does not differ
              * by more than a second (which would indicate bogus values) */
-            if (pts < dts && ABS (pts - dts) < GST_SECOND)
+            if (pts < dts && (dts - pts) < GST_SECOND)
               internal_time = pts;
             else
               internal_time = dts;
@@ -389,7 +390,7 @@ gst_hlsdemux_handle_content_mpegts (GstHLSDemux * demux,
     return GST_HLS_PARSER_RESULT_NEED_MORE_DATA;
 
   /* We have the first internal time, figure out if we are in sync or not */
-  return gst_hlsdemux_handle_internal_time (demux, hls_stream, internal_time);
+  return gst_hlsdemux_stream_handle_internal_time (hls_stream, internal_time);
 }
 
 GstHLSParserResult
@@ -496,12 +497,11 @@ out:
   gst_buffer_unmap (*buffer, &info);
 
   if (smallest_ts != GST_CLOCK_TIME_NONE) {
-    ret = gst_hlsdemux_handle_internal_time (demux, hls_stream, smallest_ts);
+    ret = gst_hlsdemux_stream_handle_internal_time (hls_stream, smallest_ts);
   }
 
   return ret;
 }
-
 
 GstHLSParserResult
 gst_hlsdemux_handle_content_id3 (GstHLSDemux * demux,
@@ -539,7 +539,7 @@ gst_hlsdemux_handle_content_id3 (GstHLSDemux * demux,
   if (!gst_tag_list_get_sample (taglist, GST_TAG_PRIVATE_DATA, &priv_data))
     goto out;
 
-  if (!g_str_equal ("com.apple.streaming.transportStreamTimestamp",
+  if (g_strcmp0 ("com.apple.streaming.transportStreamTimestamp",
           gst_structure_get_string (gst_sample_get_info (priv_data), "owner")))
     goto out;
 
@@ -561,7 +561,7 @@ gst_hlsdemux_handle_content_id3 (GstHLSDemux * demux,
 
   gst_buffer_unmap (tag_buf, &info);
 
-  ret = gst_hlsdemux_handle_internal_time (demux, hls_stream, internal);
+  ret = gst_hlsdemux_stream_handle_internal_time (hls_stream, internal);
 
 out:
   if (priv_data)
@@ -831,8 +831,8 @@ gst_hlsdemux_handle_content_webvtt (GstHLSDemux * demux,
   gchar **original_lines;
   GstClockTime localtime = GST_CLOCK_TIME_NONE;
   GstClockTime mpegtime = GST_CLOCK_TIME_NONE;
-  GstClockTime low_stream_time = GST_CLOCK_STIME_NONE;
-  GstClockTime high_stream_time = GST_CLOCK_STIME_NONE;
+  GstClockTimeDiff low_stream_time = GST_CLOCK_STIME_NONE;
+  GstClockTimeDiff high_stream_time = GST_CLOCK_STIME_NONE;
   gboolean found_timing = FALSE;
   gboolean found_text = FALSE;
   GPtrArray *builder;
@@ -855,7 +855,7 @@ gst_hlsdemux_handle_content_webvtt (GstHLSDemux * demux,
   segment_end = segment_start + current_segment->duration;
   tolerance = MAX (current_segment->duration / 2, 500 * GST_MSECOND);
 
-  map = gst_hls_find_time_map (demux, current_segment->discont_sequence);
+  map = gst_hls_demux_find_time_map (demux, current_segment->discont_sequence);
 
   builder = g_ptr_array_new_with_free_func (g_free);
 
@@ -944,6 +944,10 @@ gst_hlsdemux_handle_content_webvtt (GstHLSDemux * demux,
 out:
   if (ret) {
     gchar *newfile;
+
+    /* Ensure file always ends with an empty newline by adding an empty
+     * line. This helps downstream parsers properly detect entries */
+    g_ptr_array_add (builder, g_strdup ("\n"));
     /* Add NULL-terminator to string list */
     g_ptr_array_add (builder, NULL);
     newfile = g_strjoinv ("\n", (gchar **) builder->pdata);
@@ -962,33 +966,43 @@ out:
   g_free (original_content);
 
   if (out_of_bounds) {
-    GstM3U8MediaSegment *candidate_segment;
 
     /* The computed stream time falls outside of the guesstimated stream time,
      * reassess which segment we really are in */
     GST_WARNING ("Cue %" GST_STIME_FORMAT " -> %" GST_STIME_FORMAT
         " is outside of segment %" GST_STIME_FORMAT " -> %"
-        GST_STIME_FORMAT, GST_STIME_ARGS (low_stream_time),
+        GST_STIME_FORMAT,
+        GST_STIME_ARGS (low_stream_time),
         GST_STIME_ARGS (high_stream_time),
         GST_STIME_ARGS (current_segment->stream_time),
-        GST_STIME_ARGS (current_segment->stream_time +
-            current_segment->duration));
+        GST_STIME_ARGS ((GstClockTimeDiff) (current_segment->stream_time +
+                current_segment->duration)));
 
-    candidate_segment =
-        gst_hls_media_playlist_seek (hls_stream->playlist, TRUE,
-        GST_SEEK_FLAG_SNAP_NEAREST, low_stream_time);
-    if (candidate_segment) {
-      g_assert (candidate_segment != current_segment);
+    GstM3U8SeekResult seek_result;
+
+    if (gst_hls_media_playlist_find_position (hls_stream->playlist,
+            low_stream_time, hls_stream->in_partial_segments, &seek_result)) {
+      g_assert (seek_result.segment != current_segment);
       GST_DEBUG_OBJECT (hls_stream,
           "Stream time corresponds to segment %" GST_STIME_FORMAT
           " duration %" GST_TIME_FORMAT,
-          GST_STIME_ARGS (candidate_segment->stream_time),
-          GST_TIME_ARGS (candidate_segment->duration));
+          GST_STIME_ARGS (seek_result.segment->stream_time),
+          GST_TIME_ARGS (seek_result.segment->duration));
+
+      /* When we land in the middle of a partial segment, actually
+       * use the full segment position to resync the playlist */
+      if (seek_result.found_partial_segment) {
+        hls_stream->current_segment->stream_time =
+            seek_result.segment->stream_time;
+      } else {
+        hls_stream->current_segment->stream_time = seek_result.stream_time;
+      }
+
       /* Recalculate everything and ask parent class to restart */
-      hls_stream->current_segment->stream_time = candidate_segment->stream_time;
       gst_hls_media_playlist_recalculate_stream_time (hls_stream->playlist,
           hls_stream->current_segment);
-      gst_m3u8_media_segment_unref (candidate_segment);
+      gst_m3u8_media_segment_unref (seek_result.segment);
+      ret = GST_HLS_PARSER_RESULT_RESYNC;
     }
   }
 

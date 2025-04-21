@@ -219,10 +219,8 @@ GST_END_TEST;
     guint temporal_layer_id, tl0picidx;                                  \
     GstCustomMeta *meta = gst_buffer_get_custom_meta (buffer,            \
         "GstVP8Meta");                                                   \
-    GstStructure *s;                                                     \
     fail_unless (meta != NULL);                                          \
-    s = gst_custom_meta_get_structure (meta);                            \
-    fail_unless (gst_structure_get (s,                                   \
+    fail_unless (gst_structure_get (meta->structure,                     \
           "use-temporal-scaling", G_TYPE_BOOLEAN, &use_temporal_scaling, \
           "layer-sync", G_TYPE_BOOLEAN, &layer_sync,                     \
           "layer-id", G_TYPE_UINT, &temporal_layer_id,                   \
@@ -242,7 +240,8 @@ configure_vp8ts (GstHarness * h)
   GValueArray *layer_ids = g_value_array_new (4);
   GValueArray *bitrates = g_value_array_new (3);
   GValue ival = { 0, }, bval = {
-  0,};
+    0,
+  };
 
   gst_value_array_init (&layer_sync_flags, 8);
 
@@ -331,23 +330,24 @@ GST_START_TEST (test_encode_temporally_scaled)
     gboolean droppable;
   } expected[] = {
     {
-    TRUE, 0, 1, FALSE},         /* This is an intra */
+        TRUE, 0, 1, FALSE},     /* This is an intra */
     {
-    TRUE, 2, 1, TRUE}, {
-    TRUE, 1, 1, FALSE}, {
-    FALSE, 2, 1, TRUE}, {
-    FALSE, 0, 2, FALSE}, {
-    FALSE, 2, 2, TRUE}, {
-    FALSE, 1, 2, FALSE}, {
-    FALSE, 2, 2, TRUE}, {
-    FALSE, 0, 3, FALSE}, {
-    TRUE, 2, 3, TRUE}, {
-    TRUE, 1, 3, FALSE}, {
-    FALSE, 2, 3, TRUE}, {
-    FALSE, 0, 4, FALSE}, {
-    FALSE, 2, 4, TRUE}, {
-    FALSE, 1, 4, FALSE}, {
-  FALSE, 2, 4, TRUE},};
+        TRUE, 2, 1, TRUE}, {
+        TRUE, 1, 1, FALSE}, {
+        FALSE, 2, 1, TRUE}, {
+        FALSE, 0, 2, FALSE}, {
+        FALSE, 2, 2, TRUE}, {
+        FALSE, 1, 2, FALSE}, {
+        FALSE, 2, 2, TRUE}, {
+        FALSE, 0, 3, FALSE}, {
+        TRUE, 2, 3, TRUE}, {
+        TRUE, 1, 3, FALSE}, {
+        FALSE, 2, 3, TRUE}, {
+        FALSE, 0, 4, FALSE}, {
+        FALSE, 2, 4, TRUE}, {
+        FALSE, 1, 4, FALSE}, {
+        FALSE, 2, 4, TRUE},
+  };
   GstHarness *h = gst_harness_new ("vp8enc");
   gst_harness_set_src_caps (h, gst_caps_new_i420 (320, 240));
   configure_vp8ts (h);
@@ -384,7 +384,6 @@ GST_START_TEST (test_encode_fresh_meta)
   GstBuffer *buffer;
   GstHarness *h = gst_harness_new ("vp8enc");
   GstCustomMeta *meta;
-  GstStructure *s;
   gst_harness_set_src_caps (h, gst_caps_new_i420_full (320, 240, 25, 1, 1, 1));
 
   buffer = gst_harness_create_video_buffer_full (h, 0x0,
@@ -393,8 +392,7 @@ GST_START_TEST (test_encode_fresh_meta)
 
   /* Attach bogus meta to input buffer */
   meta = gst_buffer_add_custom_meta (buffer, "GstVP8Meta");
-  s = gst_custom_meta_get_structure (meta);
-  gst_structure_set (s,
+  gst_structure_set (meta->structure,
       "use-temporal-scaling", G_TYPE_BOOLEAN, FALSE,
       "layer-sync", G_TYPE_BOOLEAN, FALSE,
       "layer-id", G_TYPE_UINT, 0, "tl0picidx", G_TYPE_UINT, 0, NULL);

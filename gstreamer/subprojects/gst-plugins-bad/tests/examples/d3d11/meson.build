@@ -62,6 +62,14 @@ if d3d11_lib.found() and dxgi_lib.found() and d3dcompiler_lib.found() and have_d
       install: false,
     )
 
+    executable('d3d11decoder-appsink2', ['d3d11decoder-appsink2.cpp'],
+      c_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
+      cpp_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
+      include_directories : [configinc, libsinc],
+      dependencies: [gst_dep, gstbase_dep, gstvideo_dep, d3d11_lib, dxgi_lib, gstd3d11_dep, gstapp_dep],
+      install: false,
+    )
+
     executable('d3d11videosink-appsrc', ['d3d11videosink-appsrc.cpp'],
       c_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
       cpp_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
@@ -72,6 +80,14 @@ if d3d11_lib.found() and dxgi_lib.found() and d3dcompiler_lib.found() and have_d
 
     if d2d_dep.found() and have_d2d_h and dwrite_dep.found() and have_dwrite_h
       executable('d3d11videosink-present', ['d3d11videosink-present.cpp'],
+        c_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
+        cpp_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
+        include_directories : [configinc, libsinc],
+        dependencies: [gst_dep, gstbase_dep, gstvideo_dep, d3d11_lib, dxgi_lib, gstd3d11_dep, d2d_dep, dwrite_dep],
+        install: false,
+      )
+
+      executable('d3d11overlay', ['d3d11overlay.cpp'],
         c_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
         cpp_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API'],
         include_directories : [configinc, libsinc],

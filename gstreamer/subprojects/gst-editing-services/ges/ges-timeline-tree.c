@@ -161,13 +161,13 @@ new_snapped_position (GstClockTime distance)
 }
 
 static GHashTable *
-new_edit_table ()
+new_edit_table (void)
 {
   return g_hash_table_new_full (NULL, NULL, NULL, g_free);
 }
 
 static GHashTable *
-new_position_table ()
+new_position_table (void)
 {
   return g_hash_table_new_full (NULL, NULL, NULL, g_free);
 }
@@ -929,6 +929,11 @@ timeline_tree_can_move_elements (GNode * root, GHashTable * moving,
     GError ** error)
 {
   TreeIterationData data = tree_iteration_data_init;
+
+  if (ges_timeline_get_edit_apis_disabled (root->data)) {
+    return TRUE;
+  }
+
   data.moving = moving;
   data.root = root;
   data.res = TRUE;
@@ -1703,6 +1708,10 @@ timeline_tree_can_move_element (GNode * root,
   GHashTableIter iter;
   gpointer key, value;
 
+  if (ges_timeline_get_edit_apis_disabled (root->data)) {
+    return TRUE;
+  }
+
   if (layer_prio == GES_TIMELINE_ELEMENT_NO_LAYER_PRIORITY
       && priority != layer_prio) {
     GST_INFO_OBJECT (element, "Cannot move to a layer when no layer "
@@ -2475,7 +2484,7 @@ create_transitions (GNode * node,
   if (!ges_layer_get_auto_transition (layer))
     return FALSE;
 
-  GST_LOG (node->data, "Checking for overlaps");
+  GST_LOG_OBJECT (node->data, "Checking for overlaps");
   data.root = g_node_get_root (node);
   check_all_overlaps_with_element (node, &data);
 

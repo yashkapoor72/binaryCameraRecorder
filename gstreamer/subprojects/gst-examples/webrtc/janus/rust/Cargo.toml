@@ -10,16 +10,16 @@ futures = "0.3"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 url = "2"
-rand = "0.8"
-async-tungstenite = { version = "0.18", features = ["gio-runtime"] }
-gst = { package = "gstreamer", version = "0.19" }
-gst-webrtc = { package = "gstreamer-webrtc", version = "0.19" }
-gst-sdp = { package = "gstreamer-sdp", version = "0.19" }
+rand = { version = "0.9", features = ["thread_rng"] }
+async-tungstenite = { version = "0.29", features = ["gio-runtime"] }
+gst = { package = "gstreamer", version = "0.23" }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.23" }
+gst-sdp = { package = "gstreamer-sdp", version = "0.23" }
 serde = "1"
 serde_derive = "1"
 serde_json = "1.0.53"
-http = "0.2"
-glib = "0.16"
-gio = "0.16"
+http = "1.0"
+glib = "0.20"
+gio = "0.20"
 log = "0.4.8"
-env_logger = "0.9"
+env_logger = "0.11"

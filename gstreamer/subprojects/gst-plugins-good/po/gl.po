@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gst-plugins-good 1.0.3\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:02+0100\n"
+"POT-Creation-Date: 2024-11-03 17:36+0000\n"
 "PO-Revision-Date: 2012-12-15 03:46+0200\n"
 "Last-Translator: Fran Dieguez <frandieguez@ubuntu.com>\n"
 "Language-Team: Galician <proxecto@trasno.net>\n"
@@ -97,6 +97,12 @@ msgstr "Este ficheiro está danado e non pode reproducirse."
 
 msgid "Invalid atom size."
 msgstr "Tamaño atom non válido."
+
+msgid "Cannot query file size"
+msgstr ""
+
+msgid "Cannot demux file"
+msgstr ""
 
 msgid "This file is incomplete and cannot be played."
 msgstr "Este ficheiro está incompleto e non pode reproducirse."
@@ -314,10 +320,6 @@ msgstr "O controlador do dispositivo «%s» non admite o método IO %d"
 msgid "Decoder on device %s has no supported input format"
 msgstr "O controlador do dispositivo «%s» non admite o método IO %d"
 
-#, fuzzy, c-format
-msgid "Decoder on device %s has no supported output format"
-msgstr "O controlador do dispositivo «%s» non admite o método IO %d"
-
 #, fuzzy
 msgid "Failed to start decoding thread."
 msgstr "Produciuse un erro ao descodificar a imaxe JPEG"
@@ -332,6 +334,9 @@ msgstr "O controlador do dispositivo «%s» non admite o método IO %d"
 #, fuzzy, c-format
 msgid "Encoder on device %s has no supported input format"
 msgstr "O controlador do dispositivo «%s» non admite o método IO %d"
+
+msgid "Failed to force keyframe."
+msgstr ""
 
 msgid "Failed to start encoding thread."
 msgstr ""
@@ -450,9 +455,6 @@ msgstr ""
 msgid "Failed to set output %u on device %s."
 msgstr "Produciuse un fallo ao estabelecer a saída %d no dispositivo %s."
 
-msgid "Changing resolution at runtime is not yet supported."
-msgstr "Aínda non se admite o cambio de resolución durante a reprodución."
-
 msgid "Cannot operate without a clock"
 msgstr "Non é posíbel operar sen reloxo"
 
@@ -493,6 +495,9 @@ msgstr "Non é posíbel operar sen reloxo"
 
 #~ msgid "AUX 2 Out"
 #~ msgstr "Saída AUX 2"
+
+#~ msgid "Changing resolution at runtime is not yet supported."
+#~ msgstr "Aínda non se admite o cambio de resolución durante a reprodución."
 
 #~ msgid "Could not establish connection to sound server"
 #~ msgstr "Non foi posíbel estabelecer a conexión co servidor de son"

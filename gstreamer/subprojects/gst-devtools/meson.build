@@ -1,8 +1,7 @@
 project('gst-devtools', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
-                      'c_std=gnu99',
                       'buildtype=debugoptimized' ])
 
 gst_version = meson.project_version()
@@ -18,7 +17,7 @@ else
   TESTSUITE_VERSION = 'master' # FIXME: main?
 endif
 
-apiversion = '1.0'
+api_version = '1.0'
 soversion = 0
 # maintaining compatibility with the previous libtool versioning
 # current = minor * 100 + micro
@@ -28,7 +27,7 @@ osxversion = curversion + 1
 
 prefix = get_option('prefix')
 
-glib_req = '>= 2.62.0'
+glib_req = '>= 2.64.0'
 
 if gst_version_is_stable
   gst_req = '>= @0@.@1@.0'.format(gst_version_major, gst_version_minor)
@@ -79,15 +78,17 @@ if cc.has_argument('-fno-strict-aliasing')
   add_project_arguments('-fno-strict-aliasing', language: 'c')
 endif
 
-gst_dep = dependency('gstreamer-' + apiversion, version : gst_req,
+gst_dep = dependency('gstreamer-' + api_version, version : gst_req,
     fallback : ['gstreamer', 'gst_dep'])
-gstbase_dep = dependency('gstreamer-base-' + apiversion, version : gst_req,
+gstbase_dep = dependency('gstreamer-base-' + api_version, version : gst_req,
     fallback : ['gstreamer', 'gst_base_dep'])
-gst_pbutils_dep = dependency('gstreamer-pbutils-' + apiversion, version : gst_req,
+gstapp_dep = dependency('gstreamer-app-' + api_version, version : gst_req,
+    fallback : ['gst-plugins-base', 'app_dep'])
+gst_pbutils_dep = dependency('gstreamer-pbutils-' + api_version, version : gst_req,
     fallback : ['gst-plugins-base', 'pbutils_dep'])
-gst_video_dep = dependency('gstreamer-video-' + apiversion, version : gst_req,
+gst_video_dep = dependency('gstreamer-video-' + api_version, version : gst_req,
     fallback : ['gst-plugins-base', 'video_dep'])
-gst_controller_dep = dependency('gstreamer-controller-' + apiversion, version : gst_req,
+gst_controller_dep = dependency('gstreamer-controller-' + api_version, version : gst_req,
     fallback : ['gstreamer', 'gst_controller_dep'])
 gst_check_dep = dependency('gstreamer-check-1.0', version : gst_req,
   required : get_option('validate'),
@@ -108,6 +109,7 @@ gir_init_section = [ '--add-init-section=extern void gst_init(gint*,gchar**);' +
     'g_setenv("GST_REGISTRY_1.0", "/no/way/this/exists.reg", TRUE);' + \
     'g_setenv("GST_PLUGIN_PATH_1_0", "", TRUE);' + \
     'g_setenv("GST_PLUGIN_SYSTEM_PATH_1_0", "", TRUE);' + \
+    'g_setenv("GST_TRACERS", "", TRUE);' + \
     'gst_init(NULL,NULL);', '--quiet']
 gir = find_program('g-ir-scanner', required : get_option('introspection'))
 build_gir = gir.found() and (not meson.is_cross_build() or get_option('introspection').enabled())
@@ -125,20 +127,27 @@ if gst_debug_disabled and cc.has_argument('-Wno-unused')
   add_project_arguments('-Wno-unused', language: 'c')
 endif
 
+# NOTE: Keep entries alphabetically sorted
 warning_flags = [
-  '-Wmissing-declarations',
-  '-Wmissing-prototypes',
-  '-Wredundant-decls',
-  '-Wundef',
-  '-Wwrite-strings',
+  '-Waddress',
+  '-Waggregate-return',
   '-Wformat',
   '-Wformat-security',
+  '-Wimplicit-fallthrough=3',
   '-Winit-self',
+  '-Wmissing-declarations',
   '-Wmissing-include-dirs',
-  '-Waddress',
+  '-Wmissing-parameter-type',
+  '-Wmissing-prototypes',
   '-Wno-multichar',
-  '-Wvla',
+  '-Wold-style-definition',
   '-Wpointer-arith',
+  '-Wredundant-decls',
+  '-Wshift-negative-value',
+  '-Wtype-limits',
+  '-Wundef',
+  '-Wvla',
+  '-Wwrite-strings',
 ]
 
 foreach extra_arg : warning_flags
@@ -158,10 +167,17 @@ pkgconfig_subdirs = ['gstreamer-1.0']
 
 gst_plugins_doc_dep = []
 plugins = []
+plugin_sources = {}
 i18n = import('i18n')
 
 static_build = get_option('default_library') == 'static'
 gst_libraries = []
+
+if host_machine.system() == 'windows'
+  pathsep = ';'
+else
+  pathsep = ':'
+endif
 
 python_mod = import('python')
 python3 = python_mod.find_installation()
@@ -169,10 +185,16 @@ if not get_option('validate').disabled()
   subdir('validate')
 endif
 
+if not get_option('dots_viewer').disabled()
+  subdir('dots-viewer')
+endif
+
 if not get_option('debug_viewer').disabled()
   subdir('debug-viewer')
 endif
 subdir('docs')
+
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.24.0', meson.project_version())
 
 plugin_names = []
 gst_plugins = []

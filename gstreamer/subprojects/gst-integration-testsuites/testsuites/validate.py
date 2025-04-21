@@ -20,6 +20,7 @@
 """
 The GstValidate default testsuite
 """
+from __future__ import annotations
 
 import os
 import glob
@@ -30,8 +31,11 @@ import subprocess
 from testsuiteutils import update_assets
 from launcher import utils
 from launcher.baseclasses import MediaFormatCombination
-from launcher.apps.gstvalidate import GstValidateSimpleTestsGenerator
+from launcher.apps.gstvalidate import GstValidateSimpleTestsGenerator, GstValidateTestManager
 from validate_known_issues import KNOWN_ISSUES
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from launcher.main import LauncherConfig
 
 
 TEST_MANAGER = "validate"
@@ -65,6 +69,7 @@ BLACKLIST = [('validate.file.transcode.to_vorbis_and_vp8_in_webm.GH1_00094_1920x
               'Racy with CI. No frames decoded before the end of the stream.'),
              ]
 
+
 def add_accurate_seek_tests(test_manager, media_dir, extra_data):
     accurate_seeks_media_infos = []
     for f in [
@@ -79,7 +84,7 @@ def add_accurate_seek_tests(test_manager, media_dir, extra_data):
             'mp4/timecoded_h264_23976fps.mp4.media_info.skipped',
             'mp4/timecoded_h264_2997fps.mp4.media_info.skipped',
             'mp4/timecoded_h264_30fps.mp4.media_info.skipped',
-        ]:
+    ]:
         dirname = os.path.join(media_dir, "defaults", os.path.dirname(f))
         filename = os.path.basename(f)
         media_info = os.path.join(dirname, filename)
@@ -95,7 +100,7 @@ def add_accurate_seek_tests(test_manager, media_dir, extra_data):
     )
 
 
-def setup_tests(test_manager, options):
+def setup_tests(test_manager: GstValidateTestManager, options: LauncherConfig):
     testsuite_dir = os.path.realpath(os.path.join(os.path.dirname(__file__)))
     media_dir = os.path.realpath(os.path.join(testsuite_dir, os.path.pardir, "medias"))
 
@@ -152,8 +157,8 @@ def setup_tests(test_manager, options):
                                                                               "sources":
                                                                               ("videotestsrc pattern=snow timestamp-offset=3000000000 ! 'video/x-raw,format=AYUV,width=640,height=480,framerate=(fraction)30/1' !  timeoverlay",  # noqa
                                                                                "videotestsrc pattern=smpte ! 'video/x-raw,format=AYUV,width=800,height=600,framerate=(fraction)10/1' ! timeoverlay")},  # noqa
-                                                             "bgra": ("videotestsrc ! video/x-raw, framerate=\(fraction\)10/1, width=100, height=100",  # noqa
-                                                                      "videotestsrc ! video/x-raw, framerate=\(fraction\)5/1, width=320, height=240")
+                                                             "bgra": (r"videotestsrc ! video/x-raw, framerate=\(fraction\)10/1, width=100, height=100",  # noqa
+                                                                      r"videotestsrc ! video/x-raw, framerate=\(fraction\)5/1, width=320, height=240")
                                                         },
                                                         valid_scenarios=valid_mixing_scenarios))
 

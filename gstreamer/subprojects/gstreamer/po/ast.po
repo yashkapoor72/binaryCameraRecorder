@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gstreamer 0.10.28.2\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2024-11-03 17:36+0000\n"
 "PO-Revision-Date: 2010-06-07 22:01+0100\n"
 "Last-Translator: astur <maacub@gmail.com>\n"
 "Language-Team: Asturian <ubuntu-l10n-ast@lists.ubuntu.com>\n"
@@ -61,9 +61,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Desactivar depuración"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Activar el diagnósticu detalláu de la carga de los complementos"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Rutas separtaes por dos puntos «:», que contengan complementos"
@@ -837,6 +834,12 @@ msgstr ""
 msgid "Private data"
 msgstr ""
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
@@ -876,13 +879,12 @@ msgstr ""
 msgid "link has no sink [source=%s@%p]"
 msgstr ""
 
+msgid "No such property."
+msgstr ""
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "nun esiste la propiedá «%s» nel elementu «%s»"
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "nun pudo afitase la propiedá \"%s\" nel elementu \"%s\" a \"%s\""
 
 #, fuzzy, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -890,6 +892,18 @@ msgstr "El ficheru \"%s\" ye un socket."
 
 #, fuzzy, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "nun pudo afitase la propiedá \"%s\" nel elementu \"%s\" a \"%s\""
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "nun esiste l'elementu «%s»"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "nun pudo afitase la propiedá \"%s\" nel elementu \"%s\" a \"%s\""
+
+#, fuzzy, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
 msgstr "nun pudo afitase la propiedá \"%s\" nel elementu \"%s\" a \"%s\""
 
 msgid "Delayed linking failed."
@@ -910,10 +924,6 @@ msgstr "nun pudo enllazase %s a %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "nun pudo enllazase %s a %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "nun esiste l'elementu «%s»"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1063,6 +1073,10 @@ msgstr "El fluxu nun caltién datos"
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "Interfaces implementaes:\n"
 
+#, c-format
+msgid "%sElement Flags%s:\n"
+msgstr ""
+
 msgid "readable"
 msgstr "llexible"
 
@@ -1078,6 +1092,9 @@ msgstr "controlable"
 #, fuzzy
 msgid "conditionally available"
 msgstr "controlable"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr ""
@@ -1330,6 +1347,12 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr ""
 
+msgid "Set the name of the program"
+msgstr ""
+
+msgid "PROGRAM-NAME"
+msgstr ""
+
 msgid "Do not install a fault handler"
 msgstr "Nun instalar un remanador de fallos"
 
@@ -1385,6 +1408,9 @@ msgstr "Afitando pipeline a NULL...\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Lliberando la tubería…\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Activar el diagnósticu detalláu de la carga de los complementos"
 
 #~ msgid "link without source element"
 #~ msgstr "enllaz ensin elementos de fonte"

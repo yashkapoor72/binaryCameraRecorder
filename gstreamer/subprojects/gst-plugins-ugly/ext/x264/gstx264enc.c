@@ -105,6 +105,7 @@
 #include <gst/video/gstvideometa.h>
 #include <gst/video/gstvideopool.h>
 #include <gst/base/gstbytereader.h>
+#include <gst/base/gstbytewriter.h>
 
 #include <string.h>
 #include <stdlib.h>
@@ -112,6 +113,16 @@
 
 GST_DEBUG_CATEGORY_STATIC (x264_enc_debug);
 #define GST_CAT_DEFAULT x264_enc_debug
+
+enum AllowedSubsamplingFlags
+{
+  ALLOW_400_8 = 1 << 0,
+  ALLOW_420_8 = 1 << 1,
+  ALLOW_420_10 = 1 << 2,
+  ALLOW_422 = 1 << 4,
+  ALLOW_444 = 1 << 5,
+  ALLOW_ANY = 0xffff
+};
 
 struct _GstX264EncVTable
 {
@@ -210,8 +221,7 @@ unload_x264 (GstX264EncVTable * vtable)
 
 static gboolean
 gst_x264_enc_add_x264_chroma_format (GstStructure * s,
-    gboolean allow_420_8, gboolean allow_420_10, gboolean allow_422,
-    gboolean allow_444)
+    enum AllowedSubsamplingFlags flags)
 {
   GValue fmts = G_VALUE_INIT;
   GValue fmt = G_VALUE_INIT;
@@ -223,17 +233,20 @@ gst_x264_enc_add_x264_chroma_format (GstStructure * s,
   if (vtable_8bit) {
     gint chroma_format = *vtable_8bit->x264_chroma_format;
 
-    if ((chroma_format == 0 || chroma_format == X264_CSP_I444) && allow_444) {
+    if ((chroma_format == 0 || chroma_format == X264_CSP_I444) &&
+        flags & ALLOW_444) {
       g_value_set_string (&fmt, "Y444");
       gst_value_list_append_value (&fmts, &fmt);
     }
 
-    if ((chroma_format == 0 || chroma_format == X264_CSP_I422) && allow_422) {
+    if ((chroma_format == 0 || chroma_format == X264_CSP_I422) &&
+        flags & ALLOW_422) {
       g_value_set_string (&fmt, "Y42B");
       gst_value_list_append_value (&fmts, &fmt);
     }
 
-    if ((chroma_format == 0 || chroma_format == X264_CSP_I420) && allow_420_8) {
+    if ((chroma_format == 0 || chroma_format == X264_CSP_I420) &&
+        flags & ALLOW_420_8) {
       g_value_set_string (&fmt, "I420");
       gst_value_list_append_value (&fmts, &fmt);
       g_value_set_string (&fmt, "YV12");
@@ -241,12 +254,19 @@ gst_x264_enc_add_x264_chroma_format (GstStructure * s,
       g_value_set_string (&fmt, "NV12");
       gst_value_list_append_value (&fmts, &fmt);
     }
+
+    if ((chroma_format == 0 || chroma_format == X264_CSP_I400) &&
+        flags & ALLOW_400_8) {
+      g_value_set_string (&fmt, "GRAY8");
+      gst_value_list_append_value (&fmts, &fmt);
+    }
   }
 
   if (vtable_10bit) {
     gint chroma_format = *vtable_10bit->x264_chroma_format;
 
-    if ((chroma_format == 0 || chroma_format == X264_CSP_I444) && allow_444) {
+    if ((chroma_format == 0 || chroma_format == X264_CSP_I444) &&
+        flags & ALLOW_444) {
       if (G_BYTE_ORDER == G_LITTLE_ENDIAN)
         g_value_set_string (&fmt, "Y444_10LE");
       else
@@ -255,7 +275,8 @@ gst_x264_enc_add_x264_chroma_format (GstStructure * s,
       gst_value_list_append_value (&fmts, &fmt);
     }
 
-    if ((chroma_format == 0 || chroma_format == X264_CSP_I422) && allow_422) {
+    if ((chroma_format == 0 || chroma_format == X264_CSP_I422) &&
+        flags & ALLOW_422) {
       if (G_BYTE_ORDER == G_LITTLE_ENDIAN)
         g_value_set_string (&fmt, "I422_10LE");
       else
@@ -264,7 +285,8 @@ gst_x264_enc_add_x264_chroma_format (GstStructure * s,
       gst_value_list_append_value (&fmts, &fmt);
     }
 
-    if ((chroma_format == 0 || chroma_format == X264_CSP_I420) && allow_420_10) {
+    if ((chroma_format == 0 || chroma_format == X264_CSP_I420) &&
+        flags & ALLOW_420_10) {
       if (G_BYTE_ORDER == G_LITTLE_ENDIAN)
         g_value_set_string (&fmt, "I420_10LE");
       else
@@ -401,6 +423,7 @@ enum
   ARG_TUNE,
   ARG_FRAME_PACKING,
   ARG_INSERT_VUI,
+  ARG_NAL_HRD,
 };
 
 #define ARG_THREADS_DEFAULT            0        /* 0 means 'auto' which is 1.5x number of CPU cores */
@@ -443,6 +466,7 @@ static GString *x264enc_defaults;
 #define ARG_TUNE_DEFAULT               0        /* no tuning */
 #define ARG_FRAME_PACKING_DEFAULT      -1       /* automatic (none, or from input caps) */
 #define ARG_INSERT_VUI_DEFAULT         TRUE
+#define ARG_NAL_HRD_DEFAULT            0
 
 enum
 {
@@ -481,6 +505,25 @@ gst_x264_enc_pass_get_type (void)
     pass_type = g_enum_register_static ("GstX264EncPass", pass_types);
   }
   return pass_type;
+}
+
+#define GST_X264_ENC_NAL_HRD_TYPE (gst_x264_enc_nal_hrd_get_type())
+static GType
+gst_x264_enc_nal_hrd_get_type (void)
+{
+  static GType nal_hrd_type = 0;
+
+  static const GEnumValue nal_hrd_types[] = {
+    {GST_X264_ENC_NAL_HRD_NONE, "None", "none"},
+    {GST_X264_ENC_NAL_HRD_VBR, "Variable bitrate", "vbr"},
+    {GST_X264_ENC_NAL_HRD_CBR, "Constant bitrate", "cbr"},
+    {0, NULL, NULL}
+  };
+
+  if (!nal_hrd_type) {
+    nal_hrd_type = g_enum_register_static ("GstX264EncNalHrd", nal_hrd_types);
+  }
+  return nal_hrd_type;
 }
 
 #define GST_X264_ENC_ME_TYPE (gst_x264_enc_me_get_type())
@@ -785,19 +828,19 @@ GST_ELEMENT_REGISTER_DEFINE_CUSTOM (x264enc, x264_element_init)
 }
 
 static void
-check_formats (const gchar * str, gboolean * has_420_8, gboolean * has_420_10,
-    gboolean * has_422, gboolean * has_444)
+check_formats (const gchar * str, enum AllowedSubsamplingFlags *flags)
 {
   if (g_str_has_prefix (str, "high-4:4:4"))
-    *has_444 = TRUE;
+    *flags |= ALLOW_444;
   else if (g_str_has_prefix (str, "high-4:2:2"))
-    *has_422 = TRUE;
+    *flags |= ALLOW_422;
   else if (g_str_has_prefix (str, "high-10"))
-    *has_420_10 = TRUE;
+    *flags |= ALLOW_420_10;
+  else if (g_str_has_prefix (str, "high"))
+    *flags |= ALLOW_420_8 | ALLOW_400_8;
   else
-    *has_420_8 = TRUE;
+    *flags |= ALLOW_420_8;
 }
-
 
 /* allowed input caps depending on whether libx264 was built for 8 or 10 bits */
 static GstCaps *
@@ -827,8 +870,8 @@ gst_x264_enc_sink_getcaps (GstVideoEncoder * enc, GstCaps * filter)
   filter_caps = gst_caps_new_empty ();
 
   for (i = 0; i < gst_caps_get_size (supported_incaps); i++) {
-    GQuark q_name =
-        gst_structure_get_name_id (gst_caps_get_structure (supported_incaps,
+    const GstIdStr *name =
+        gst_structure_get_name_id_str (gst_caps_get_structure (supported_incaps,
             i));
 
     for (j = 0; j < gst_caps_get_size (allowed); j++) {
@@ -838,7 +881,7 @@ gst_x264_enc_sink_getcaps (GstVideoEncoder * enc, GstCaps * filter)
 
       /* FIXME Find a way to reuse gst_video_encoder_proxy_getcaps so that
        * we do not need to copy that logic */
-      s = gst_structure_new_id_empty (q_name);
+      s = gst_structure_new_id_str_empty (name);
       if ((val = gst_structure_get_value (allowed_s, "width")))
         gst_structure_set_value (s, "width", val);
       if ((val = gst_structure_get_value (allowed_s, "height")))
@@ -853,26 +896,20 @@ gst_x264_enc_sink_getcaps (GstVideoEncoder * enc, GstCaps * filter)
         gst_structure_set_value (s, "chroma-site", val);
 
       if ((val = gst_structure_get_value (allowed_s, "profile"))) {
-        gboolean has_420_8 = FALSE;
-        gboolean has_420_10 = FALSE;
-        gboolean has_422 = FALSE;
-        gboolean has_444 = FALSE;
+        enum AllowedSubsamplingFlags flags = 0;
 
         if (G_VALUE_HOLDS_STRING (val)) {
-          check_formats (g_value_get_string (val), &has_420_8, &has_420_10,
-              &has_422, &has_444);
+          check_formats (g_value_get_string (val), &flags);
         } else if (GST_VALUE_HOLDS_LIST (val)) {
           for (k = 0; k < gst_value_list_get_size (val); k++) {
             const GValue *vlist = gst_value_list_get_value (val, k);
 
             if (G_VALUE_HOLDS_STRING (vlist))
-              check_formats (g_value_get_string (vlist), &has_420_8,
-                  &has_420_10, &has_422, &has_444);
+              check_formats (g_value_get_string (vlist), &flags);
           }
         }
 
-        gst_x264_enc_add_x264_chroma_format (s, has_420_8, has_420_10, has_422,
-            has_444);
+        gst_x264_enc_add_x264_chroma_format (s, flags);
       }
 
       filter_caps = gst_caps_merge_structure (filter_caps, s);
@@ -1194,6 +1231,25 @@ gst_x264_enc_class_init (GstX264EncClass * klass)
   g_string_append_printf (x264enc_defaults, ":interlaced=%d",
       ARG_INTERLACED_DEFAULT);
 
+  /**
+   * x264enc:nal-hrd:
+   *
+   * Signal Hypothetical Reference Decoder information.
+   *
+   * Required for Blu-ray streams, television broadcast and a
+   * few other specialist areas.
+   *
+   * It can be used for instance to force true CBR, and will cause
+   * the encoder to output NULL padding packets.
+   *
+   * Since: 1.26
+   */
+  g_object_class_install_property (gobject_class, ARG_NAL_HRD,
+      g_param_spec_enum ("nal-hrd", "NAL HRD",
+          "Signal Hypothetical Reference Decoder information",
+          GST_X264_ENC_NAL_HRD_TYPE, ARG_NAL_HRD_DEFAULT,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   /* append deblock parameters */
   g_string_append_printf (x264enc_defaults, ":deblock=0,0");
   /* append weighted prediction parameter */
@@ -1211,7 +1267,7 @@ gst_x264_enc_class_init (GstX264EncClass * klass)
       "height", GST_TYPE_INT_RANGE, 1, G_MAXINT, NULL);
 
   gst_x264_enc_add_x264_chroma_format (gst_caps_get_structure
-      (supported_sinkcaps, 0), TRUE, TRUE, TRUE, TRUE);
+      (supported_sinkcaps, 0), ALLOW_ANY);
 
   sink_templ = gst_pad_template_new ("sink",
       GST_PAD_SINK, GST_PAD_ALWAYS, supported_sinkcaps);
@@ -1228,6 +1284,7 @@ gst_x264_enc_class_init (GstX264EncClass * klass)
   gst_type_mark_as_plugin_api (GST_X264_ENC_PSY_TUNE_TYPE, 0);
   gst_type_mark_as_plugin_api (GST_X264_ENC_SPEED_PRESET_TYPE, 0);
   gst_type_mark_as_plugin_api (GST_X264_ENC_TUNE_TYPE, 0);
+  gst_type_mark_as_plugin_api (GST_X264_ENC_NAL_HRD_TYPE, 0);
 }
 
 /* *INDENT-OFF* */
@@ -1325,6 +1382,7 @@ gst_x264_enc_init (GstX264Enc * encoder)
   encoder->tune = ARG_TUNE_DEFAULT;
   encoder->frame_packing = ARG_FRAME_PACKING_DEFAULT;
   encoder->insert_vui = ARG_INSERT_VUI_DEFAULT;
+  encoder->nal_hrd = ARG_NAL_HRD_DEFAULT;
 
   encoder->bitrate_manager =
       gst_encoder_bitrate_profile_manager_new (ARG_BITRATE_DEFAULT);
@@ -1346,7 +1404,7 @@ gst_x264_enc_queue_frame (GstX264Enc * enc, GstVideoCodecFrame * frame,
   if (!gst_video_frame_map (&vframe, info, frame->input_buffer, GST_MAP_READ))
     return NULL;
 
-  fdata = g_slice_new (FrameData);
+  fdata = g_new (FrameData, 1);
   fdata->frame = gst_video_codec_frame_ref (frame);
   fdata->vframe = vframe;
 
@@ -1368,7 +1426,7 @@ gst_x264_enc_dequeue_frame (GstX264Enc * enc, GstVideoCodecFrame * frame)
 
     gst_video_frame_unmap (&fdata->vframe);
     gst_video_codec_frame_unref (fdata->frame);
-    g_slice_free (FrameData, fdata);
+    g_free (fdata);
 
     enc->pending_frames = g_list_delete_link (enc->pending_frames, l);
     return;
@@ -1385,7 +1443,7 @@ gst_x264_enc_dequeue_all_frames (GstX264Enc * enc)
 
     gst_video_frame_unmap (&fdata->vframe);
     gst_video_codec_frame_unref (fdata->frame);
-    g_slice_free (FrameData, fdata);
+    g_free (fdata);
   }
   g_list_free (enc->pending_frames);
   enc->pending_frames = NULL;
@@ -1517,6 +1575,10 @@ static gint
 gst_x264_enc_gst_to_x264_video_format (GstVideoFormat format, gint * nplanes)
 {
   switch (format) {
+    case GST_VIDEO_FORMAT_GRAY8:
+      if (nplanes)
+        *nplanes = 1;
+      return X264_CSP_I400;
     case GST_VIDEO_FORMAT_I420:
     case GST_VIDEO_FORMAT_YV12:
       if (nplanes)
@@ -1896,6 +1958,8 @@ skip_vui_parameters:
 
   GST_OBJECT_UNLOCK (encoder);
 
+  encoder->x264param.i_nal_hrd = encoder->nal_hrd;
+
   encoder->x264enc = encoder->vtable->x264_encoder_open (&encoder->x264param);
   if (!encoder->x264enc) {
     GST_ELEMENT_ERROR (encoder, STREAM, ENCODE,
@@ -2106,16 +2170,18 @@ no_peer:
 static GstBuffer *
 gst_x264_enc_header_buf (GstX264Enc * encoder)
 {
-  GstBuffer *buf;
+  GstByteWriter bw;
   x264_nal_t *nal;
   int i_nal;
   int header_return;
-  int i_size;
   int nal_size;
   gint i;
-  guint8 *buffer, *sps;
-  gulong buffer_size;
+  guint8 *sps;
   gint sei_ni, sps_ni, pps_ni;
+  guint8 avc_profile_indication;
+  guint8 chroma_format;
+  guint8 bit_depth_luma_minus8, bit_depth_chroma_minus8;
+  gboolean ok;
 
   if (G_UNLIKELY (encoder->x264enc == NULL))
     return NULL;
@@ -2156,45 +2222,86 @@ gst_x264_enc_header_buf (GstX264Enc * encoder)
     GST_MEMDUMP ("SEI", nal[sei_ni].p_payload, nal[sei_ni].i_payload);
   }
 
-  /* nal payloads with emulation_prevention_three_byte, and some header data */
-  buffer_size = (nal[sps_ni].i_payload + nal[pps_ni].i_payload) * 4 + 100;
-  buffer = g_malloc (buffer_size);
+  // 128 is indicative size, should usually be enough to avoid reallocation.
+  gst_byte_writer_init_with_size (&bw, 128, FALSE);
 
   sps = nal[sps_ni].p_payload + 4;
   /* skip NAL unit type */
   sps++;
 
-  buffer[0] = 1;                /* AVC Decoder Configuration Record ver. 1 */
-  buffer[1] = sps[0];           /* profile_idc                             */
-  buffer[2] = sps[1];           /* profile_compability                     */
-  buffer[3] = sps[2];           /* level_idc                               */
-  buffer[4] = 0xfc | (4 - 1);   /* nal_length_size_minus1                  */
+  ok = gst_byte_writer_put_uint8 (&bw, 1);      /* AVC Decoder Configuration Record ver. 1 */
+  ok &= gst_byte_writer_put_uint8 (&bw, sps[0]);        /* AVCProfileIndication aka profile_idc    */
+  ok &= gst_byte_writer_put_uint8 (&bw, sps[1]);        /* profile_compability                     */
+  ok &= gst_byte_writer_put_uint8 (&bw, sps[2]);        /* level_idc                               */
 
-  i_size = 5;
-
-  buffer[i_size++] = 0xe0 | 1;  /* number of SPSs */
+  ok &= gst_byte_writer_put_uint8 (&bw, 0xfc | (4 - 1));        /* nal_length_size_minus1                  */
+  ok &= gst_byte_writer_put_uint8 (&bw, 0xe0 | 1);      /* number of SPSs */
 
   nal_size = nal[sps_ni].i_payload - 4;
-  memcpy (buffer + i_size + 2, nal[sps_ni].p_payload + 4, nal_size);
+  ok &= gst_byte_writer_put_uint16_be (&bw, nal_size);
+  ok &= gst_byte_writer_put_data (&bw, nal[sps_ni].p_payload + 4, nal_size);
 
-  GST_WRITE_UINT16_BE (buffer + i_size, nal_size);
-  i_size += nal_size + 2;
-
-  buffer[i_size++] = 1;         /* number of PPSs */
+  ok &= gst_byte_writer_put_uint8 (&bw, 1);     /* number of PPSs */
 
   nal_size = nal[pps_ni].i_payload - 4;
-  memcpy (buffer + i_size + 2, nal[pps_ni].p_payload + 4, nal_size);
+  ok &= gst_byte_writer_put_uint16_be (&bw, nal_size);
+  ok &= gst_byte_writer_put_data (&bw, nal[pps_ni].p_payload + 4, nal_size);
 
-  GST_WRITE_UINT16_BE (buffer + i_size, nal_size);
-  i_size += nal_size + 2;
-
-  buf = gst_buffer_new_and_alloc (i_size);
-  gst_buffer_fill (buf, 0, buffer, i_size);
-
-  GST_MEMDUMP ("header", buffer, i_size);
-  g_free (buffer);
-
-  return buf;
+#if X264_BUILD >= 153
+  // if we use an earlier API version, we can really only output old format and hope the receiver can work it out
+  //
+  // See ISO/IEC 14496-15:2024 Section 5.3.2.1.2 for the syntax encoding used here.
+  // The AVCProfileIndication values correspond to the profile code (profile_idc) in ISO/IEC 14496-10.
+  // Roughly, 66 is Baseline, 77 is Main, 88 is Extended. Other codes mostly correspond to some variation on High.
+  // See the standards for the specific interpretation.
+  avc_profile_indication = sps[0];
+  if ((avc_profile_indication != 66) && (avc_profile_indication != 77)
+      && (avc_profile_indication != 88)) {
+    switch (encoder->x264param.i_csp) {
+      case X264_CSP_I400:
+        chroma_format = 0;      // mono
+        break;
+      case X264_CSP_I420:
+      case X264_CSP_YV12:
+      case X264_CSP_NV12:
+      case X264_CSP_NV21:
+        chroma_format = 1;      // 4:2:0
+        break;
+      case X264_CSP_I422:
+      case X264_CSP_YV16:
+      case X264_CSP_NV16:
+      case X264_CSP_YUYV:
+      case X264_CSP_UYVY:
+      case X264_CSP_V210:
+        chroma_format = 2;      // 4:2:2
+        break;
+      case X264_CSP_I444:
+      case X264_CSP_YV24:
+      case X264_CSP_BGR:
+      case X264_CSP_BGRA:
+      case X264_CSP_RGB:
+        chroma_format = 3;      // 4:4:4
+        break;
+      default:
+        GST_WARNING_OBJECT (encoder,
+            "Failed to decode colourspace, likely invalid output");
+        goto return_what_we_have;
+    }
+    ok &= gst_byte_writer_put_uint8 (&bw, 0xfc | chroma_format);
+    bit_depth_luma_minus8 = bit_depth_chroma_minus8 =
+        (encoder->x264param.i_bitdepth - 8);
+    ok &= gst_byte_writer_put_uint8 (&bw, 0xf8 | bit_depth_luma_minus8);
+    ok &= gst_byte_writer_put_uint8 (&bw, 0xf8 | bit_depth_chroma_minus8);
+    ok &= gst_byte_writer_put_uint8 (&bw, 0);   // numOfSequenceParameterSetExt
+  }
+#endif
+return_what_we_have:
+  if (ok) {
+    return gst_byte_writer_reset_and_get_buffer (&bw);
+  } else {
+    gst_byte_writer_reset (&bw);
+    return NULL;
+  }
 }
 
 /* gst_x264_enc_set_src_caps
@@ -2332,7 +2439,13 @@ gst_x264_enc_set_format (GstVideoEncoder * video_enc,
     if (info->finfo->format == old->finfo->format
         && info->width == old->width && info->height == old->height
         && info->fps_n == old->fps_n && info->fps_d == old->fps_d
-        && info->par_n == old->par_n && info->par_d == old->par_d) {
+        && info->par_n == old->par_n && info->par_d == old->par_d
+        && info->interlace_mode == old->interlace_mode
+        && gst_video_colorimetry_is_equal (&info->colorimetry,
+            &old->colorimetry)
+        && GST_VIDEO_INFO_CHROMA_SITE (info) == GST_VIDEO_INFO_CHROMA_SITE (old)
+        && GST_VIDEO_INFO_MULTIVIEW_MODE (info) ==
+        GST_VIDEO_INFO_MULTIVIEW_MODE (old)) {
       gst_video_codec_state_unref (encoder->input_state);
       encoder->input_state = gst_video_codec_state_ref (state);
       return TRUE;
@@ -2963,6 +3076,9 @@ gst_x264_enc_set_property (GObject * object, guint prop_id,
     case ARG_INSERT_VUI:
       encoder->insert_vui = g_value_get_boolean (value);
       break;
+    case ARG_NAL_HRD:
+      encoder->nal_hrd = g_value_get_enum (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -3106,6 +3222,9 @@ gst_x264_enc_get_property (GObject * object, guint prop_id,
       break;
     case ARG_INSERT_VUI:
       g_value_set_boolean (value, encoder->insert_vui);
+      break;
+    case ARG_NAL_HRD:
+      g_value_set_enum (value, encoder->nal_hrd);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);

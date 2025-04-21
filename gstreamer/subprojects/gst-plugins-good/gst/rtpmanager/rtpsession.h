@@ -159,6 +159,9 @@ typedef void (*RTPSessionNotifyNACK) (RTPSession *sess,
 
 /**
  * RTPSessionNotifyTWCC:
+ * @sess: an #RTPSession
+ * @twcc_packets: (transfer full): TWCC packets #GstStructure
+ * @twcc_stats: (transfer full): TWCC stats #GstStructure
  * @user_data: user data specified when registering
  *
  * Notifies of Transport-wide congestion control packets and stats.
@@ -276,7 +279,6 @@ struct _RTPSession {
   GstClockTime  last_rtcp_interval;   /* T_rr */
   GstClockTime  start_time;
   gboolean      first_rtcp;
-  gboolean      allow_early;
 
   GstClockTime  next_early_rtcp_time;
 
@@ -312,6 +314,10 @@ struct _RTPSession {
 
   /* RFC6051 64-bit NTP header extension */
   guint8 send_ntp64_ext_id;
+
+  gboolean update_ntp64_header_ext;
+
+  gboolean timeout_inactive_sources;
 
   /* Transport-wide cc-extension */
   RTPTWCCManager *twcc;

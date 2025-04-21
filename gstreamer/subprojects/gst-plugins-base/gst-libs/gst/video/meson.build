@@ -27,6 +27,7 @@ video_sources = files([
   'video-frame.c',
   'video-hdr.c',
   'video-info.c',
+  'video-info-dma.c',
   'video-multiview.c',
   'video-resampler.c',
   'video-scaler.c',
@@ -63,6 +64,7 @@ video_headers = files([
   'video-dither.h',
   'video-hdr.h',
   'video-info.h',
+  'video-info-dma.h',
   'video-frame.h',
   'video-prelude.h',
   'video-scaler.h',
@@ -77,6 +79,15 @@ video_headers = files([
   'video-sei.h',
 ])
 install_headers(video_headers, subdir : 'gstreamer-1.0/gst/video/')
+
+doc_sources = []
+foreach s: video_sources + video_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'video': pathsep.join(doc_sources)
+}
 
 video_mkenum_headers = [
   'video.h',
@@ -172,6 +183,7 @@ if build_gir
   library_def += {'gir': [gir]}
   if not static_build
     video_gir = gnome.generate_gir(gstvideo, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [video_gir]}
     video_gen_sources += [video_gir]
   endif
 endif

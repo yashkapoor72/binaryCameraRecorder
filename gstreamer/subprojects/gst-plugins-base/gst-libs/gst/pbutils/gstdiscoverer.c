@@ -60,16 +60,6 @@ GST_DEBUG_CATEGORY_STATIC (discoverer_debug);
 #define GST_CAT_DEFAULT discoverer_debug
 #define CACHE_DIRNAME "discoverer"
 
-static GQuark _CAPS_QUARK;
-static GQuark _TAGS_QUARK;
-static GQuark _ELEMENT_SRCPAD_QUARK;
-static GQuark _TOC_QUARK;
-static GQuark _STREAM_ID_QUARK;
-static GQuark _MISSING_PLUGIN_QUARK;
-static GQuark _STREAM_TOPOLOGY_QUARK;
-static GQuark _TOPOLOGY_PAD_QUARK;
-
-
 typedef struct
 {
   GstDiscoverer *dc;
@@ -104,8 +94,11 @@ struct _GstDiscovererPrivate
 
   /* current items */
   GstDiscovererInfo *current_info;
+  gint current_info_stream_count;
   GError *current_error;
   GstStructure *current_topology;
+  gchar *current_cachefile;
+  gboolean current_info_from_cache;
 
   GstTagList *all_tags;
   GstTagList *global_tags;
@@ -152,15 +145,6 @@ static void
 _do_init (void)
 {
   GST_DEBUG_CATEGORY_INIT (discoverer_debug, "discoverer", 0, "Discoverer");
-
-  _CAPS_QUARK = g_quark_from_static_string ("caps");
-  _ELEMENT_SRCPAD_QUARK = g_quark_from_static_string ("element-srcpad");
-  _TAGS_QUARK = g_quark_from_static_string ("tags");
-  _TOC_QUARK = g_quark_from_static_string ("toc");
-  _STREAM_ID_QUARK = g_quark_from_static_string ("stream-id");
-  _MISSING_PLUGIN_QUARK = g_quark_from_static_string ("missing-plugin");
-  _STREAM_TOPOLOGY_QUARK = g_quark_from_static_string ("stream-topology");
-  _TOPOLOGY_PAD_QUARK = g_quark_from_static_string ("pad");
 };
 
 G_DEFINE_TYPE_EXTENDED (GstDiscoverer, gst_discoverer, G_TYPE_OBJECT, 0,
@@ -172,6 +156,7 @@ enum
   SIGNAL_STARTING,
   SIGNAL_DISCOVERED,
   SIGNAL_SOURCE_SETUP,
+  SIGNAL_LOAD_SERIALIZED_INFO,
   LAST_SIGNAL
 };
 
@@ -210,11 +195,28 @@ static void gst_discoverer_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
 static gboolean _setup_locked (GstDiscoverer * dc);
 static void handle_current_async (GstDiscoverer * dc);
-static gboolean emit_discovererd_and_next (GstDiscoverer * dc);
+static gboolean emit_discovered_and_next (GstDiscoverer * dc);
 static GVariant *gst_discoverer_info_to_variant_recurse (GstDiscovererStreamInfo
     * sinfo, GstDiscovererSerializeFlags flags);
 static GstDiscovererStreamInfo *_parse_discovery (GVariant * variant,
     GstDiscovererInfo * info);
+static GstDiscovererInfo *load_serialized_info (GstDiscoverer * dc,
+    gchar * uri);
+
+static gboolean
+_gst_discoverer_info_accumulator (GSignalInvocationHint * ihint,
+    GValue * return_accu, const GValue * handler_return, gpointer dummy)
+{
+  GstDiscovererInfo *info;
+
+  info = g_value_get_object (handler_return);
+  GST_DEBUG ("got discoverer info %" GST_PTR_FORMAT, info);
+
+  g_value_set_object (return_accu, info);
+
+  /* stop emission if we have a discoverer info */
+  return (info == NULL);
+}
 
 static void
 gst_discoverer_class_init (GstDiscovererClass * klass)
@@ -226,6 +228,8 @@ gst_discoverer_class_init (GstDiscovererClass * klass)
 
   gobject_class->set_property = gst_discoverer_set_property;
   gobject_class->get_property = gst_discoverer_get_property;
+
+  klass->load_serialize_info = load_serialized_info;
 
 
   /* properties */
@@ -323,6 +327,26 @@ gst_discoverer_class_init (GstDiscovererClass * klass)
       g_signal_new ("source-setup", G_TYPE_FROM_CLASS (klass),
       G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstDiscovererClass, source_setup),
       NULL, NULL, NULL, G_TYPE_NONE, 1, GST_TYPE_ELEMENT);
+
+  /**
+   * GstDiscoverer::load-serialized-info:
+   * @discoverer: the #GstDiscoverer
+   * @uri: THe URI to load the serialized info for
+   *
+   * Retrieves information about a URI from and external source of information,
+   * like a cache file. This is used by the discoverer to speed up the
+   * discovery.
+   *
+   * Returns: (nullable) (transfer full): The #GstDiscovererInfo representing
+   * @uri, or %NULL if no information
+   *
+   * Since: 1.24
+   */
+  gst_discoverer_signals[SIGNAL_LOAD_SERIALIZED_INFO] =
+      g_signal_new ("load-serialized-info", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstDiscovererClass,
+          load_serialize_info), _gst_discoverer_info_accumulator, NULL, NULL,
+      GST_TYPE_DISCOVERER_INFO, 1, G_TYPE_STRING);
 }
 
 static void
@@ -644,7 +668,7 @@ uridecodebin_pad_added_cb (GstElement * uridecodebin, GstPad * pad,
     DISCO_UNLOCK (dc);
     return;
   }
-  ps = g_slice_new0 (PrivateStream);
+  ps = g_new0 (PrivateStream, 1);
 
   ps->dc = dc;
   ps->pad = pad;
@@ -722,7 +746,7 @@ error:
     gst_object_unref (ps->queue);
   if (ps->sink)
     gst_object_unref (ps->sink);
-  g_slice_free (PrivateStream, ps);
+  g_free (ps);
   DISCO_UNLOCK (dc);
   return;
 }
@@ -788,7 +812,7 @@ uridecodebin_pad_removed_cb (GstElement * uridecodebin, GstPad * pad,
   }
   g_free (ps->stream_id);
 
-  g_slice_free (PrivateStream, ps);
+  g_free (ps);
 
   GST_DEBUG ("Done handling pad");
 }
@@ -813,15 +837,16 @@ collect_stream_information (GstDiscoverer * dc, PrivateStream * ps, guint idx)
   }
   if (caps) {
     GST_DEBUG ("stream-%02d, got caps %" GST_PTR_FORMAT, idx, caps);
-    gst_structure_id_set (st, _CAPS_QUARK, GST_TYPE_CAPS, caps, NULL);
+    gst_structure_set_static_str (st, "caps", GST_TYPE_CAPS, caps, NULL);
     gst_caps_unref (caps);
   }
   if (ps->tags)
-    gst_structure_id_set (st, _TAGS_QUARK, GST_TYPE_TAG_LIST, ps->tags, NULL);
+    gst_structure_set_static_str (st, "tags", GST_TYPE_TAG_LIST, ps->tags,
+        NULL);
   if (ps->toc)
-    gst_structure_id_set (st, _TOC_QUARK, GST_TYPE_TOC, ps->toc, NULL);
+    gst_structure_set_static_str (st, "toc", GST_TYPE_TOC, ps->toc, NULL);
   if (ps->stream_id)
-    gst_structure_id_set (st, _STREAM_ID_QUARK, G_TYPE_STRING, ps->stream_id,
+    gst_structure_set_static_str (st, "stream-id", G_TYPE_STRING, ps->stream_id,
         NULL);
 
   return st;
@@ -848,13 +873,12 @@ static void
 collect_common_information (GstDiscovererStreamInfo * info,
     const GstStructure * st)
 {
-  if (gst_structure_id_has_field (st, _TOC_QUARK)) {
-    gst_structure_id_get (st, _TOC_QUARK, GST_TYPE_TOC, &info->toc, NULL);
+  if (gst_structure_has_field (st, "toc")) {
+    gst_structure_get (st, "toc", GST_TYPE_TOC, &info->toc, NULL);
   }
 
-  if (gst_structure_id_has_field (st, _STREAM_ID_QUARK)) {
-    gst_structure_id_get (st, _STREAM_ID_QUARK, G_TYPE_STRING, &info->stream_id,
-        NULL);
+  if (gst_structure_has_field (st, "stream-id")) {
+    gst_structure_get (st, "stream-id", G_TYPE_STRING, &info->stream_id, NULL);
   }
 }
 
@@ -888,19 +912,18 @@ collect_information (GstDiscoverer * dc, const GstStructure * st,
   gint tmp, tmp2;
   guint utmp;
 
-  if (!st || (!gst_structure_id_has_field (st, _CAPS_QUARK)
-          && !gst_structure_id_has_field (st, _ELEMENT_SRCPAD_QUARK))) {
+  if (!st || (!gst_structure_has_field (st, "caps")
+          && !gst_structure_has_field (st, "element-srcpad"))) {
     GST_WARNING ("Couldn't find caps !");
     return make_info (parent, GST_TYPE_DISCOVERER_STREAM_INFO, NULL);
   }
 
-  if (gst_structure_id_get (st, _ELEMENT_SRCPAD_QUARK, GST_TYPE_PAD, &srcpad,
-          NULL)) {
+  if (gst_structure_get (st, "element-srcpad", GST_TYPE_PAD, &srcpad, NULL)) {
     caps = gst_pad_get_current_caps (srcpad);
     gst_object_unref (srcpad);
   }
   if (!caps) {
-    gst_structure_id_get (st, _CAPS_QUARK, GST_TYPE_CAPS, &caps, NULL);
+    gst_structure_get (st, "caps", GST_TYPE_CAPS, &caps, NULL);
   }
 
   if (!caps || gst_caps_is_empty (caps) || gst_caps_is_any (caps)) {
@@ -947,8 +970,8 @@ collect_information (GstDiscoverer * dc, const GstStructure * st,
         info->depth = GST_AUDIO_FORMAT_INFO_DEPTH (finfo);
     }
 
-    if (gst_structure_id_has_field (st, _TAGS_QUARK)) {
-      gst_structure_id_get (st, _TAGS_QUARK, GST_TYPE_TAG_LIST, &tags_st, NULL);
+    if (gst_structure_has_field (st, "tags")) {
+      gst_structure_get (st, "tags", GST_TYPE_TAG_LIST, &tags_st, NULL);
       if (gst_tag_list_get_uint (tags_st, GST_TAG_BITRATE, &utmp) ||
           gst_tag_list_get_uint (tags_st, GST_TAG_NOMINAL_BITRATE, &utmp))
         info->bitrate = utmp;
@@ -1021,8 +1044,8 @@ collect_information (GstDiscoverer * dc, const GstStructure * st,
     else
       info->interlaced = TRUE;
 
-    if (gst_structure_id_has_field (st, _TAGS_QUARK)) {
-      gst_structure_id_get (st, _TAGS_QUARK, GST_TYPE_TAG_LIST, &tags_st, NULL);
+    if (gst_structure_has_field (st, "tags")) {
+      gst_structure_get (st, "tags", GST_TYPE_TAG_LIST, &tags_st, NULL);
       if (gst_tag_list_get_uint (tags_st, GST_TAG_BITRATE, &utmp) ||
           gst_tag_list_get_uint (tags_st, GST_TAG_NOMINAL_BITRATE, &utmp))
         info->bitrate = utmp;
@@ -1045,10 +1068,10 @@ collect_information (GstDiscoverer * dc, const GstStructure * st,
     info = (GstDiscovererSubtitleInfo *) make_info (parent,
         GST_TYPE_DISCOVERER_SUBTITLE_INFO, caps);
 
-    if (gst_structure_id_has_field (st, _TAGS_QUARK)) {
+    if (gst_structure_has_field (st, "tags")) {
       const gchar *language;
 
-      gst_structure_id_get (st, _TAGS_QUARK, GST_TYPE_TAG_LIST, &tags_st, NULL);
+      gst_structure_get (st, "tags", GST_TYPE_TAG_LIST, &tags_st, NULL);
 
       language = gst_structure_get_string (caps_st, GST_TAG_LANGUAGE_CODE);
       if (language)
@@ -1077,8 +1100,7 @@ collect_information (GstDiscoverer * dc, const GstStructure * st,
 
     info = make_info (parent, GST_TYPE_DISCOVERER_STREAM_INFO, caps);
 
-    if (gst_structure_id_get (st, _TAGS_QUARK, GST_TYPE_TAG_LIST, &tags_st,
-            NULL)) {
+    if (gst_structure_get (st, "tags", GST_TYPE_TAG_LIST, &tags_st, NULL)) {
       gst_discoverer_merge_and_replace_tags (&info->tags, tags_st);
     }
 
@@ -1104,13 +1126,12 @@ find_stream_for_node (GstDiscoverer * dc, const GstStructure * topology)
     return NULL;
   }
 
-  if (!gst_structure_id_has_field (topology, _TOPOLOGY_PAD_QUARK)) {
+  if (!gst_structure_has_field (topology, "pad")) {
     GST_DEBUG ("Could not find pad for node %" GST_PTR_FORMAT, topology);
     return NULL;
   }
 
-  gst_structure_id_get (topology, _TOPOLOGY_PAD_QUARK,
-      GST_TYPE_PAD, &pad, NULL);
+  gst_structure_get (topology, "pad", GST_TYPE_PAD, &pad, NULL);
 
   for (i = 0, tmp = dc->priv->streams; tmp; tmp = tmp->next, i++) {
     ps = (PrivateStream *) tmp->data;
@@ -1227,13 +1248,12 @@ parse_stream_topology (GstDiscoverer * dc, const GstStructure * topology,
       if (!parent)
         parent = res;
 
-      if (gst_structure_id_get (st, _ELEMENT_SRCPAD_QUARK, GST_TYPE_PAD,
-              &srcpad, NULL)) {
+      if (gst_structure_get (st, "element-srcpad", GST_TYPE_PAD, &srcpad, NULL)) {
         caps = gst_pad_get_current_caps (srcpad);
         gst_object_unref (srcpad);
       }
       if (!caps) {
-        gst_structure_id_get (st, _CAPS_QUARK, GST_TYPE_CAPS, &caps, NULL);
+        gst_structure_get (st, "caps", GST_TYPE_CAPS, &caps, NULL);
       }
 
       if (caps) {
@@ -1260,7 +1280,7 @@ parse_stream_topology (GstDiscoverer * dc, const GstStructure * topology,
     }
 
     if (add_to_list) {
-      res->stream_number = dc->priv->current_info->stream_count++;
+      res->stream_number = dc->priv->current_info_stream_count++;
       dc->priv->current_info->stream_list =
           g_list_append (dc->priv->current_info->stream_list, res);
     } else {
@@ -1272,13 +1292,13 @@ parse_stream_topology (GstDiscoverer * dc, const GstStructure * topology,
     GstDiscovererContainerInfo *cont;
     GstPad *srcpad;
 
-    if (gst_structure_id_get (topology, _ELEMENT_SRCPAD_QUARK, GST_TYPE_PAD,
+    if (gst_structure_get (topology, "element-srcpad", GST_TYPE_PAD,
             &srcpad, NULL)) {
       caps = gst_pad_get_current_caps (srcpad);
       gst_object_unref (srcpad);
     }
     if (!caps) {
-      gst_structure_id_get (topology, _CAPS_QUARK, GST_TYPE_CAPS, &caps, NULL);
+      gst_structure_get (topology, "caps", GST_TYPE_CAPS, &caps, NULL);
     }
 
     if (!caps)
@@ -1323,10 +1343,11 @@ setup_next_uri_locked (GstDiscoverer * dc)
 
     if (!ready) {
       /* Start timeout */
-      handle_current_async (dc);
+      if (dc->priv->processing)
+        handle_current_async (dc);
     } else {
       g_idle_add_full (G_PRIORITY_DEFAULT_IDLE,
-          (GSourceFunc) emit_discovererd_and_next, gst_object_ref (dc),
+          (GSourceFunc) emit_discovered_and_next, gst_object_ref (dc),
           gst_object_unref);
     }
   } else {
@@ -1336,7 +1357,7 @@ setup_next_uri_locked (GstDiscoverer * dc)
   }
 }
 
-static GstDiscovererInfo *
+static void
 _ensure_info_tags (GstDiscoverer * dc)
 {
   GstDiscovererInfo *info = dc->priv->current_info;
@@ -1344,25 +1365,44 @@ _ensure_info_tags (GstDiscoverer * dc)
   if (dc->priv->all_tags)
     info->tags = dc->priv->all_tags;
   dc->priv->all_tags = NULL;
-  return info;
 }
 
 static void
-emit_discovererd (GstDiscoverer * dc)
+serialize_info_if_required (GstDiscoverer * dc, GstDiscovererInfo * info)
 {
-  GstDiscovererInfo *info = _ensure_info_tags (dc);
-  GST_DEBUG_OBJECT (dc, "Emitting 'discoverered' %s", info->uri);
+
+  if (dc->priv->use_cache && dc->priv->current_cachefile
+      && info->result == GST_DISCOVERER_OK) {
+    GVariant *variant = gst_discoverer_info_to_variant (info,
+        GST_DISCOVERER_SERIALIZE_ALL);
+
+    g_file_set_contents (dc->priv->current_cachefile,
+        g_variant_get_data (variant), g_variant_get_size (variant), NULL);
+    g_variant_unref (variant);
+  }
+}
+
+static void
+emit_discovered (GstDiscoverer * dc)
+{
+  GstDiscovererInfo *info = dc->priv->current_info;
+  GST_DEBUG_OBJECT (dc, "Emitting 'discovered' %s", info->uri);
   g_signal_emit (dc, gst_discoverer_signals[SIGNAL_DISCOVERED], 0,
       info, dc->priv->current_error);
+
   /* Clients get a copy of current_info since it is a boxed type */
   gst_discoverer_info_unref (dc->priv->current_info);
   dc->priv->current_info = NULL;
+  dc->priv->current_info_stream_count = 0;
+  g_free (dc->priv->current_cachefile);
+  dc->priv->current_cachefile = NULL;
+  dc->priv->current_info_from_cache = FALSE;
 }
 
 static gboolean
-emit_discovererd_and_next (GstDiscoverer * dc)
+emit_discovered_and_next (GstDiscoverer * dc)
 {
-  emit_discovererd (dc);
+  emit_discovered (dc);
 
   DISCO_LOCK (dc);
   setup_next_uri_locked (dc);
@@ -1384,9 +1424,9 @@ discoverer_collect (GstDiscoverer * dc)
   }
 
   if (dc->priv->use_cache && dc->priv->current_info
-      && dc->priv->current_info->from_cache) {
+      && dc->priv->current_info_from_cache) {
     GST_DEBUG_OBJECT (dc,
-        "Nothing to collect as the info was built from" " the cache");
+        "Nothing to collect as the info was built from the cache");
     return;
   }
 
@@ -1454,7 +1494,7 @@ discoverer_collect (GstDiscoverer * dc)
       dc->priv->current_info->live = TRUE;
 
     if (dc->priv->current_topology) {
-      dc->priv->current_info->stream_count = 1;
+      dc->priv->current_info_stream_count = 1;
       dc->priv->current_info->stream_info = parse_stream_topology (dc,
           dc->priv->current_topology, NULL);
       if (dc->priv->current_info->stream_info)
@@ -1485,18 +1525,14 @@ discoverer_collect (GstDiscoverer * dc)
     }
   }
 
-  if (dc->priv->use_cache && dc->priv->current_info->cachefile &&
-      dc->priv->current_info->result == GST_DISCOVERER_OK) {
-    GVariant *variant = gst_discoverer_info_to_variant (dc->priv->current_info,
-        GST_DISCOVERER_SERIALIZE_ALL);
-
-    g_file_set_contents (dc->priv->current_info->cachefile,
-        g_variant_get_data (variant), g_variant_get_size (variant), NULL);
-    g_variant_unref (variant);
-  }
-
+  _ensure_info_tags (dc);
+#if !GLIB_CHECK_VERSION(2,74,0)
+  /* Make sure the missing element details are NULL-terminated */
+  g_ptr_array_add (dc->priv->current_info->missing_elements_details, NULL);
+#endif
+  serialize_info_if_required (dc, dc->priv->current_info);
   if (dc->priv->async)
-    emit_discovererd (dc);
+    emit_discovered (dc);
 }
 
 static void
@@ -1632,14 +1668,12 @@ handle_message (GstDiscoverer * dc, GstMessage * msg)
 
     case GST_MESSAGE_ELEMENT:
     {
-      GQuark sttype;
       const GstStructure *structure;
 
       structure = gst_message_get_structure (msg);
-      sttype = gst_structure_get_name_id (structure);
       GST_DEBUG_OBJECT (GST_MESSAGE_SRC (msg),
           "structure %" GST_PTR_FORMAT, structure);
-      if (sttype == _MISSING_PLUGIN_QUARK) {
+      if (gst_structure_has_name (structure, "missing-plugin")) {
         GST_DEBUG_OBJECT (GST_MESSAGE_SRC (msg),
             "Setting result to MISSING_PLUGINS");
         dc->priv->current_info->result = GST_DISCOVERER_MISSING_PLUGINS;
@@ -1651,7 +1685,7 @@ handle_message (GstDiscoverer * dc, GstMessage * msg)
         dc->priv->current_info->misc = gst_structure_copy (structure);
         g_ptr_array_add (dc->priv->current_info->missing_elements_details,
             gst_missing_plugin_message_get_installer_detail (msg));
-      } else if (sttype == _STREAM_TOPOLOGY_QUARK) {
+      } else if (gst_structure_has_name (structure, "stream-topology")) {
         if (dc->priv->current_topology)
           gst_structure_free (dc->priv->current_topology);
         dc->priv->current_topology = gst_structure_copy (structure);
@@ -1823,17 +1857,38 @@ _get_info_from_cachefile (GstDiscoverer * dc, gchar * cachefile)
     g_variant_unref (variant);
 
     if (info) {
-      info->cachefile = cachefile;
-      info->from_cache = (gpointer) 0x01;
+      dc->priv->current_cachefile = cachefile;
+      dc->priv->current_info_from_cache = TRUE;
+    } else {
+      g_free (cachefile);
     }
 
-    GST_INFO_OBJECT (dc, "Got info from cache: %p", info);
+    GST_INFO_OBJECT (dc, "Got info from cache: %p %s", info,
+        dc->priv->current_cachefile);
     g_free (data);
 
     return info;
+  } else {
+    g_free (cachefile);
   }
 
   return NULL;
+}
+
+static GstDiscovererInfo *
+load_serialized_info (GstDiscoverer * dc, gchar * uri)
+{
+  GstDiscovererInfo *res = NULL;
+
+  if (dc->priv->use_cache) {
+    gchar *cachefile = _serialized_info_get_path (dc, uri);
+
+    if (cachefile) {
+      res = _get_info_from_cachefile (dc, cachefile);
+    }
+  }
+
+  return res;
 }
 
 static gboolean
@@ -1841,35 +1896,32 @@ _setup_locked (GstDiscoverer * dc)
 {
   GstStateChangeReturn ret;
   gchar *uri = (gchar *) dc->priv->pending_uris->data;
-  gchar *cachefile = NULL;
 
   dc->priv->pending_uris =
       g_list_delete_link (dc->priv->pending_uris, dc->priv->pending_uris);
 
-  if (dc->priv->use_cache) {
-    cachefile = _serialized_info_get_path (dc, uri);
-    if (cachefile)
-      dc->priv->current_info = _get_info_from_cachefile (dc, cachefile);
-
-    if (dc->priv->current_info) {
-      /* Make sure the URI is exactly what the user passed in */
-      g_free (dc->priv->current_info->uri);
-      dc->priv->current_info->uri = uri;
-
-      dc->priv->current_info->cachefile = cachefile;
-      dc->priv->processing = FALSE;
-      dc->priv->target_state = GST_STATE_NULL;
-
-      return TRUE;
-    }
-  }
 
   GST_DEBUG ("Setting up");
+
+  g_signal_emit (dc, gst_discoverer_signals[SIGNAL_LOAD_SERIALIZED_INFO], 0,
+      uri, &dc->priv->current_info);
+  if (dc->priv->current_info) {
+    /* Make sure the URI is exactly what the user passed in */
+    g_free (dc->priv->current_info->uri);
+    dc->priv->current_info->uri = uri;
+
+    dc->priv->processing = FALSE;
+    dc->priv->target_state = GST_STATE_NULL;
+
+    return TRUE;
+  }
 
   /* Pop URI off the pending URI list */
   dc->priv->current_info =
       (GstDiscovererInfo *) g_object_new (GST_TYPE_DISCOVERER_INFO, NULL);
-  dc->priv->current_info->cachefile = cachefile;
+  dc->priv->current_info_stream_count = 0;
+  if (dc->priv->use_cache)
+    dc->priv->current_cachefile = _serialized_info_get_path (dc, uri);
   dc->priv->current_info->uri = uri;
 
   /* set uri on uridecodebin */
@@ -1936,6 +1988,10 @@ discoverer_cleanup (GstDiscoverer * dc)
   }
 
   dc->priv->current_info = NULL;
+  dc->priv->current_info_stream_count = 0;
+  g_free (dc->priv->current_cachefile);
+  dc->priv->current_cachefile = NULL;
+  dc->priv->current_info_from_cache = FALSE;
 
   if (dc->priv->all_tags) {
     gst_tag_list_unref (dc->priv->all_tags);
@@ -2008,6 +2064,13 @@ start_discovering (GstDiscoverer * dc)
   GST_DEBUG ("Starting");
 
   DISCO_LOCK (dc);
+  if (dc->priv->cleanup) {
+    GST_DEBUG ("The discoverer is busy cleaning up.");
+    res = GST_DISCOVERER_BUSY;
+    DISCO_UNLOCK (dc);
+    goto beach;
+  }
+
   if (dc->priv->pending_uris == NULL) {
     GST_WARNING ("No URI to process");
     res = GST_DISCOVERER_URI_INVALID;
@@ -2034,13 +2097,13 @@ start_discovering (GstDiscoverer * dc)
 
       source = g_idle_source_new ();
       g_source_set_callback (source,
-          (GSourceFunc) emit_discovererd_and_next, gst_object_ref (dc),
+          (GSourceFunc) emit_discovered_and_next, gst_object_ref (dc),
           gst_object_unref);
       g_source_attach (source, dc->priv->ctx);
       goto beach;
     }
-
-    handle_current_async (dc);
+    if (dc->priv->processing)
+      handle_current_async (dc);
   } else {
     if (!ready)
       handle_current_sync (dc);
@@ -2187,11 +2250,14 @@ gst_discoverer_info_to_variant_recurse (GstDiscovererStreamInfo * sinfo,
     GstDiscovererStreamInfo *ninfo =
         gst_discoverer_stream_info_get_next (sinfo);
 
-    nextv = gst_discoverer_info_to_variant_recurse (ninfo, flags);
-
-    stream_variant =
-        g_variant_new ("(yvv)", 'n', common_stream_variant,
-        g_variant_new ("v", nextv));
+    if (ninfo) {
+      nextv = gst_discoverer_info_to_variant_recurse (ninfo, flags);
+      stream_variant =
+          g_variant_new ("(yvv)", 'n', common_stream_variant,
+          g_variant_new ("v", nextv));
+    } else {
+      stream_variant = g_variant_new ("(yv)", 'n', common_stream_variant);
+    }
   }
 
   return stream_variant;
@@ -2332,8 +2398,11 @@ _parse_discovery (GVariant * variant, GstDiscovererInfo * info)
 {
   gchar type;
   GVariant *common = g_variant_get_child_value (variant, 1);
-  GVariant *specific = g_variant_get_child_value (variant, 2);
+  GVariant *specific = NULL;
   GstDiscovererStreamInfo *sinfo = NULL;
+
+  if (g_variant_n_children (variant) > 2)
+    specific = g_variant_get_child_value (variant, 2);
 
   GET_FROM_TUPLE (variant, byte, 0, &type);
   switch (type) {
@@ -2396,7 +2465,8 @@ _parse_discovery (GVariant * variant, GstDiscovererInfo * info)
 out:
 
   g_variant_unref (common);
-  g_variant_unref (specific);
+  if (specific)
+    g_variant_unref (specific);
   g_variant_unref (variant);
   return sinfo;
 }
@@ -2596,8 +2666,8 @@ gst_discoverer_discover_uri (GstDiscoverer * discoverer, const gchar * uri,
         discoverer->priv->current_info->result);
     discoverer->priv->current_info->result = res;
   }
-  info = _ensure_info_tags (discoverer);
 
+  info = discoverer->priv->current_info;
   discoverer_cleanup (discoverer);
 
   return info;
@@ -2662,7 +2732,9 @@ gst_discoverer_info_to_variant (GstDiscovererInfo * info,
 
   g_return_val_if_fail (GST_IS_DISCOVERER_INFO (info), NULL);
   g_return_val_if_fail (gst_discoverer_info_get_result (info) ==
-      GST_DISCOVERER_OK, NULL);
+      GST_DISCOVERER_OK
+      || gst_discoverer_info_get_result (info) ==
+      GST_DISCOVERER_MISSING_PLUGINS, NULL);
 
   sinfo = gst_discoverer_info_get_stream_info (info);
   stream_variant = gst_discoverer_info_to_variant_recurse (sinfo, flags);

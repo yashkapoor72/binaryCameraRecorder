@@ -47,6 +47,9 @@
 #include <glib/gi18n-lib.h>
 #include <jerror.h>
 
+/* Disable libjpeg-turbo support for now, due to unresolved cornercases */
+#undef JCS_EXTENSIONS
+
 #define MIN_WIDTH  1
 #define MAX_WIDTH  65535
 #define MIN_HEIGHT 1
@@ -231,20 +234,20 @@ gst_jpeg_dec_term_source (j_decompress_ptr cinfo)
 }
 
 METHODDEF (void)
-    gst_jpeg_dec_my_output_message (j_common_ptr cinfo)
+gst_jpeg_dec_my_output_message (j_common_ptr cinfo)
 {
   return;                       /* do nothing */
 }
 
 METHODDEF (void)
-    gst_jpeg_dec_my_emit_message (j_common_ptr cinfo, int msg_level)
+gst_jpeg_dec_my_emit_message (j_common_ptr cinfo, int msg_level)
 {
   /* GST_LOG_OBJECT (CINFO_GET_JPEGDEC (&cinfo), "msg_level=%d", msg_level); */
   return;
 }
 
 METHODDEF (void)
-    gst_jpeg_dec_my_error_exit (j_common_ptr cinfo)
+gst_jpeg_dec_my_error_exit (j_common_ptr cinfo)
 {
   struct GstJpegDecErrorMgr *err_mgr = (struct GstJpegDecErrorMgr *) cinfo->err;
 
@@ -601,10 +604,16 @@ static gboolean
 gst_jpeg_dec_set_format (GstVideoDecoder * dec, GstVideoCodecState * state)
 {
   GstJpegDec *jpeg = GST_JPEG_DEC (dec);
+  GstStructure *structure;
+  gboolean parsed = FALSE;
 
   if (jpeg->input_state)
     gst_video_codec_state_unref (jpeg->input_state);
   jpeg->input_state = gst_video_codec_state_ref (state);
+
+  structure = gst_caps_get_structure (state->caps, 0);
+  gst_structure_get_boolean (structure, "parsed", &parsed);
+  gst_video_decoder_set_packetized (dec, parsed);
 
   return TRUE;
 }
@@ -871,7 +880,7 @@ gst_jpeg_dec_decode_direct (GstJpegDec * dec, GstVideoFrame * frame,
   gint lines, v_samp[3];
   guchar *base[3], *last[3];
   gint stride[3];
-  guint height, field_height;
+  guint field_height;
 
   line[0] = y;
   line[1] = u;
@@ -884,7 +893,7 @@ gst_jpeg_dec_decode_direct (GstJpegDec * dec, GstVideoFrame * frame,
   if (G_UNLIKELY (v_samp[0] > 2 || v_samp[1] > 2 || v_samp[2] > 2))
     goto format_not_supported;
 
-  height = field_height = GST_VIDEO_FRAME_HEIGHT (frame);
+  field_height = GST_VIDEO_FRAME_HEIGHT (frame);
 
   /* XXX: division by 2 here might not be a good idea yes. But we are doing this
    * already in gst_jpeg_dec_handle_frame() for interlaced jpeg */
@@ -934,7 +943,7 @@ gst_jpeg_dec_decode_direct (GstJpegDec * dec, GstVideoFrame * frame,
   } else
 #endif
   {
-    for (i = 0; i < height; i += v_samp[0] * DCTSIZE) {
+    for (i = 0; i < field_height; i += v_samp[0] * DCTSIZE) {
       for (j = 0; j < (v_samp[0] * DCTSIZE); ++j) {
         /* Y */
         line[0][j] = base[0] + (i + j) * stride[0];
@@ -1059,13 +1068,14 @@ gst_jpeg_turbo_parse_ext_fmt_convert (GstJpegDec * dec, gint * clrspc)
 }
 #endif
 
-static void
+static gboolean
 gst_jpeg_dec_negotiate (GstJpegDec * dec, gint width, gint height, gint clrspc,
     gboolean interlaced)
 {
   GstVideoCodecState *outstate;
   GstVideoInfo *info;
   GstVideoFormat format;
+  gboolean res;
 
 #ifdef JCS_EXTENSIONS
   if (dec->format_convert) {
@@ -1095,7 +1105,7 @@ gst_jpeg_dec_negotiate (GstJpegDec * dec, gint width, gint height, gint clrspc,
         height == GST_VIDEO_INFO_HEIGHT (info) &&
         format == GST_VIDEO_INFO_FORMAT (info)) {
       gst_video_codec_state_unref (outstate);
-      return;
+      return TRUE;
     }
     gst_video_codec_state_unref (outstate);
   }
@@ -1109,6 +1119,8 @@ gst_jpeg_dec_negotiate (GstJpegDec * dec, gint width, gint height, gint clrspc,
   outstate =
       gst_video_decoder_set_output_state (GST_VIDEO_DECODER (dec), format,
       width, height, dec->input_state);
+  if (!outstate)
+    return FALSE;
 
   switch (clrspc) {
     case JCS_RGB:
@@ -1133,10 +1145,12 @@ gst_jpeg_dec_negotiate (GstJpegDec * dec, gint width, gint height, gint clrspc,
 
   gst_video_codec_state_unref (outstate);
 
-  gst_video_decoder_negotiate (GST_VIDEO_DECODER (dec));
+  res = gst_video_decoder_negotiate (GST_VIDEO_DECODER (dec));
 
   GST_DEBUG_OBJECT (dec, "max_v_samp_factor=%d", dec->cinfo.max_v_samp_factor);
   GST_DEBUG_OBJECT (dec, "max_h_samp_factor=%d", dec->cinfo.max_h_samp_factor);
+
+  return res;
 }
 
 static GstFlowReturn
@@ -1292,7 +1306,7 @@ gst_jpeg_dec_decode (GstJpegDec * dec, GstVideoFrame * vframe, guint width,
     GST_LOG_OBJECT (dec, "decompressing (required scanline buffer height = %u)",
         dec->cinfo.rec_outbuf_height);
 
-    /* For some widths jpeglib requires more horizontal padding than I420 
+    /* For some widths jpeglib requires more horizontal padding than I420
      * provides. In those cases we need to decode into separate buffers and then
      * copy over the data into our final picture buffer, otherwise jpeglib might
      * write over the end of a line into the beginning of the next line,
@@ -1398,7 +1412,8 @@ gst_jpeg_dec_handle_frame (GstVideoDecoder * bdec, GstVideoCodecFrame * frame)
    * to see if there are two SOF markers in the packet to detect this) */
   if (gst_video_decoder_get_packetized (bdec) &&
       dec->input_state &&
-      dec->input_state->info.height > height &&
+      dec->input_state->info.height != height && height > DCTSIZE &&
+      dec->input_state->info.height > (2 * (height - DCTSIZE)) &&
       dec->input_state->info.height <= (height * 2)
       && dec->input_state->info.width == width) {
     GST_LOG_OBJECT (dec,
@@ -1415,8 +1430,9 @@ gst_jpeg_dec_handle_frame (GstVideoDecoder * bdec, GstVideoCodecFrame * frame)
     num_fields = 1;
   }
 
-  gst_jpeg_dec_negotiate (dec, width, output_height,
-      dec->cinfo.jpeg_color_space, num_fields == 2);
+  if (!gst_jpeg_dec_negotiate (dec, width, output_height,
+          dec->cinfo.jpeg_color_space, num_fields == 2))
+    goto negotiation_failed;
 
   state = gst_video_decoder_get_output_state (bdec);
   ret = gst_video_decoder_allocate_output_frame (bdec, frame);
@@ -1546,6 +1562,12 @@ map_failed:
     GST_ELEMENT_ERROR (dec, RESOURCE, READ, (_("Failed to read memory")),
         ("gst_buffer_map() failed for READ access"));
     ret = GST_FLOW_ERROR;
+    goto exit;
+  }
+negotiation_failed:
+  {
+    GST_ELEMENT_ERROR (dec, CORE, NEGOTIATION, (NULL), ("failed to negotiate"));
+    ret = GST_FLOW_NOT_NEGOTIATED;
     goto exit;
   }
 decode_error:

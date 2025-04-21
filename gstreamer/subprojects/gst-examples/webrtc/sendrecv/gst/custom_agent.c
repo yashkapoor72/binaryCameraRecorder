@@ -28,10 +28,10 @@ customice_agent_find_transport (GstWebRTCICE * ice,
 
 void
 customice_agent_add_candidate (GstWebRTCICE * ice,
-    GstWebRTCICEStream * stream, const gchar * candidate)
+    GstWebRTCICEStream * stream, const gchar * candidate, GstPromise * promise)
 {
   GstWebRTCICE *c_ice = GST_WEBRTC_ICE (CUSTOMICE_AGENT (ice)->nice_agent);
-  gst_webrtc_ice_add_candidate (c_ice, stream, candidate);
+  gst_webrtc_ice_add_candidate (c_ice, stream, candidate, promise);
 }
 
 gboolean
@@ -166,5 +166,5 @@ customice_agent_init (CustomICEAgent * ice)
 CustomICEAgent *
 customice_agent_new (const gchar * name)
 {
-  return g_object_new (GST_TYPE_WEBRTC_NICE, "name", name, NULL);
+  return g_object_new (CUSTOMICE_TYPE_AGENT, "name", name, NULL);
 }

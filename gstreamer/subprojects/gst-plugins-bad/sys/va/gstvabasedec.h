@@ -24,6 +24,7 @@
 #include <gst/codecs/gstav1decoder.h>
 #include <gst/codecs/gsth264decoder.h>
 #include <gst/codecs/gsth265decoder.h>
+#include <gst/codecs/gsth266decoder.h>
 #include <gst/codecs/gstmpeg2decoder.h>
 #include <gst/codecs/gstvp8decoder.h>
 #include <gst/codecs/gstvp9decoder.h>
@@ -32,6 +33,7 @@
 #include "gstvadecoder.h"
 #include "gstvadevice.h"
 #include "gstvaprofile.h"
+#include "gstvapluginutils.h"
 
 G_BEGIN_DECLS
 
@@ -54,6 +56,7 @@ struct _GstVaBaseDec
   {
     GstH264Decoder h264;
     GstH265Decoder h265;
+    GstH266Decoder h266;
     GstMpeg2Decoder mpeg2;
     GstVp8Decoder vp8;
     GstVp9Decoder vp9;
@@ -68,12 +71,15 @@ struct _GstVaBaseDec
 
   VAProfile profile;
   guint rt_format;
+  /* coded or max resolution */
   gint width;
   gint height;
 
   guint min_buffers;
 
+  GstVideoInfo output_info;
   GstVideoCodecState *output_state;
+  GstVideoCodecState *input_state;
   GstBufferPool *other_pool;
 
   gboolean need_valign;
@@ -96,6 +102,7 @@ struct _GstVaBaseDecClass
   {
     GstH264DecoderClass h264;
     GstH265DecoderClass h265;
+    GstH266DecoderClass h266;
     GstMpeg2DecoderClass mpeg2;
     GstVp8DecoderClass vp8;
     GstVp9DecoderClass vp9;
@@ -129,8 +136,16 @@ void                  gst_va_base_dec_class_init          (GstVaBaseDecClass * k
 gboolean              gst_va_base_dec_close               (GstVideoDecoder * decoder);
 void                  gst_va_base_dec_get_preferred_format_and_caps_features (GstVaBaseDec * base,
                                                            GstVideoFormat * format,
-                                                           GstCapsFeatures ** capsfeatures);
+                                                           GstCapsFeatures ** capsfeatures,
+                                                           guint64 * modifier);
 gboolean              gst_va_base_dec_copy_output_buffer  (GstVaBaseDec * base,
                                                            GstVideoCodecFrame * codec_frame);
+gboolean              gst_va_base_dec_process_output      (GstVaBaseDec * base,
+                                                           GstVideoCodecFrame * frame,
+                                                           GstVideoCodecState * input_state,
+                                                           GstVideoBufferFlags buffer_flags);
+GstFlowReturn         gst_va_base_dec_prepare_output_frame (GstVaBaseDec * base,
+                                                            GstVideoCodecFrame * frame);
+gboolean              gst_va_base_dec_set_output_state    (GstVaBaseDec * base);
 
 G_END_DECLS

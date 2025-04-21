@@ -27,6 +27,7 @@ gst_sources = files(
   'gstformat.c',
   'gstghostpad.c',
   'gstdevicemonitor.c',
+  'gstidstr.c',
   'gstinfo.c',
   'gstiterator.c',
   'gstatomicqueue.c',
@@ -40,11 +41,9 @@ gst_sources = files(
   'gstpipeline.c',
   'gstplugin.c',
   'gstpluginfeature.c',
-  'gstpluginloader.c',
   'gstpoll.c',
   'gstpreset.c',
   'gstprotection.c',
-  'gstquark.c',
   'gstquery.c',
   'gstregistry.c',
   'gstregistrychunks.c',
@@ -70,6 +69,7 @@ gst_sources = files(
   'gsturi.c',
   'gstutils.c',
   'gstvalue.c',
+  'gstvecdeque.c',
   'gstparse.c',
 )
 
@@ -83,6 +83,7 @@ gst_headers = files(
   'gstbufferlist.h',
   'gstbufferpool.h',
   'gstbus.h',
+  'gstbytearrayinterface.h',
   'gstcaps.h',
   'gstcapsfeatures.h',
   'gstchildproxy.h',
@@ -105,6 +106,7 @@ gst_headers = files(
   'gstformat.h',
   'gstghostpad.h',
   'gstdevicemonitor.h',
+  'gstidstr.h',
   'gstinfo.h',
   'gstiterator.h',
   'gstatomicqueue.h',
@@ -144,16 +146,32 @@ gst_headers = files(
   'gsturi.h',
   'gstutils.h',
   'gstvalue.h',
+  'gstvecdeque.h',
   'gstregistry.h',
   'gstparse.h',
   'math-compat.h',
 )
+if host_system == 'darwin'
+  gst_headers += files('gstmacos.h')
+  gst_sources += files('gstmacos.m')
+endif
+
 install_headers(gst_headers, subdir : 'gstreamer-1.0/gst')
+
+if host_system == 'windows'
+  gst_sources += files('gstpluginloader-win32.c')
+else
+  gst_sources += files('gstpluginloader.c')
+endif
 
 extra_deps = []
 if host_system == 'android'
-  gst_sources += 'gstandroid.c'
+  gst_sources += files('gstandroid.c')
   extra_deps += cc.find_library('log')
+endif
+
+if host_system == 'darwin'
+  extra_deps += dependency('appleframeworks', modules : ['Cocoa'])
 endif
 
 gst_registry = get_option('registry')
@@ -186,9 +204,9 @@ else
   gst_cdata.set('GST_DISABLE_PARSE_DEFINE', '#define GST_DISABLE_PARSE 1')
 endif
 
-gst_cdata.set10('GST_DISABLE_CAST_CHECKS_DEFINE', cast_checks.disabled())
-gst_cdata.set10('GST_DISABLE_GLIB_ASSERTS_DEFINE', glib_asserts.disabled())
-gst_cdata.set10('GST_DISABLE_GLIB_CHECKS_DEFINE', glib_checks.disabled())
+gst_cdata.set10('GST_DISABLE_CAST_CHECKS_DEFINE', disable_cast_checks)
+gst_cdata.set10('GST_DISABLE_GLIB_ASSERTS_DEFINE', disable_glib_asserts)
+gst_cdata.set10('GST_DISABLE_GLIB_CHECKS_DEFINE', disable_glib_checks)
 
 # FIXME: add --disable-plugin option?
 gst_cdata.set('GST_DISABLE_PLUGIN_DEFINE', '#undef GST_DISABLE_PLUGIN')
@@ -238,6 +256,12 @@ if not tracer_hooks
   libgst_c_args += ['-DGST_DISABLE_GST_TRACER_HOOKS']
 endif
 
+if get_option('gstreamer-static-full')
+  libgst_static_c_args = ['-DGST_FULL_STATIC_COMPILATION']
+else
+  libgst_static_c_args = []
+endif
+
 # Make sure that subproject building gir files work
 gst_incdirs = [configinc]
 gst_gen_sources = [gstenum_h]
@@ -247,14 +271,20 @@ libgst = library('gstreamer-1.0', gst_sources,
   soversion : soversion,
   darwin_versions : osxversion,
   c_args : libgst_c_args + ['-DBUILDING_GST'],
+  c_static_args : libgst_static_c_args,
   include_directories : [configinc,
     # HACK, change include paths in .y and .l in final version.
     include_directories('parse')],
   link_with : printf_lib,
   install : true,
   dependencies : [gobject_dep, gmodule_dep, glib_dep, mathlib, dl_dep,
-                  backtrace_deps, platform_deps, extra_deps],
+                  backtrace_deps, platform_deps, network_deps, extra_deps],
 )
+
+gst_compile_args = []
+if static_build
+  gst_compile_args += ['-DGST_STATIC_COMPILATION']
+endif
 
 pkg_name = 'gstreamer-1.0'
 library_def = {'lib': libgst}
@@ -265,6 +295,7 @@ pkgconfig.generate(libgst,
   subdirs : pkgconfig_subdirs,
   name : pkg_name,
   description : 'Streaming media framework',
+  extra_cflags: gst_compile_args,
 )
 
 if build_gir
@@ -283,7 +314,7 @@ if build_gir
   gir = {
     'sources' : gst_sources + gst_headers + gst_enums + [gst_version_h],
     'namespace' : 'Gst',
-    'nsversion' : apiversion,
+    'nsversion' : api_version,
     'identifier_prefix' : 'Gst',
     'symbol_prefix' : 'gst',
     'export_packages' : pkg_name,
@@ -299,15 +330,13 @@ if build_gir
   # creating another gir which links against gst-full.
   if not static_build
     gst_gir = gnome.generate_gir(libgst, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [gst_gir]}
     gst_gen_sources += gst_gir
   endif
 endif
 gst_libraries += [[pkg_name, library_def]]
 
-gst_compile_args = []
-if get_option('default_library') == 'static'
-  gst_compile_args += ['-DGST_STATIC_COMPILATION']
-endif
+
 
 gst_dep = declare_dependency(link_with : libgst,
   compile_args : gst_compile_args,

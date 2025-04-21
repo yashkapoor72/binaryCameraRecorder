@@ -2,9 +2,12 @@ d3d11_sources = [
   'gstd3d11bufferpool.cpp',
   'gstd3d11compile.cpp',
   'gstd3d11converter.cpp',
+  'gstd3d11converter-builder.cpp',
+  'gstd3d11converter-helper.cpp',
   'gstd3d11device.cpp',
   'gstd3d11format.cpp',
   'gstd3d11memory.cpp',
+  'gstd3d11shadercache.cpp',
   'gstd3d11utils.cpp',
 ]
 
@@ -22,8 +25,10 @@ d3d11_headers = [
 ]
 
 gstd3d11_dep = dependency('', required : false)
+directxmath_dep = dependency('', required : false)
+d3d11_opt = get_option('d3d11')
 
-if host_system != 'windows'
+if host_system != 'windows' or d3d11_opt.disabled()
   subdir_done()
 endif
 
@@ -35,16 +40,25 @@ extra_comm_args = [
   '-DBUILDING_GST_D3D11',
   '-DG_LOG_DOMAIN="GStreamer-D3D11"',
 ]
+# Definition issues in external headers
+extra_comm_args += cc.get_supported_arguments(['-Wno-undef'])
 
 have_d3d11sdk_h = false
 have_dxgidebug_h = false
 d3d11_winapi_app = false
 d3d11_conf = configuration_data()
 
-d3d11_lib = cc.find_library('d3d11', required : false)
-dxgi_lib = cc.find_library('dxgi', required : false)
+d3d11_lib = cc.find_library('d3d11', required: d3d11_opt)
+dxgi_lib = cc.find_library('dxgi', required: d3d11_opt)
 d3dcompiler_lib = cc.find_library('d3dcompiler', required: false)
-runtimeobject_lib = cc.find_library('runtimeobject', required : false)
+runtimeobject_lib = cc.find_library('runtimeobject', required: false)
+
+if not gstd3dshader_dep.found()
+  if d3d11_option.enabled()
+    error('The d3d11 was enabled explicitly, but required d3dshader dep were not found.')
+  endif
+  subdir_done()
+endif
 
 if not d3d11_lib.found() or not dxgi_lib.found()
   subdir_done()
@@ -57,8 +71,8 @@ sdk_headers = [
 ]
 
 foreach h : sdk_headers
-  if not cc.has_header (h)
-    subdir_done ()
+  if not cc.has_header(h, required: d3d11_opt)
+    subdir_done()
   endif
 endforeach
 
@@ -87,6 +101,9 @@ if runtimeobject_lib.found() and d3dcompiler_lib.found()
 endif
 
 if not d3d11_winapi_desktop and not d3d11_winapi_app
+  if d3d11_opt.enabled()
+    error('Not building for win32 or winRT?')
+  endif
   subdir_done()
 endif
 
@@ -116,7 +133,7 @@ d3d11_conf.set10('GST_D3D11_WINAPI_APP', d3d11_winapi_app)
 # is mentioning that DXGIGetDebugInterface1 is desktop app only.
 #
 # PLEASE LET US KNOW A CORRECT WAY TO OBTAIN IDXGIDebug1 ON UWP, MICROSOFT
-if get_option('debug') and not (d3d11_winapi_only_app and get_option('b_vscrt') == 'md')
+if not gst_debug_disabled and get_option('debug') and not (d3d11_winapi_only_app and get_option('b_vscrt') == 'md')
   d3d11_debug_libs = [
     ['d3d11sdklayers.h', 'ID3D11Debug', 'ID3D11InfoQueue', 'have_d3d11sdk_h'],
     ['dxgidebug.h', 'IDXGIDebug', 'IDXGIInfoQueue', 'have_dxgidebug_h'],
@@ -161,9 +178,74 @@ endif
 if cc.get_id() != 'msvc'
   extra_args = cc.get_supported_arguments([
     '-Wno-redundant-decls',
+    # include/directxmath/DirectXMathMatrix.inl:1161:16: error: variable 'aa' set but not used
+    '-Wno-unused-but-set-variable',
   ])
 
   extra_comm_args += extra_args
+endif
+
+have_dx_math = cxx.compiles('''
+    #include <windows.h>
+    #include <DirectXMath.h>
+    using namespace DirectX;
+    int main(int argc, char ** argv) {
+      XMMATRIX matrix;
+      XMFLOAT4X4 dump;
+      matrix = XMMatrixIdentity ();
+      XMStoreFloat4x4 (&dump, matrix);
+      return 0;
+    }
+    ''',
+    name: 'DirectXMath support in Windows SDK')
+
+if not have_dx_math
+  directxmath_dep = dependency('DirectXMath', 'directxmath',
+      allow_fallback: true,
+      version: '>= 3.1.9',
+      required: d3d11_opt)
+  if not directxmath_dep.found()
+    subdir_done()
+  endif
+  extra_deps += [directxmath_dep]
+endif
+
+# https://learn.microsoft.com/en-us/windows/win32/dxmath/pg-xnamath-internals#windows-sse-versus-sse2
+# x86 with Windows 7 or older may not support SSE2
+if host_machine.cpu_family() != 'x86'
+  have_dx_math_simd = cxx.compiles('''
+      #include <windows.h>
+      #include <DirectXMath.h>
+      using namespace DirectX;
+      int main(int argc, char ** argv) {
+        XMVerifyCPUSupport ();
+        return 0;
+      }
+      ''',
+      name: 'DirectXMath SIMD support',
+      dependencies: directxmath_dep)
+  if have_dx_math_simd
+    extra_comm_args += ['-DHAVE_DIRECTX_MATH_SIMD']
+  elif get_option('d3d11-math').enabled()
+    error('Usable DirectXMath not found')
+  endif
+endif
+
+if cxx.compiles('''
+    #include <d3d11_4.h>
+    #include <d3d11.h>
+    int main(int argc, char ** argv) {
+      D3D11_FEATURE_DATA_D3D11_OPTIONS options;
+      D3D11_FEATURE_DATA_D3D11_OPTIONS4 options4;
+      D3D11_FEATURE_DATA_D3D11_OPTIONS5 options5;
+      D3D11_FEATURE fo = D3D11_FEATURE_D3D11_OPTIONS;
+      D3D11_FEATURE fo4 = D3D11_FEATURE_D3D11_OPTIONS4;
+      D3D11_FEATURE fo5 = D3D11_FEATURE_D3D11_OPTIONS5;
+      return 0;
+    }
+    ''',
+    name: 'D3D11_FEATURE_DATA_* symbols in d3d11 header')
+  extra_comm_args += ['-DHAVE_D3D11_FEATURE_DATA_D3D11_OPTIONS5']
 endif
 
 configure_file(
@@ -183,7 +265,7 @@ gstd3d11 = library('gstd3d11-' + api_version,
   version : libversion,
   soversion : soversion,
   install : true,
-  dependencies : [gstbase_dep, gstvideo_dep, gmodule_dep, d3d11_lib, dxgi_lib] + extra_deps
+  dependencies : [gstbase_dep, gstvideo_dep, gmodule_dep, gstd3dshader_dep, d3d11_lib, dxgi_lib] + extra_deps
 )
 
 pkgconfig.generate(gstd3d11,
@@ -212,6 +294,7 @@ if build_gir
   }
   if not static_build
     d3d11_gir = gnome.generate_gir(gstd3d11, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [d3d11_gir]}
     gen_sources += d3d11_gir
   endif
 

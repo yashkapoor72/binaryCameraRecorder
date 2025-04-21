@@ -1718,6 +1718,40 @@ namespace Gst.Base {
 		}
 
 		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern bool gst_aggregator_get_force_live(IntPtr raw);
+
+		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_aggregator_set_force_live(IntPtr raw, bool force_live);
+
+		public bool ForceLive { 
+			get {
+				bool raw_ret = gst_aggregator_get_force_live(Handle);
+				bool ret = raw_ret;
+				return ret;
+			}
+			set {
+				gst_aggregator_set_force_live(Handle, value);
+			}
+		}
+
+		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern bool gst_aggregator_get_ignore_inactive_pads(IntPtr raw);
+
+		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_aggregator_set_ignore_inactive_pads(IntPtr raw, bool ignore);
+
+		public bool IgnoreInactivePads { 
+			get {
+				bool raw_ret = gst_aggregator_get_ignore_inactive_pads(Handle);
+				bool ret = raw_ret;
+				return ret;
+			}
+			set {
+				gst_aggregator_set_ignore_inactive_pads(Handle, value);
+			}
+		}
+
+		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern bool gst_aggregator_negotiate(IntPtr raw);
 
 		public bool Negotiate() {
@@ -1732,6 +1766,16 @@ namespace Gst.Base {
 		public Gst.Sample PeekNextSample(Gst.Base.AggregatorPad pad) {
 			IntPtr raw_ret = gst_aggregator_peek_next_sample(Handle, pad == null ? IntPtr.Zero : pad.Handle);
 			Gst.Sample ret = raw_ret == IntPtr.Zero ? null : (Gst.Sample) GLib.Opaque.GetOpaque (raw_ret, typeof (Gst.Sample), true);
+			return ret;
+		}
+
+		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern bool gst_aggregator_push_src_event(IntPtr raw, IntPtr evnt);
+
+		public bool PushSrcEvent(Gst.Event evnt) {
+			evnt.Owned = false;
+			bool raw_ret = gst_aggregator_push_src_event(Handle, evnt == null ? IntPtr.Zero : evnt.Handle);
+			bool ret = raw_ret;
 			return ret;
 		}
 

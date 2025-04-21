@@ -82,7 +82,7 @@ static gboolean gst_mpeg2dec_decide_allocation (GstVideoDecoder * decoder,
     GstQuery * query);
 
 static void gst_mpeg2dec_clear_buffers (GstMpeg2dec * mpeg2dec);
-static gboolean gst_mpeg2dec_crop_buffer (GstMpeg2dec * dec,
+static GstFlowReturn gst_mpeg2dec_crop_buffer (GstMpeg2dec * dec,
     GstVideoCodecFrame * in_frame, GstVideoFrame * in_vframe);
 
 static void
@@ -256,6 +256,11 @@ gst_mpeg2dec_create_generic_pool (GstAllocator * allocator,
   GstStructure *config;
 
   pool = gst_video_buffer_pool_new ();
+  {
+    gchar *name = g_strdup_printf ("mpeg2dec-%p-pool", pool);
+    g_object_set (pool, "name", name, NULL);
+    g_free (name);
+  }
   config = gst_buffer_pool_get_config (pool);
 
   gst_buffer_pool_config_set_allocator (config, allocator, params);
@@ -548,7 +553,7 @@ gst_mpeg2dec_clear_buffers (GstMpeg2dec * mpeg2dec)
   while ((l = g_list_first (mpeg2dec->buffers))) {
     GstMpeg2DecBuffer *mbuf = l->data;
     gst_video_frame_unmap (&mbuf->frame);
-    g_slice_free (GstMpeg2DecBuffer, mbuf);
+    g_free (mbuf);
     mpeg2dec->buffers = g_list_delete_link (mpeg2dec->buffers, l);
   }
 }
@@ -561,7 +566,7 @@ gst_mpeg2dec_save_buffer (GstMpeg2dec * mpeg2dec, gint id,
 
   GST_LOG_OBJECT (mpeg2dec, "Saving local info for frame %d", id);
 
-  mbuf = g_slice_new0 (GstMpeg2DecBuffer);
+  mbuf = g_new0 (GstMpeg2DecBuffer, 1);
   mbuf->id = id;
   mbuf->frame = *frame;
 
@@ -585,7 +590,7 @@ gst_mpeg2dec_discard_buffer (GstMpeg2dec * mpeg2dec, gint id)
   if (l) {
     GstMpeg2DecBuffer *mbuf = l->data;
     gst_video_frame_unmap (&mbuf->frame);
-    g_slice_free (GstMpeg2DecBuffer, mbuf);
+    g_free (mbuf);
     mpeg2dec->buffers = g_list_delete_link (mpeg2dec->buffers, l);
     GST_LOG_OBJECT (mpeg2dec, "Discarded local info for frame %d", id);
   } else {
@@ -1120,8 +1125,10 @@ gst_mpeg2dec_handle_frame (GstVideoDecoder * decoder,
         break;
       case STATE_INVALID_END:
         GST_DEBUG_OBJECT (mpeg2dec, "invalid end");
+        /* FALLTHROUGH */
       case STATE_END:
         GST_DEBUG_OBJECT (mpeg2dec, "end");
+        /* FALLTHROUGH */
       case STATE_SLICE:
         GST_DEBUG_OBJECT (mpeg2dec, "display_fbuf:%p, discard_fbuf:%p",
             info->display_fbuf, info->discard_fbuf);

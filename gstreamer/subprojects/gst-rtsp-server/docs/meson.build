@@ -27,13 +27,12 @@ if not build_gir
     subdir_done()
 endif
 
-required_hotdoc_extensions = ['gi-extension', 'gst-extension']
 if gst_dep.type_name() == 'internal'
     gst_proj = subproject('gstreamer')
     plugins_cache_generator = gst_proj.get_variable('plugins_cache_generator')
 else
-    required_hotdoc_extensions += ['gst-extension']
-    plugins_cache_generator = find_program(join_paths(gst_dep.get_variable('libexecdir'), 'gstreamer-' + api_version, 'gst-plugins-doc-cache-generator'),
+    plugins_cache_generator = find_program('gst-plugins-doc-cache-generator',
+        dirs: [join_paths(gst_dep.get_variable('libexecdir', default_value: ''), 'gstreamer-' + api_version)],
         required: false)
 endif
 
@@ -50,59 +49,85 @@ else
     warning('GStreamer plugin inspector for documentation not found, can\'t update the cache')
 endif
 
-hotdoc_p = find_program('hotdoc', required: get_option('doc'))
-if not hotdoc_p.found()
-    message('Hotdoc not found, not building the documentation')
-    subdir_done()
+if get_option('doc').disabled()
+  subdir_done()
 endif
-
-hotdoc_req = '>= 0.11.0'
-hotdoc_version = run_command(hotdoc_p, '--version', check: false).stdout()
-if not hotdoc_version.version_compare(hotdoc_req)
-    if get_option('doc').enabled()
-        error('Hotdoc version @0@ not found, got @1@'.format(hotdoc_req, hotdoc_version))
-    else
-        message('Hotdoc version @0@ not found, got @1@'.format(hotdoc_req, hotdoc_version))
-        subdir_done()
-    endif
-endif
-
-hotdoc = import('hotdoc')
-foreach extension: required_hotdoc_extensions
-    if not hotdoc.has_extensions(extension)
-        if get_option('doc').enabled()
-            error('Documentation enabled but @0@ missing'.format(extension))
-        endif
-
-        message('@0@ extension not found, not building documentation'.format(extension))
-        subdir_done()
-    endif
-endforeach
 
 build_hotdoc = true
-hotdoc = import('hotdoc')
 
-libs_doc = [hotdoc.generate_doc('gst-rtsp-server',
-    project_version: api_version,
-    gi_c_sources: ['../gst/rtsp-server/*.[hc]'],
-    gi_sources: rtsp_server_gir[0].full_path(),
-    sitemap: 'sitemap.txt',
-    index: 'index.md',
-    gi_index: 'index.md',
-    gi_smart_index: true,
-    gi_order_generated_subpages: true,
-)]
+cdir = meson.current_source_dir()
+doc_sources = []
+foreach s: rtsp_server_sources + rtsp_server_headers
+  doc_sources += s.full_path()
+endforeach
 
-plugins_doc = [hotdoc.generate_doc('rtspclientsink',
-    project_version: api_version,
-    sitemap: 'plugins/sitemap.txt',
-    index: 'plugins/index.md',
-    gst_index: 'plugins/index.md',
-    gst_c_sources: ['../gst/rtsp-sink/*.[ch]'],
-    gst_dl_sources: [rtspsink.full_path()],
-    gst_smart_index: true,
-    dependencies: gst_rtsp_server_deps + [rtspsink],
-    gst_cache_file: plugins_cache,
-    gst_plugin_name: 'rtspclientsink',
-)]
-doc = libs_doc[0]
+lib_sources = {
+  'rtspserver': pathsep.join(doc_sources)
+}
+
+lib_doc_source_file = configure_file(
+  output: 'lib_doc_sources.json',
+  configuration: lib_sources,
+  output_format: 'json')
+
+lib_doc_gi_source_file = configure_file(
+  output: 'lib_doc_gi_sources.json',
+  configuration: {'rtspserver': rtsp_server_gir[0].full_path()},
+  output_format: 'json')
+
+lib_hotdoc_config = custom_target(
+  'build-gst-hotdoc-configs',
+  command: [
+    plugins_cache_generator,
+    'hotdoc-lib-config',
+    '--srcdir', cdir,
+    '--builddir', meson.current_build_dir(),
+    '--buildroot', meson.global_build_root(),
+    '--project_version', api_version,
+    '--gi_source_file', lib_doc_gi_source_file,
+    '--gi_c_source_file', lib_doc_source_file,
+    '--source_root', cdir,
+    '--gi_source_root', cdir / '..' / 'gst' / 'rtsp-server',
+    '--output', '@OUTPUT@',
+  ],
+  output: 'hotdoc-lib-configs.json',
+  depends: [rtsp_server_gir[0]],
+)
+
+doc_source_file = configure_file(output: 'doc_sources.json', configuration: plugin_sources, output_format: 'json')
+
+plugin_libraries = {}
+
+foreach plugin: plugins
+  if plugin.name().startswith('gst')
+    plugin_name = plugin.name().substring(3)
+  else
+    plugin_name = plugin.name()
+  endif
+
+  plugin_libraries += {
+    plugin_name: plugin.full_path()
+  }
+endforeach
+
+doc_plugin_libs_file = configure_file(output: 'doc_plugin_libs.json', configuration: plugin_libraries, output_format: 'json')
+
+cdir = meson.current_source_dir()
+plugin_hotdoc_configs = custom_target(
+  'build-hotdoc-configs',
+  command: [
+    plugins_cache_generator,
+    'hotdoc-config',
+    '--builddir', meson.current_build_dir(),
+    '--project_version', api_version,
+    '--sitemap', cdir / 'plugins/sitemap.txt',
+    '--index', cdir / 'plugins/index.md',
+    '--gst_index', cdir / 'plugins/index.md',
+    '--gst_cache_file', '@INPUT@',
+    '--output', '@OUTPUT@',
+    '--gst_c_source_file', doc_source_file,
+    '--gst_plugin_libraries_file', doc_plugin_libs_file,
+  ],
+  input: plugins_cache,
+  output: 'hotdoc-configs.json',
+)

@@ -47,6 +47,10 @@
 #include <gst/va/gstva.h>
 #endif
 
+#ifdef HAVE_GST_D3D12
+#include <gst/d3d12/gstd3d12.h>
+#endif
+
 GST_DEBUG_CATEGORY_STATIC (gst_qsv_jpeg_enc_debug);
 #define GST_CAT_DEFAULT gst_qsv_jpeg_enc_debug
 
@@ -64,6 +68,7 @@ enum
 
 #define DOC_SINK_CAPS \
     "video/x-raw(memory:D3D11Memory), " DOC_SINK_CAPS_COMM "; " \
+    "video/x-raw(memory:D3D12Memory), " DOC_SINK_CAPS_COMM "; " \
     "video/x-raw(memory:VAMemory), " DOC_SINK_CAPS_COMM "; " \
     "video/x-raw, " DOC_SINK_CAPS_COMM
 
@@ -79,6 +84,7 @@ typedef struct _GstQsvJpegEncClassData
   gchar *display_path;
   gchar *description;
   gboolean interlaved;
+  gboolean d3d12_interop;
 } GstQsvJpegEncClassData;
 
 typedef struct _GstQsvJpegEnc
@@ -134,6 +140,7 @@ gst_qsv_jpeg_enc_class_init (GstQsvJpegEncClass * klass, gpointer data)
   qsvenc_class->impl_index = cdata->impl_index;
   qsvenc_class->adapter_luid = cdata->adapter_luid;
   qsvenc_class->display_path = cdata->display_path;
+  qsvenc_class->d3d12_interop = cdata->d3d12_interop;
 
   object_class->finalize = gst_qsv_jpeg_enc_finalize;
   object_class->set_property = gst_qsv_jpeg_enc_set_property;
@@ -216,10 +223,8 @@ gst_qsv_jpeg_enc_check_update_uint (GstQsvJpegEnc * self, guint * old_val,
   if (*old_val == new_val)
     return;
 
-  g_mutex_lock (&self->prop_lock);
   *old_val = new_val;
   self->property_updated = TRUE;
-  g_mutex_unlock (&self->prop_lock);
 }
 
 static void
@@ -228,6 +233,7 @@ gst_qsv_jpeg_enc_set_property (GObject * object, guint prop_id,
 {
   GstQsvJpegEnc *self = GST_QSV_JPEG_ENC (object);
 
+  g_mutex_lock (&self->prop_lock);
   switch (prop_id) {
     case PROP_QUALITY:
       gst_qsv_jpeg_enc_check_update_uint (self, &self->quality,
@@ -237,6 +243,7 @@ gst_qsv_jpeg_enc_set_property (GObject * object, guint prop_id,
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
   }
+  g_mutex_unlock (&self->prop_lock);
 }
 
 static void
@@ -245,6 +252,7 @@ gst_qsv_jpeg_enc_get_property (GObject * object, guint prop_id, GValue * value,
 {
   GstQsvJpegEnc *self = GST_QSV_JPEG_ENC (object);
 
+  g_mutex_lock (&self->prop_lock);
   switch (prop_id) {
     case PROP_QUALITY:
       g_value_set_uint (value, self->quality);
@@ -253,6 +261,7 @@ gst_qsv_jpeg_enc_get_property (GObject * object, guint prop_id, GValue * value,
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
   }
+  g_mutex_unlock (&self->prop_lock);
 }
 
 static gboolean
@@ -263,6 +272,7 @@ gst_qsv_jpeg_enc_set_format (GstQsvEncoder * encoder,
   GstQsvJpegEncClass *klass = GST_QSV_JPEG_ENC_GET_CLASS (self);
   GstVideoInfo *info = &state->info;
   mfxFrameInfo *frame_info;
+  GstVideoFormat format;
 
   frame_info = &param->mfx.FrameInfo;
 
@@ -283,22 +293,12 @@ gst_qsv_jpeg_enc_set_format (GstQsvEncoder * encoder,
   frame_info->AspectRatioW = GST_VIDEO_INFO_PAR_N (info);
   frame_info->AspectRatioH = GST_VIDEO_INFO_PAR_D (info);
 
-  switch (GST_VIDEO_INFO_FORMAT (info)) {
+  format = GST_VIDEO_INFO_FORMAT (info);
+  switch (format) {
     case GST_VIDEO_FORMAT_NV12:
-      frame_info->ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-      frame_info->FourCC = MFX_FOURCC_NV12;
-      frame_info->BitDepthLuma = 8;
-      frame_info->BitDepthChroma = 8;
-      break;
     case GST_VIDEO_FORMAT_YUY2:
-      frame_info->ChromaFormat = MFX_CHROMAFORMAT_YUV422;
-      frame_info->FourCC = MFX_FOURCC_YUY2;
-      frame_info->BitDepthLuma = 8;
-      frame_info->BitDepthChroma = 8;
-      break;
     case GST_VIDEO_FORMAT_BGRA:
-      frame_info->ChromaFormat = MFX_CHROMAFORMAT_YUV444;
-      frame_info->FourCC = MFX_FOURCC_RGB4;
+      gst_qsv_frame_info_set_format (frame_info, format);
       break;
     default:
       GST_ERROR_OBJECT (self, "Unexpected format %s",
@@ -367,7 +367,7 @@ gst_qsv_jpeg_enc_check_reconfigure (GstQsvEncoder * encoder, mfxSession session,
 
 void
 gst_qsv_jpeg_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
-    GstObject * device, mfxSession session)
+    GstObject * device, mfxSession session, gboolean d3d12_interop)
 {
   mfxVideoParam param;
   mfxInfoMFX *mfx;
@@ -446,6 +446,9 @@ gst_qsv_jpeg_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
     max_resolution.height = gst_qsv_resolutions[i].height;
   }
 
+  if (max_resolution.width == 0 || max_resolution.height == 0)
+    return;
+
   GST_INFO ("Maximum supported resolution: %dx%d",
       max_resolution.width, max_resolution.height);
 
@@ -480,14 +483,23 @@ gst_qsv_jpeg_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
 #ifdef G_OS_WIN32
   GstCaps *d3d11_caps = gst_caps_copy (sink_caps);
   GstCapsFeatures *caps_features =
-      gst_caps_features_new (GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY, nullptr);
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY,
+      nullptr);
   gst_caps_set_features_simple (d3d11_caps, caps_features);
+#ifdef HAVE_GST_D3D12
+  auto d3d12_caps = gst_caps_copy (sink_caps);
+  auto d3d12_feature =
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_D3D12_MEMORY,
+      nullptr);
+  gst_caps_set_features_simple (d3d12_caps, d3d12_feature);
+  gst_caps_append (d3d11_caps, d3d12_caps);
+#endif
   gst_caps_append (d3d11_caps, sink_caps);
   sink_caps = d3d11_caps;
 #else
   GstCaps *va_caps = gst_caps_copy (sink_caps);
   GstCapsFeatures *caps_features =
-      gst_caps_features_new (GST_CAPS_FEATURE_MEMORY_VA, nullptr);
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_VA, nullptr);
   gst_caps_set_features_simple (va_caps, caps_features);
   gst_caps_append (va_caps, sink_caps);
   sink_caps = va_caps;
@@ -507,6 +519,7 @@ gst_qsv_jpeg_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
   cdata->src_caps = src_caps;
   cdata->impl_index = impl_index;
   cdata->interlaved = interlaved;
+  cdata->d3d12_interop = d3d12_interop;
 
 #ifdef G_OS_WIN32
   g_object_get (device, "adapter-luid", &cdata->adapter_luid,

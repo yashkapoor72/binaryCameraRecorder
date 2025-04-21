@@ -25,6 +25,12 @@
  * A tracing module that builds usage statistic for elements and pads.
  */
 
+/**
+ * GstStatsTracer:
+ *
+ * Since: 1.8
+ */
+
 #ifdef HAVE_CONFIG_H
 #  include "config.h"
 #endif
@@ -84,7 +90,7 @@ static GstElementStats no_elem_stats = { 0, };
 static GstElementStats *
 fill_element_stats (GstStatsTracer * self, GstElement * element)
 {
-  GstElementStats *stats = g_slice_new0 (GstElementStats);
+  GstElementStats *stats = g_new0 (GstElementStats, 1);
 
   stats->index = self->num_elements++;
   stats->parent_ix = G_MAXUINT;
@@ -103,7 +109,7 @@ log_new_element_stats (GstElementStats * stats, GstElement * element,
 static void
 free_element_stats (gpointer data)
 {
-  g_slice_free (GstElementStats, data);
+  g_free (data);
 }
 
 static GstElementStats *
@@ -186,7 +192,7 @@ static GstPadStats no_pad_stats = { 0, };
 static GstPadStats *
 fill_pad_stats (GstStatsTracer * self, GstPad * pad)
 {
-  GstPadStats *stats = g_slice_new0 (GstPadStats);
+  GstPadStats *stats = g_new0 (GstPadStats, 1);
 
   stats->index = self->num_pads++;
   stats->parent_ix = G_MAXUINT;
@@ -206,7 +212,7 @@ log_new_pad_stats (GstPadStats * stats, GstPad * pad)
 static void
 free_pad_stats (gpointer data)
 {
-  g_slice_free (GstPadStats, data);
+  g_free (data);
 }
 
 static GstPadStats *
@@ -527,6 +533,8 @@ gst_stats_tracer_constructed (GObject * object)
   gchar *params, *tmp;
   const gchar *name;
   GstStructure *params_struct = NULL;
+
+  G_OBJECT_CLASS (parent_class)->constructed (object);
 
   g_object_get (self, "params", &params, NULL);
 

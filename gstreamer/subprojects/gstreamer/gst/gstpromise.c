@@ -174,10 +174,9 @@ gst_promise_reply (GstPromise * promise, GstStructure * s)
   g_mutex_lock (GST_PROMISE_LOCK (promise));
   if (GST_PROMISE_RESULT (promise) != GST_PROMISE_RESULT_PENDING &&
       GST_PROMISE_RESULT (promise) != GST_PROMISE_RESULT_INTERRUPTED) {
-    GstPromiseResult result = GST_PROMISE_RESULT (promise);
+    g_warning ("Promise result isn't PENDING or INTERRUPTED");
     g_mutex_unlock (GST_PROMISE_LOCK (promise));
-    g_return_if_fail (result == GST_PROMISE_RESULT_PENDING ||
-        result == GST_PROMISE_RESULT_INTERRUPTED);
+    return;
   }
 
   /* XXX: is this necessary and valid? */
@@ -232,9 +231,9 @@ gst_promise_get_reply (GstPromise * promise)
 
   g_mutex_lock (GST_PROMISE_LOCK (promise));
   if (GST_PROMISE_RESULT (promise) != GST_PROMISE_RESULT_REPLIED) {
-    GstPromiseResult result = GST_PROMISE_RESULT (promise);
+    g_warning ("Promise result isn't REPLIED");
     g_mutex_unlock (GST_PROMISE_LOCK (promise));
-    g_return_val_if_fail (result == GST_PROMISE_RESULT_REPLIED, NULL);
+    return NULL;
   }
 
   g_mutex_unlock (GST_PROMISE_LOCK (promise));
@@ -263,10 +262,9 @@ gst_promise_interrupt (GstPromise * promise)
   g_mutex_lock (GST_PROMISE_LOCK (promise));
   if (GST_PROMISE_RESULT (promise) != GST_PROMISE_RESULT_PENDING &&
       GST_PROMISE_RESULT (promise) != GST_PROMISE_RESULT_REPLIED) {
-    GstPromiseResult result = GST_PROMISE_RESULT (promise);
+    g_warning ("Promise result isn't PENDING or REPLIED");
     g_mutex_unlock (GST_PROMISE_LOCK (promise));
-    g_return_if_fail (result == GST_PROMISE_RESULT_PENDING ||
-        result == GST_PROMISE_RESULT_REPLIED);
+    return;
   }
   /* only interrupt if we are currently in pending */
   if (GST_PROMISE_RESULT (promise) == GST_PROMISE_RESULT_PENDING) {
@@ -383,8 +381,8 @@ gst_promise_new (void)
 
 /**
  * gst_promise_new_with_change_func:
- * @func: (scope notified): a #GstPromiseChangeFunc to call
- * @user_data: (closure): argument to call @func with
+ * @func: (scope notified) (closure user_data): a #GstPromiseChangeFunc to call
+ * @user_data: argument to call @func with
  * @notify: notification function that @user_data is no longer needed
  *
  * @func will be called exactly once when transitioning out of
@@ -439,4 +437,23 @@ void
 gst_promise_unref (GstPromise * promise)
 {
   gst_mini_object_unref (GST_MINI_OBJECT_CAST (promise));
+}
+
+/**
+ * gst_clear_promise: (skip)
+ * @promise_ptr: a pointer to a #GstPromise reference
+ *
+ * Clears a reference to a #GstPromise.
+ *
+ * @promise_ptr must not be `NULL`.
+ *
+ * If the reference is `NULL` then this function does nothing. Otherwise, the
+ * reference count of the promise is decreased and the pointer is set to `NULL`.
+ *
+ * Since: 1.24
+ */
+void
+gst_clear_promise (GstPromise ** promise_ptr)
+{
+  gst_clear_mini_object ((GstMiniObject **) promise_ptr);
 }

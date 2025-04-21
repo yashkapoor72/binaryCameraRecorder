@@ -66,8 +66,6 @@ typedef struct {
   MXFUL ul;
   guint16 size;
   guint8 *data;
-  
-  gboolean g_slice; /* TRUE if data was allocated by GSlice */
 } MXFLocalTag;
 
 /* SMPTE 377M 11.1 */
@@ -170,6 +168,12 @@ typedef struct {
   guint32 n_index_entries;
   MXFIndexEntry *index_entries;
 
+  guint64 ext_start_offset;
+  guint64 vbe_byte_count;
+  gboolean single_index_location;
+  gboolean single_essence_location;
+  gboolean forward_index_direction;
+
   /* Computed fields (i.e. not present in file) */
 
   /* Initial essence offset covered by this segment */
@@ -267,6 +271,7 @@ void mxf_local_tag_free (MXFLocalTag *tag);
 gboolean mxf_local_tag_add_to_hash_table (const MXFPrimerPack *primer,
   guint16 tag, const guint8 *tag_data, guint16 tag_size,
   GHashTable **hash_table);
+MXFUL *mxf_primer_tag_to_ul (const MXFPrimerPack *primer, guint16 tag);
 gboolean mxf_local_tag_insert (MXFLocalTag *tag, GHashTable **hash_table);
 
 #endif /* __MXF_TYPES_H__ */

@@ -38,7 +38,23 @@ gst_base_headers = files(
   'gsttypefindhelper.h',
 )
 
-gst_base = library('gstbase-@0@'.format(apiversion),
+gst_base_doc_headers = files(
+  'gstbitreader-docs.h',
+  'gstbitwriter-docs.h',
+  'gstbytereader-docs.h',
+  'gstbytewriter-docs.h',
+)
+
+doc_sources = []
+foreach s: gst_base_sources + gst_base_headers + gst_base_doc_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'base': pathsep.join(doc_sources)
+}
+
+gst_base = library('gstbase-@0@'.format(api_version),
   gst_base_sources,
   c_args : gst_c_args + ['-DBUILDING_GST_BASE', '-DG_LOG_DOMAIN="GStreamer-Base"'],
   version : libversion,
@@ -65,7 +81,7 @@ if build_gir
   gir = {
     'sources' : gst_base_sources + gst_base_headers,
     'namespace' : 'GstBase',
-    'nsversion' : apiversion,
+    'nsversion' : api_version,
     'identifier_prefix' : 'Gst',
     'symbol_prefix' : 'gst',
     'export_packages' : pkg_name,
@@ -79,6 +95,7 @@ if build_gir
   library_def += {'gir': [gir]}
   if not static_build
     gst_base_gir = gnome.generate_gir(gst_base, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [gst_base_gir]}
     gst_base_gen_sources += [gst_base_gir]
   endif
 endif

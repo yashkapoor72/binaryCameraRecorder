@@ -390,17 +390,18 @@ gst_v4l2src_get_property (GObject * object,
 }
 
 static gboolean
-gst_vl42_src_fixate_fields (GQuark field_id, GValue * value, gpointer user_data)
+gst_vl42_src_fixate_fields (const GstIdStr * fieldname, GValue * value,
+    gpointer user_data)
 {
   GstStructure *s = user_data;
 
-  if (field_id == g_quark_from_string ("interlace-mode"))
+  if (gst_id_str_is_equal_to_str (fieldname, "interlace-mode"))
     return TRUE;
 
-  if (field_id == g_quark_from_string ("colorimetry"))
+  if (gst_id_str_is_equal_to_str (fieldname, "colorimetry"))
     return TRUE;
 
-  gst_structure_fixate_field (s, g_quark_to_string (field_id));
+  gst_structure_fixate_field (s, gst_id_str_as_str (fieldname));
 
   return TRUE;
 }
@@ -421,7 +422,7 @@ gst_v4l2_src_fixate_struct_with_preference (GstStructure * s,
 
   /* Finally, fixate everything else except the interlace-mode and colorimetry
    * which still need further negotiation as it wasn't probed */
-  gst_structure_map_in_place (s, gst_vl42_src_fixate_fields, s);
+  gst_structure_map_in_place_id_str (s, gst_vl42_src_fixate_fields, s);
 }
 
 static void
@@ -438,68 +439,46 @@ gst_v4l2_src_parse_fixed_struct (GstStructure * s,
     gst_structure_get_fraction (s, "framerate", fps_n, fps_d);
 }
 
-/* TODO Consider framerate */
 static gint
 gst_v4l2src_fixed_caps_compare (GstCaps * caps_a, GstCaps * caps_b,
     struct PreferredCapsInfo *pref)
 {
   GstStructure *a, *b;
-  gint aw = G_MAXINT, ah = G_MAXINT, ad = G_MAXINT;
-  gint bw = G_MAXINT, bh = G_MAXINT, bd = G_MAXINT;
-  gint ret;
+  gint aw = G_MAXINT, ah = G_MAXINT;
+  gint bw = G_MAXINT, bh = G_MAXINT;
+  gint a_fps_n = G_MAXINT, a_fps_d = 1;
+  gint b_fps_n = G_MAXINT, b_fps_d = 1;
+  gint a_distance, b_distance;
+  gint ret = 0;
 
   a = gst_caps_get_structure (caps_a, 0);
   b = gst_caps_get_structure (caps_b, 0);
 
-  gst_v4l2_src_parse_fixed_struct (a, &aw, &ah, NULL, NULL);
-  gst_v4l2_src_parse_fixed_struct (b, &bw, &bh, NULL, NULL);
+  gst_v4l2_src_parse_fixed_struct (a, &aw, &ah, &a_fps_n, &a_fps_d);
+  gst_v4l2_src_parse_fixed_struct (b, &bw, &bh, &b_fps_n, &b_fps_d);
 
-  /* When both are smaller then pref, just append to the end */
-  if ((bw < pref->width || bh < pref->height)
-      && (aw < pref->width || ah < pref->height)) {
-    ret = 1;
-    goto done;
-  }
+  // Sort first the one with closest framerate to preference. Note that any
+  // framerate lower then 1 frame per second will be considered the same. In
+  // practice this should be fine considering that these framerate only exists
+  // for still picture, in which case the resolution is most likely the key.
+  a_distance = ABS ((a_fps_n / a_fps_d) - (pref->fps_n / pref->fps_d));
+  b_distance = ABS ((b_fps_n / b_fps_d) - (pref->fps_n / pref->fps_d));
+  if (a_distance != b_distance)
+    return a_distance - b_distance;
 
-  /* If a is smaller then pref and not b, then a goes after b */
-  if (aw < pref->width || ah < pref->height) {
-    ret = 1;
-    goto done;
-  }
+  // If same framerate, sort first the one with closest resolution to preference
+  a_distance = ABS (aw * ah - pref->width * pref->height);
+  b_distance = ABS (bw * bh - pref->width * pref->height);
 
-  /* If b is smaller then pref and not a, then a goes before b */
-  if (bw < pref->width || bh < pref->height) {
-    ret = -1;
-    goto done;
-  }
-
-  /* Both are larger or equal to the preference, prefer the smallest */
-  ad = MAX (1, aw - pref->width) * MAX (1, ah - pref->height);
-  bd = MAX (1, bw - pref->width) * MAX (1, bh - pref->height);
-
-  /* Adjust slightly in case width/height matched the preference */
-  if (aw == pref->width)
-    ad -= 1;
-
-  if (ah == pref->height)
-    ad -= 1;
-
-  if (bw == pref->width)
-    bd -= 1;
-
-  if (bh == pref->height)
-    bd -= 1;
-
-  /* If the choices are equivalent, maintain the order */
-  if (ad == bd)
+  /* If the distance are equivalent, maintain the order */
+  if (a_distance == b_distance)
     ret = 1;
   else
-    ret = ad - bd;
+    ret = a_distance - b_distance;
 
-done:
-  GST_TRACE ("Placing %ix%i (%s) %s %ix%i (%s)", aw, ah,
-      gst_structure_get_string (a, "format"), ret > 0 ? "after" : "before", bw,
-      bh, gst_structure_get_string (b, "format"));
+  GST_TRACE ("Placing %" GST_PTR_FORMAT " %s %" GST_PTR_FORMAT,
+      caps_a, ret > 0 ? "after" : "before", caps_b);
+
   return ret;
 }
 
@@ -585,20 +564,20 @@ gst_v4l2src_fixate (GstBaseSrc * basesrc, GstCaps * caps,
    * enumerate the possibilities */
   caps = gst_caps_normalize (caps);
 
+  /* try hard to avoid TRY_FMT since some UVC camera just crash when this
+   * is called at run-time. */
+  if (gst_v4l2_object_caps_is_subset (obj, caps)) {
+    fcaps = gst_v4l2_object_get_current_caps (obj);
+    GST_DEBUG_OBJECT (basesrc, "reuse current caps %" GST_PTR_FORMAT, fcaps);
+    goto out;
+  }
+
   for (i = 0; i < gst_caps_get_size (caps); ++i) {
     gst_v4l2_clear_error (&error);
     if (fcaps)
       gst_caps_unref (fcaps);
 
     fcaps = gst_caps_copy_nth (caps, i);
-
-    /* try hard to avoid TRY_FMT since some UVC camera just crash when this
-     * is called at run-time. */
-    if (gst_v4l2_object_caps_is_subset (obj, fcaps)) {
-      gst_caps_unref (fcaps);
-      fcaps = gst_v4l2_object_get_current_caps (obj);
-      break;
-    }
 
     /* Just check if the format is acceptable, once we know
      * no buffers should be outstanding we try S_FMT.
@@ -633,6 +612,7 @@ gst_v4l2src_fixate (GstBaseSrc * basesrc, GstCaps * caps,
     return NULL;
   }
 
+out:
   gst_caps_unref (caps);
 
   GST_DEBUG_OBJECT (basesrc, "fixated caps %" GST_PTR_FORMAT, fcaps);
@@ -647,6 +627,7 @@ gst_v4l2src_query_preferred_dv_timings (GstV4l2Src * v4l2src,
   GstV4l2Object *obj = v4l2src->v4l2object;
   struct v4l2_dv_timings dv_timings = { 0, };
   const struct v4l2_bt_timings *bt = &dv_timings.bt;
+  gboolean not_streaming;
   gint tot_width, tot_height;
   gint gcd;
 
@@ -673,7 +654,14 @@ gst_v4l2src_query_preferred_dv_timings (GstV4l2Src * v4l2src,
 
   /* If are are not streaming (e.g. we received source-change event), lock the
    * new timing immediatly so that TRY_FMT can properly work */
-  if (!obj->pool || !GST_V4L2_BUFFER_POOL_IS_STREAMING (obj->pool)) {
+  {
+    GstBufferPool *obj_pool = gst_v4l2_object_get_buffer_pool (obj);
+    not_streaming = !obj_pool || !GST_V4L2_BUFFER_POOL_IS_STREAMING (obj_pool);
+    if (obj_pool)
+      gst_object_unref (obj_pool);
+  }
+
+  if (not_streaming) {
     gst_v4l2_set_dv_timings (obj, &dv_timings);
     /* Setting a new DV timings invalidates the probed caps. */
     gst_caps_replace (&obj->probed_caps, NULL);
@@ -700,7 +688,8 @@ gst_v4l2src_query_preferred_size (GstV4l2Src * v4l2src,
   GST_INFO_OBJECT (v4l2src, "Detect input %u as `%s`", in.index, in.name);
 
   /* Notify signal status using WARNING/INFO messages */
-  if (in.status & (V4L2_IN_ST_NO_POWER | V4L2_IN_ST_NO_SIGNAL)) {
+  if (in.status & (V4L2_IN_ST_NO_POWER | V4L2_IN_ST_NO_SIGNAL |
+          V4L2_IN_ST_NO_SYNC)) {
     if (!v4l2src->no_signal)
       /* note: taken from decklinksrc element */
       GST_ELEMENT_WARNING (v4l2src, RESOURCE, READ, ("Signal lost"),
@@ -892,17 +881,23 @@ static gboolean
 gst_v4l2src_decide_allocation (GstBaseSrc * bsrc, GstQuery * query)
 {
   GstV4l2Src *src = GST_V4L2SRC (bsrc);
+  GstBufferPool *bpool = gst_v4l2_object_get_buffer_pool (src->v4l2object);
   gboolean ret = TRUE;
 
   if (src->pending_set_fmt) {
     GstCaps *caps = gst_pad_get_current_caps (GST_BASE_SRC_PAD (bsrc));
     GstV4l2Error error = GST_V4L2_ERROR_INIT;
 
+    /* Setting the format replaces the current pool */
+    gst_clear_object (&bpool);
+
     caps = gst_caps_make_writable (caps);
 
     ret = gst_v4l2src_set_format (src, caps, &error);
     if (ret) {
-      GstV4l2BufferPool *pool = GST_V4L2_BUFFER_POOL (src->v4l2object->pool);
+      GstV4l2BufferPool *pool;
+      bpool = gst_v4l2_object_get_buffer_pool (src->v4l2object);
+      pool = GST_V4L2_BUFFER_POOL (bpool);
       gst_v4l2_buffer_pool_enable_resolution_change (pool);
     } else {
       gst_v4l2_error (src, &error);
@@ -910,7 +905,7 @@ gst_v4l2src_decide_allocation (GstBaseSrc * bsrc, GstQuery * query)
 
     gst_caps_unref (caps);
     src->pending_set_fmt = FALSE;
-  } else if (gst_buffer_pool_is_active (src->v4l2object->pool)) {
+  } else if (gst_buffer_pool_is_active (bpool)) {
     /* Trick basesrc into not deactivating the active pool. Renegotiating here
      * would otherwise turn off and on the camera. */
     GstAllocator *allocator;
@@ -927,15 +922,17 @@ gst_v4l2src_decide_allocation (GstBaseSrc * bsrc, GstQuery * query)
 
     if (gst_query_get_n_allocation_pools (query))
       gst_query_set_nth_allocation_pool (query, 0, pool,
-          src->v4l2object->info.size, 1, 0);
+          src->v4l2object->info.vinfo.size, 1, 0);
     else
-      gst_query_add_allocation_pool (query, pool, src->v4l2object->info.size, 1,
-          0);
+      gst_query_add_allocation_pool (query, pool,
+          src->v4l2object->info.vinfo.size, 1, 0);
 
     if (pool)
       gst_object_unref (pool);
     if (allocator)
       gst_object_unref (allocator);
+    if (bpool)
+      gst_object_unref (bpool);
 
     return GST_BASE_SRC_CLASS (parent_class)->decide_allocation (bsrc, query);
   }
@@ -947,10 +944,12 @@ gst_v4l2src_decide_allocation (GstBaseSrc * bsrc, GstQuery * query)
   }
 
   if (ret) {
-    if (!gst_buffer_pool_set_active (src->v4l2object->pool, TRUE))
+    if (!gst_buffer_pool_set_active (bpool, TRUE))
       goto activate_failed;
   }
 
+  if (bpool)
+    gst_object_unref (bpool);
   return ret;
 
 activate_failed:
@@ -958,6 +957,8 @@ activate_failed:
     GST_ELEMENT_ERROR (src, RESOURCE, SETTINGS,
         (_("Failed to allocate required memory.")),
         ("Buffer pool activation failed"));
+    if (bpool)
+      gst_object_unref (bpool);
     return FALSE;
   }
 }
@@ -997,13 +998,18 @@ gst_v4l2src_query (GstBaseSrc * bsrc, GstQuery * query)
 
       /* min latency is the time to capture one frame/field */
       min_latency = gst_util_uint64_scale_int (GST_SECOND, fps_d, fps_n);
-      if (GST_VIDEO_INFO_INTERLACE_MODE (&obj->info) ==
+      if (GST_VIDEO_INFO_INTERLACE_MODE (&obj->info.vinfo) ==
           GST_VIDEO_INTERLACE_MODE_ALTERNATE)
         min_latency /= 2;
 
       /* max latency is total duration of the frame buffer */
-      if (obj->pool != NULL)
-        num_buffers = GST_V4L2_BUFFER_POOL_CAST (obj->pool)->max_latency;
+      {
+        GstBufferPool *obj_pool = gst_v4l2_object_get_buffer_pool (obj);
+        if (obj_pool != NULL) {
+          num_buffers = GST_V4L2_BUFFER_POOL_CAST (obj_pool)->max_latency;
+          gst_object_unref (obj_pool);
+        }
+      }
 
       if (num_buffers == 0)
         max_latency = -1;
@@ -1123,6 +1129,23 @@ gst_v4l2src_change_state (GstElement * element, GstStateChange transition)
   return ret;
 }
 
+static gboolean
+gst_v4l2src_handle_resolution_change (GstV4l2Src * v4l2src)
+{
+  GST_INFO_OBJECT (v4l2src, "Resolution change detected.");
+
+  /* It is required to always cycle through streamoff, we also need to
+   * streamoff in order to allow locking a new DV_TIMING which will
+   * influence the output of TRY_FMT */
+  gst_v4l2src_stop (GST_BASE_SRC (v4l2src));
+
+  /* Force renegotiation */
+  v4l2src->renegotiation_adjust = v4l2src->offset + 1;
+  v4l2src->pending_set_fmt = TRUE;
+
+  return gst_base_src_negotiate (GST_BASE_SRC (v4l2src));
+}
+
 static GstFlowReturn
 gst_v4l2src_create (GstPushSrc * src, GstBuffer ** buf)
 {
@@ -1136,25 +1159,12 @@ gst_v4l2src_create (GstPushSrc * src, GstBuffer ** buf)
   gboolean half_frame;
 
   do {
-    GstV4l2BufferPool *pool = GST_V4L2_BUFFER_POOL_CAST (obj->pool);
-
     ret = GST_BASE_SRC_CLASS (parent_class)->alloc (GST_BASE_SRC (src), 0,
-        obj->info.size, buf);
+        obj->info.vinfo.size, buf);
 
     if (G_UNLIKELY (ret != GST_FLOW_OK)) {
       if (ret == GST_V4L2_FLOW_RESOLUTION_CHANGE) {
-        GST_INFO_OBJECT (v4l2src, "Resolution change detected.");
-
-        /* It is required to always cycle through streamoff, we also need to
-         * streamoff in order to allow locking a new DV_TIMING which will
-         * influence the output of TRY_FMT */
-        gst_v4l2src_stop (GST_BASE_SRC (src));
-
-        /* Force renegotiation */
-        v4l2src->renegotiation_adjust = v4l2src->offset + 1;
-        v4l2src->pending_set_fmt = TRUE;
-
-        if (!gst_base_src_negotiate (GST_BASE_SRC (src))) {
+        if (!gst_v4l2src_handle_resolution_change (v4l2src)) {
           ret = GST_FLOW_NOT_NEGOTIATED;
           goto error;
         }
@@ -1164,7 +1174,20 @@ gst_v4l2src_create (GstPushSrc * src, GstBuffer ** buf)
       goto alloc_failed;
     }
 
-    ret = gst_v4l2_buffer_pool_process (pool, buf, NULL);
+    {
+      GstV4l2BufferPool *obj_pool =
+          GST_V4L2_BUFFER_POOL_CAST (gst_v4l2_object_get_buffer_pool (obj));
+      ret = gst_v4l2_buffer_pool_process (obj_pool, buf, NULL);
+      if (obj_pool)
+        gst_object_unref (obj_pool);
+
+      if (G_UNLIKELY (ret == GST_V4L2_FLOW_RESOLUTION_CHANGE)) {
+        if (!gst_v4l2src_handle_resolution_change (v4l2src)) {
+          ret = GST_FLOW_NOT_NEGOTIATED;
+          goto error;
+        }
+      }
+    }
 
   } while (ret == GST_V4L2_FLOW_CORRUPTED_BUFFER ||
       ret == GST_V4L2_FLOW_RESOLUTION_CHANGE);

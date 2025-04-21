@@ -7,7 +7,7 @@ cdata.set('VERSION', '"@0@"'.format(gst_version))
 cdata.set('PACKAGE', '"gst-validate"')
 cdata.set('GST_PACKAGE_NAME', '"GStreamer Validate"')
 cdata.set('GST_PACKAGE_ORIGIN', '"Unknown package origin"')
-cdata.set('GST_API_VERSION', '"@0@"'.format(apiversion))
+cdata.set('GST_API_VERSION', '"@0@"'.format(api_version))
 cdata.set('VALIDATEPLUGINDIR', '"@0@/@1@/gstreamer-1.0/validate"'.format(get_option('prefix'),get_option('libdir')))
 cdata.set('GST_DATADIR', '"@0@/@1@"'.format(prefix, get_option('datadir')))
 cdata.set('PACKAGE_NAME', '"GStreamer Validate"')
@@ -17,17 +17,9 @@ if cc.has_header('unistd.h')
 endif
 
 # Symbol visibility
-if cc.get_id() == 'msvc'
-  export_define = '__declspec(dllexport) extern'
-elif cc.has_argument('-fvisibility=hidden')
+if cc.has_argument('-fvisibility=hidden')
   add_project_arguments('-fvisibility=hidden', language: 'c')
-  export_define = 'extern __attribute__ ((visibility ("default")))'
-else
-  export_define = 'extern'
 endif
-
-# Passing this through the command line would be too messy
-cdata.set('GST_API_EXPORT', export_define)
 
 configure_file(output : 'config.h', configuration : cdata)
 

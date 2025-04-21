@@ -644,9 +644,9 @@ gst_registry_remove_feature (GstRegistry * registry, GstPluginFeature * feature)
 /**
  * gst_registry_plugin_filter:
  * @registry: registry to query
- * @filter: (scope call): the filter to use
+ * @filter: (scope call) (closure user_data): the filter to use
  * @first: only return first match
- * @user_data: (closure): user data passed to the filter function
+ * @user_data: user data passed to the filter function
  *
  * Runs a filter against all plugins in the registry and returns a #GList with
  * the results. If the first flag is set, only the first match is
@@ -823,9 +823,9 @@ gst_registry_get_device_provider_factory_list (GstRegistry * registry)
 /**
  * gst_registry_feature_filter:
  * @registry: registry to query
- * @filter: (scope call): the filter to use
+ * @filter: (scope call) (closure user_data): the filter to use
  * @first: only return first match
- * @user_data: (closure): user data passed to the filter function
+ * @user_data: user data passed to the filter function
  *
  * Runs a filter against all features of the plugins in the registry
  * and returns a GList with the results.
@@ -1153,12 +1153,6 @@ gst_registry_scan_plugin_file (GstRegistryScanContext * context,
 {
   gboolean changed = FALSE;
   GstPlugin *newplugin = NULL;
-
-#ifdef G_OS_WIN32
-  /* Disable external plugin loader on Windows until it is ported properly. */
-  context->helper_state = REGISTRY_SCAN_HELPER_DISABLED;
-#endif
-
 
   /* Have a plugin to load - see if the scan-helper needs starting */
   if (context->helper_state == REGISTRY_SCAN_HELPER_NOT_STARTED) {
@@ -1605,6 +1599,8 @@ priv_gst_get_relocated_libgstreamer (void)
 #elif defined(HAVE_DLADDR)
   {
     Dl_info info;
+    char *real_fname = NULL;
+    long path_max = 0;
 
     GST_DEBUG ("attempting to retrieve libgstreamer-1.0 location using "
         "dladdr()");
@@ -1615,8 +1611,25 @@ priv_gst_get_relocated_libgstreamer (void)
       if (!info.dli_fname) {
         return NULL;
       }
+#ifdef PATH_MAX
+      path_max = PATH_MAX;
+#else
+      path_max = pathconf (info.dli_fname, _PC_PATH_MAX);
+      if (path_max <= 0)
+        path_max = 4096;
+#endif
 
-      dir = g_path_get_dirname (info.dli_fname);
+      real_fname = g_malloc (path_max);
+      if (realpath (info.dli_fname, real_fname)) {
+        dir = g_path_get_dirname (real_fname);
+        GST_DEBUG ("real directory location: %s", dir);
+      } else {
+        GST_ERROR ("could not canonicalize path %s: %s", info.dli_fname,
+            g_strerror (errno));
+        dir = g_path_get_dirname (info.dli_fname);
+      }
+      g_free (real_fname);
+
     } else {
       GST_LOG ("dladdr() failed");
       return NULL;
@@ -1630,6 +1643,75 @@ priv_gst_get_relocated_libgstreamer (void)
 #endif
 
   return dir;
+}
+
+int
+priv_gst_count_directories (const char *filepath)
+{
+  int i = 0;
+  char *tmp;
+  gsize len;
+
+  g_return_val_if_fail (!g_path_is_absolute (filepath), 0);
+
+  tmp = g_strdup (filepath);
+  len = strlen (tmp);
+
+  /* ignore UNC share paths entirely */
+  if (len >= 3 && G_IS_DIR_SEPARATOR (tmp[0]) && G_IS_DIR_SEPARATOR (tmp[1])
+      && !G_IS_DIR_SEPARATOR (tmp[2])) {
+    GST_WARNING ("found a UNC share path, ignoring");
+    g_clear_pointer (&tmp, g_free);
+    return 0;
+  }
+
+  /* remove trailing slashes if they exist */
+  while (
+      /* don't remove the trailing slash for C:\.
+       * UNC paths are at least \\s\s */
+      len > 3 && G_IS_DIR_SEPARATOR (tmp[len - 1])) {
+    tmp[len - 1] = '\0';
+    len--;
+  }
+
+  while (tmp) {
+    char *dirname, *basename;
+    len = strlen (tmp);
+
+    if (g_strcmp0 (tmp, ".") == 0)
+      break;
+    if (g_strcmp0 (tmp, "/") == 0)
+      break;
+
+    /* g_path_get_dirname() may return something of the form 'C:.', where C is
+     * a drive letter */
+    if (len == 3 && g_ascii_isalpha (tmp[0]) && tmp[1] == ':' && tmp[2] == '.')
+      break;
+
+    basename = g_path_get_basename (tmp);
+    dirname = g_path_get_dirname (tmp);
+
+    if (g_strcmp0 (basename, "..") == 0) {
+      i--;
+    } else if (g_strcmp0 (basename, ".") == 0) {
+      /* nothing to do */
+    } else {
+      i++;
+    }
+
+    g_clear_pointer (&basename, g_free);
+    g_clear_pointer (&tmp, g_free);
+    tmp = dirname;
+  }
+
+  g_clear_pointer (&tmp, g_free);
+
+  if (i < 0) {
+    g_critical ("path counting resulted in a negative directory count!");
+    return 0;
+  }
+
+  return i;
 }
 
 #ifndef GST_DISABLE_REGISTRY

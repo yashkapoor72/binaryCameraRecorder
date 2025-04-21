@@ -1,13 +1,13 @@
 # Polish translation for gstreamer.
 # This file is distributed under the same license as the gstreamer package.
-# Jakub Bogusz <qboosh@pld-linux.org>, 2007-2021.
+# Jakub Bogusz <qboosh@pld-linux.org>, 2007-2024.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gstreamer 1.19.2\n"
+"Project-Id-Version: gstreamer 1.24.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
-"PO-Revision-Date: 2021-09-25 08:30+0200\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
+"PO-Revision-Date: 2024-03-07 20:30+0100\n"
 "Last-Translator: Jakub Bogusz <qboosh@pld-linux.org>\n"
 "Language-Team: Polish <translation-team-pl@lists.sourceforge.net>\n"
 "Language: pl\n"
@@ -41,8 +41,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Rozdzielona przecinkami lista par nazwa_kategorii:poziom dla uzyskania "
-"określonych poziomów dla poszczególnych kategorii. Przykład: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"określonych poziomów dla poszczególnych kategorii. Przykład: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "LISTA"
@@ -59,9 +59,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Wyłączenie diagnostyki"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Włączenie szczegółowej diagnostyki wczytywania wtyczek"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Rozdzielone przecinkami ścieżki zawierające wtyczki"
@@ -834,6 +831,12 @@ msgstr "dane-prywatne"
 msgid "Private data"
 msgstr "Dane prywatne"
 
+msgid "container-specific-track-id"
+msgstr "id-ścieżki-zależne-od-kontenera"
+
+msgid "Container-specific Track ID"
+msgstr "Zależny od kontenera identyfikator ścieżki"
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
@@ -873,13 +876,12 @@ msgstr "dowiązanie nie ma źródła [cel=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "dowiązanie nie ma celu [źródło=%s@%p]"
 
+msgid "No such property."
+msgstr "Nie ma takiej właściwości."
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "brak właściwości \"%s\" w elemencie \"%s\""
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "nie udało się ustawić właściwości \"%s\" w elemencie \"%s\" na \"%s\""
 
 #, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -888,6 +890,20 @@ msgstr "Element \"%s\" to nie GstPreset"
 #, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
 msgstr "nie udało się ustawić predefiniowanego \"%s\" w elemencie \"%s\""
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "brak elementu \"%s\""
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "nie udało się ustawić właściwości \"%s\" w elemencie \"%s\" na \"%s\""
+
+#, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
+msgstr ""
+"nie udało się ustawić właściwości \"%s\" w elemencie potomnym \"%s\" na "
+"\"%s\""
 
 msgid "Delayed linking failed."
 msgstr "Opóźnione dowiązanie nie powiodło się."
@@ -908,10 +924,6 @@ msgstr "nie udało się dowiązać %s do %s z możliwościami %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "nie udało się dowiązać %s do %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "brak elementu \"%s\""
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1060,6 +1072,10 @@ msgstr "Strumień nie zawiera danych."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "%sZaimplementowane interfejsy%s:\n"
 
+#, fuzzy, c-format
+msgid "%sElement Flags%s:\n"
+msgstr "%sZaimplementowane interfejsy%s:\n"
+
 msgid "readable"
 msgstr "odczyt"
 
@@ -1074,6 +1090,9 @@ msgstr "sterowanie"
 
 msgid "conditionally available"
 msgstr "warunkowo dostępne"
+
+msgid "can be set only at object construction time"
+msgstr "można ustawić tylko w czasie tworzenia obiektu"
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "możliwa zmiana w stanie NULL, GOTOWOŚĆ, PAUZOWANIE lub ODTWARZANIE"
@@ -1335,6 +1354,12 @@ msgstr ""
 
 msgid "PROPERTY-NAME"
 msgstr "NAZWA-WŁASNOŚCI"
+
+msgid "Set the name of the program"
+msgstr "Ustawienie nazwy programu"
+
+msgid "PROGRAM-NAME"
+msgstr "NAZWA-PROGRAMU"
 
 msgid "Do not install a fault handler"
 msgstr "Nie instalowanie obsługi błędów"

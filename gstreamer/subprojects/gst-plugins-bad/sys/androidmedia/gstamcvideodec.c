@@ -323,6 +323,8 @@ caps_to_mime (GstCaps * caps)
     return "video/x-vnd.on2.vp8";
   } else if (strcmp (name, "video/x-vp9") == 0) {
     return "video/x-vnd.on2.vp9";
+  } else if (strcmp (name, "video/x-av1") == 0) {
+    return "video/av01";
   } else if (strcmp (name, "video/x-divx") == 0) {
     return "video/mp4v-es";
   }
@@ -807,7 +809,8 @@ gst_amc_video_dec_set_src_caps (GstAmcVideoDec * self, GstAmcFormat * format)
       gst_caps_unref (output_state->caps);
     output_state->caps = gst_video_info_to_caps (&output_state->info);
     gst_caps_set_features (output_state->caps, 0,
-        gst_caps_features_new (GST_CAPS_FEATURE_MEMORY_GL_MEMORY, NULL));
+        gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+            NULL));
     gst_caps_set_simple (output_state->caps, "texture-target", G_TYPE_STRING,
         "external-oes", NULL);
     GST_DEBUG_OBJECT (self, "Configuring for Surface output");
@@ -1134,7 +1137,7 @@ _amc_gl_possibly_wait_for_gl_sync (struct gl_sync *sync, gint64 end_time)
    *
    * As a result, we need to advance the ready counter somehow ourselves when
    * such events happen. There is no reliable way of knowing when/if the frame
-   * listener is going to fire.  The only uniqueu identifier,
+   * listener is going to fire.  The only unique identifier,
    * SurfaceTexture::get_timestamp seems to always return 0.
    *
    * The maximum queue size as defined in
@@ -1381,7 +1384,7 @@ retry:
       _find_nearest_frame (self,
       gst_util_uint64_scale (buffer_info.presentation_time_us, GST_USECOND, 1));
 
-  is_eos = ! !(buffer_info.flags & BUFFER_FLAG_END_OF_STREAM);
+  is_eos = !!(buffer_info.flags & BUFFER_FLAG_END_OF_STREAM);
 
   if (frame
       && (deadline =
@@ -1952,7 +1955,8 @@ gst_amc_video_dec_set_format (GstVideoDecoder * decoder,
 
         output_state->caps = gst_video_info_to_caps (&output_state->info);
         gst_caps_set_features (output_state->caps, 0,
-            gst_caps_features_new (GST_CAPS_FEATURE_MEMORY_GL_MEMORY, NULL));
+            gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+                NULL));
 
         /* gst_amc_video_dec_decide_allocation will update
          * self->downstream_supports_gl */

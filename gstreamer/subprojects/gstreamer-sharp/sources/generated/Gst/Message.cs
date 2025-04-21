@@ -76,7 +76,7 @@ namespace Gst {
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern IntPtr gst_message_get_type();
 
-		public static GLib.GType GType { 
+		public static new GLib.GType GType { 
 			get {
 				IntPtr raw_ret = gst_message_get_type();
 				GLib.GType ret = new GLib.GType(raw_ret);
@@ -97,6 +97,24 @@ namespace Gst {
 
 		public void AddRedirectEntry(string location) {
 			AddRedirectEntry (location, null, null);
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr gst_message_get_details(IntPtr raw);
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_message_set_details(IntPtr raw, IntPtr details);
+
+		public Gst.Structure Details { 
+			get {
+				IntPtr raw_ret = gst_message_get_details(Handle);
+				Gst.Structure ret = raw_ret == IntPtr.Zero ? null : (Gst.Structure) GLib.Opaque.GetOpaque (raw_ret, typeof (Gst.Structure), false);
+				return ret;
+			}
+			set {
+				value.Owned = false;
+				gst_message_set_details(Handle, value == null ? IntPtr.Zero : value.Handle);
+			}
 		}
 
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
@@ -235,6 +253,17 @@ namespace Gst {
 		}
 
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_message_parse_error_writable_details(IntPtr raw, out IntPtr structure);
+
+		public Gst.Structure ParseErrorWritableDetails() {
+			Gst.Structure structure;
+			IntPtr native_structure;
+			gst_message_parse_error_writable_details(Handle, out native_structure);
+			structure = native_structure == IntPtr.Zero ? null : (Gst.Structure) GLib.Opaque.GetOpaque (native_structure, typeof (Gst.Structure), false);
+			return structure;
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern bool gst_message_parse_group_id(IntPtr raw, out uint group_id);
 
 		public bool ParseGroupId(out uint group_id) {
@@ -271,6 +300,17 @@ namespace Gst {
 			Gst.Structure structure;
 			IntPtr native_structure;
 			gst_message_parse_info_details(Handle, out native_structure);
+			structure = native_structure == IntPtr.Zero ? null : (Gst.Structure) GLib.Opaque.GetOpaque (native_structure, typeof (Gst.Structure), false);
+			return structure;
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_message_parse_info_writable_details(IntPtr raw, out IntPtr structure);
+
+		public Gst.Structure ParseInfoWritableDetails() {
+			Gst.Structure structure;
+			IntPtr native_structure;
+			gst_message_parse_info_writable_details(Handle, out native_structure);
 			structure = native_structure == IntPtr.Zero ? null : (Gst.Structure) GLib.Opaque.GetOpaque (native_structure, typeof (Gst.Structure), false);
 			return structure;
 		}
@@ -513,6 +553,17 @@ namespace Gst {
 		}
 
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_message_parse_warning_writable_details(IntPtr raw, out IntPtr structure);
+
+		public Gst.Structure ParseWarningWritableDetails() {
+			Gst.Structure structure;
+			IntPtr native_structure;
+			gst_message_parse_warning_writable_details(Handle, out native_structure);
+			structure = native_structure == IntPtr.Zero ? null : (Gst.Structure) GLib.Opaque.GetOpaque (native_structure, typeof (Gst.Structure), false);
+			return structure;
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern void gst_message_set_buffering_stats(IntPtr raw, int mode, int avg_in, int avg_out, long buffering_left);
 
 		public void SetBufferingStats(Gst.BufferingMode mode, int avg_in, int avg_out, long buffering_left) {
@@ -568,12 +619,37 @@ namespace Gst {
 		}
 
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr gst_message_writable_details(IntPtr raw);
+
+		public Gst.Structure WritableDetails() {
+			IntPtr raw_ret = gst_message_writable_details(Handle);
+			Gst.Structure ret = raw_ret == IntPtr.Zero ? null : (Gst.Structure) GLib.Opaque.GetOpaque (raw_ret, typeof (Gst.Structure), false);
+			return ret;
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern IntPtr gst_message_writable_structure(IntPtr raw);
 
 		public Gst.Structure WritableStructure() {
 			IntPtr raw_ret = gst_message_writable_structure(Handle);
 			Gst.Structure ret = raw_ret == IntPtr.Zero ? null : (Gst.Structure) GLib.Opaque.GetOpaque (raw_ret, typeof (Gst.Structure), false);
 			return ret;
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern bool gst_message_take(ref IntPtr old_message, IntPtr new_message);
+
+		public static bool Take(ref Gst.Message old_message, Gst.Message new_message) {
+			IntPtr native_old_message = old_message == null ? IntPtr.Zero : old_message.Handle ;
+			new_message.Owned = false;
+			bool raw_ret = gst_message_take(ref native_old_message, new_message == null ? IntPtr.Zero : new_message.Handle);
+			bool ret = raw_ret;
+			old_message = native_old_message == IntPtr.Zero ? null : (Gst.Message) GLib.Opaque.GetOpaque (native_old_message, typeof (Gst.Message), true);
+			return ret;
+		}
+
+		public static bool Take(ref Gst.Message old_message) {
+			return Take (ref old_message, null);
 		}
 
 		public Message(IntPtr raw) : base(raw) {}
@@ -1000,34 +1076,6 @@ namespace Gst {
 			Message result = new Message (gst_message_new_warning_with_details(src == null ? IntPtr.Zero : src.Handle, error, native_debug, details == null ? IntPtr.Zero : details.Handle));
 			GLib.Marshaller.Free (native_debug);
 			return result;
-		}
-
-		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
-		static extern IntPtr gst_message_ref(IntPtr raw);
-
-		protected override void Ref (IntPtr raw)
-		{
-			if (!Owned) {
-				gst_message_ref (raw);
-				Owned = true;
-			}
-		}
-
-		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
-		static extern void gst_message_unref(IntPtr raw);
-
-		protected override void Unref (IntPtr raw)
-		{
-			if (Owned) {
-				gst_message_unref (raw);
-				Owned = false;
-			}
-		}
-
-		protected override Action<IntPtr> DisposeUnmanagedFunc {
-			get {
-				return gst_message_unref;
-			}
 		}
 
 

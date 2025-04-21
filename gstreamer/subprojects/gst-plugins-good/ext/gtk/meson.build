@@ -7,6 +7,30 @@ gtk_sources = [
   'gtkgstwidget.c',
 ]
 
+gtk_headers = [
+  'gtkgstglwidget.h',
+  'gstgtksink.h',
+  'gtkgstbasewidget.h',
+  'gtkgstwidget.h',
+  'gstgtkglsink.h',
+  'gstgtkutils.h',
+  'gstgtkbasesink.h',
+]
+
+glwindowing_sources = [
+  'gstgtkglsink.c',
+  'gtkgstglwidget.c',
+]
+
+doc_sources = []
+foreach s: gtk_sources + glwindowing_sources + gtk_headers
+  doc_sources += meson.current_source_dir() / s
+endforeach
+
+plugin_sources += {
+  'gtk': pathsep.join(doc_sources)
+}
+
 gtk_defines = []
 optional_deps = []
 
@@ -34,11 +58,17 @@ if gtk_dep.found()
       endif
     endif
 
+    if gst_gl_have_window_win32 and gst_gl_have_platform_wgl
+      # FIXME: automagic
+      gtk_win32_dep = dependency('gtk+-win32-3.0', required : false)
+      if gtk_win32_dep.found() and gtk_win32_dep.version().version_compare('>=3.24.43')
+        optional_deps += [gtk_win32_dep]
+        have_gtk3_gl_windowing = true
+      endif
+    endif
+
     if have_gtk3_gl_windowing
-      gtk_sources += [
-        'gstgtkglsink.c',
-        'gtkgstglwidget.c',
-      ]
+      gtk_sources += glwindowing_sources
       optional_deps += [gstgl_dep, gstglproto_dep]
       gtk_defines += ['-DGST_USE_UNSTABLE_API', '-DHAVE_GTK3_GL']
     endif
@@ -55,4 +85,3 @@ if gtk_dep.found()
   )
   plugins += [gstgtk]
 endif
-

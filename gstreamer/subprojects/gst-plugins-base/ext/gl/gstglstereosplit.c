@@ -99,7 +99,7 @@ gst_gl_stereosplit_class_init (GstGLStereoSplitClass * klass)
   gst_element_class_set_static_metadata (element_class,
       "GLStereoSplit", "Codec/Converter",
       "Splits a stereoscopic stream into separate left/right streams",
-      "Jan Schmidt <jan@centricular.com>\n"
+      "Jan Schmidt <jan@centricular.com>, "
       "Matthew Waters <matthew@centricular.com>");
 
   gobject_class->finalize = (GObjectFinalizeFunc) (stereosplit_finalize);
@@ -528,23 +528,9 @@ ensure_context_unlocked (GstGLStereoSplit * self)
 
   _find_local_gl_context_unlocked (self);
 
-  if (!self->context) {
-    GST_OBJECT_LOCK (self->display);
-    do {
-      if (self->context)
-        gst_object_unref (self->context);
-      /* just get a GL context.  we don't care */
-      self->context =
-          gst_gl_display_get_gl_context_for_thread (self->display, NULL);
-      if (!self->context) {
-        if (!gst_gl_display_create_context (self->display, self->other_context,
-                &self->context, &error)) {
-          GST_OBJECT_UNLOCK (self->display);
-          goto context_error;
-        }
-      }
-    } while (!gst_gl_display_add_context (self->display, self->context));
-    GST_OBJECT_UNLOCK (self->display);
+  if (!gst_gl_display_ensure_context (self->display, self->other_context,
+          &self->context, &error)) {
+    goto context_error;
   }
 
   {

@@ -121,10 +121,11 @@ format. For example, `NV12:0x0100000000000002` is a new video format
 combined by video format NV12 and the modifier `0x0100000000000002`. It's
 not NV12 and it's not its subset either.
 
-*DRM_FORMAT* can be printed by using
-`GST_FOURCC_FORMAT` and `GST_FOURCC_ARGS` macros from the
-`DRM_FORMAT_*` constants, it is NOT a `GstVideoFormat`, so it would be
-different from the content of the `format` field in a non-dmabuf caps.
+The 7 least significant bits of *DRM_FORMAT* is a fourcc. That fourcc is used
+to serialize it into a string. The result is different from the serialization of
+gstreamer video formats. The 8th bit is used to indicate that tis is a big
+endian format. In this case, the serializer will postfix the name with `_BE`.
+
 A modifier must always be present, except if the modifier is linear,
 then it should not be included, so `NV12:0x0000000000000000` is
 invalid, it must be `drm-format=NV12`. DRM fourcc are used
@@ -139,17 +140,19 @@ Unlike other type of video buffers, DMABuf frames might not be mappable and
 its internal format is opaque to the user. Then, unless the modifier is
 linear (0x0000000000000000) or some other well known tiled format such as
 NV12_4L4, NV12_16L16, NV12_64Z32, NV12_16L32S, etc. (which are defined in
-video-format.h), we always use `GST_VIDEO_FORMAT_ENCODED` in
+video-format.h), we always use `GST_VIDEO_FORMAT_DMA_DRM` in
 `GstVideoFormat` enum to represent its video format.
 
 In order to not misuse this new format with the common video format, **in**
-*memory:DMABuf* feature, *drm-format* field in caps will replace the
-traditional *format* field.
+*memory:DMABuf* feature, the traditional *format* should be set to DMA_DRM.
+And a new *drm-format* field in caps is introduced to represent the video
+format in details(the composing of fourcc:modifier).
 
 So a DMABuf-backed video caps may look like:
 
 ```
      video/x-raw(memory:DMABuf), \
+                format=(string)DMA_DRM, \
                 drm-format=(string)NV12:0x0x0100000000000001, \
                 width=(int)1920, \
                 height=(int)1080, \
@@ -162,7 +165,7 @@ So a DMABuf-backed video caps may look like:
 ```
 
 And when we call a video info API such as `gst_video_info_from_caps()` with
-this caps, it should return an video format as `GST_VIDEO_FORMAT_ENCODED`,
+this caps, it should return an video format as `GST_VIDEO_FORMAT_DMA_DRM`,
 leaving other fields unchanged as normal video caps.
 
 In addition, a new structure
@@ -235,6 +238,7 @@ SRC template: 'src'
         video/x-raw(memory:DMABuf)
           width:  [ 16, 16384 ]
           height: [ 16, 16384 ]
+          format: DMA_DRM
           drm-format: { (string)NV12:0x0100000000000001, \
                         (string)YU12, (string)YV12, \
                         (string)YUYV:0x0100000000000002, \
@@ -284,6 +288,7 @@ SRC template: 'src'
         video/x-raw(memory:DMABuf)
           width:  [ 16, 16384 ]
           height: [ 16, 16384 ]
+          format: DMA_DRM
           drm-format: { (string)NV12:0x0100000000000001, \
                         (string)NV12, (string)I420, (string)YV12, \
                         (string)BGRA:0x0100000000000002 }
@@ -300,6 +305,7 @@ SINK template: 'sink'
         video/x-raw(memory:DMABuf)
           width:  [ 1, 2147483647 ]
           height: [ 1, 2147483647 ]
+          format: DMA_DRM
 ```
 
 At runtime, when the `vapostproc` wants to decide its src caps, it first

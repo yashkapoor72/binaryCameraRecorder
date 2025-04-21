@@ -16,9 +16,11 @@ option('bash-completion', type : 'feature', value : 'auto',
 option('pygi-overrides-dir', type : 'string', value : '',
         description: 'Path to pygobject overrides directory')
 option('xptv', type : 'feature', value : 'auto',
-       description : 'Build the deprecated xptv formater')
+       description : 'Build the deprecated xptv formatter')
 option('python', type : 'feature', value : 'auto', yield: true,
        description: 'Enable python formatters.')
+option('python-exe', type : 'string', value: 'python3', yield: true,
+       description: 'Path or name of the Python interpreter to build for.')
 option('libpython-dir', type : 'string', value : '',
         description: 'Path to find libpythonXX.so')
 option('validate', type : 'feature', value : 'auto', yield: true,

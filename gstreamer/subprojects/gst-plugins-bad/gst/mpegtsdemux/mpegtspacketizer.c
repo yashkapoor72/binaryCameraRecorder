@@ -31,10 +31,12 @@
 /* Skew calculation pameters */
 #define MAX_TIME	(2 * GST_SECOND)
 
-/* maximal PCR time */
-#define PCR_MAX_VALUE (((((guint64)1)<<33) * 300) + 298)
+/* 90kHz maximum values, coded in 33bits */
+#define MAX_33BIT (((guint64)1) << 33)
+#define PTS_DTS_MAX_VALUE (MAX_33BIT - 1)
+/* maximal PCR time, 27Mhz, coded with additional 9bits */
+#define PCR_MAX_VALUE (MAX_33BIT * 300 - 1)
 #define PCR_GST_MAX_VALUE (PCR_MAX_VALUE * GST_MSECOND / (PCR_MSECOND))
-#define PTS_DTS_MAX_VALUE (((guint64)1) << 33)
 
 #include "mpegtspacketizer.h"
 #include "gstmpegdesc.h"
@@ -94,7 +96,7 @@ get_pcr_table (MpegTSPacketizer2 * packetizer, guint16 pid)
     res->prev_out_time = GST_CLOCK_TIME_NONE;
     res->pcroffset = 0;
 
-    res->current = g_slice_new0 (PCROffsetCurrent);
+    res->current = g_new0 (PCROffsetCurrent, 1);
   }
 
   return res;
@@ -104,7 +106,7 @@ static void
 pcr_offset_group_free (PCROffsetGroup * group)
 {
   g_free (group->values);
-  g_slice_free (PCROffsetGroup, group);
+  g_free (group);
 }
 
 static void
@@ -115,8 +117,7 @@ flush_observations (MpegTSPacketizer2 * packetizer)
   for (i = 0; i < packetizer->lastobsid; i++) {
     g_list_free_full (packetizer->observations[i]->groups,
         (GDestroyNotify) pcr_offset_group_free);
-    if (packetizer->observations[i]->current)
-      g_slice_free (PCROffsetCurrent, packetizer->observations[i]->current);
+    g_free (packetizer->observations[i]->current);
     g_free (packetizer->observations[i]);
     packetizer->observations[i] = NULL;
   }
@@ -413,6 +414,18 @@ mpegts_packetizer_parse_adaptation_field_control (MpegTSPacketizer2 *
     if (packetizer->calculate_skew
         && GST_CLOCK_TIME_IS_VALID (packetizer->last_in_time)) {
       pcrtable = get_pcr_table (packetizer, packet->pid);
+      /* There is a signalled discontinuity and we deal with regularly timed
+       * input. Reset observations */
+      if (afcflags & MPEGTS_AFC_DISCONTINUITY_FLAG &&
+          (GST_CLOCK_TIME_IS_VALID (packetizer->last_dts) ||
+              GST_CLOCK_TIME_IS_VALID (packetizer->last_pts))) {
+        MpegTSPCR *fallback = get_pcr_table (packetizer, 0x1fff);
+        GST_DEBUG ("pcr 0x%04x Discontinuity signalled, resetting observations",
+            packet->pid);
+        pcrtable->base_time = GST_CLOCK_TIME_NONE;
+        pcrtable->base_pcrtime = GST_CLOCK_TIME_NONE;
+        fallback->base_time = GST_CLOCK_TIME_NONE;
+      }
       calculate_skew (packetizer, pcrtable, packet->pcr,
           packetizer->last_in_time);
     }
@@ -870,6 +883,15 @@ mpegts_packetizer_next_packet (MpegTSPacketizer2 * packetizer,
     if (!mpegts_packetizer_map (packetizer, packet_size))
       return PACKET_NEED_MORE;
 
+    /* Get M2TS header start */
+    if (packet_size == MPEGTS_M2TS_PACKETSIZE) {
+      guint8 *m2ts_header_start = &packetizer->map_data[packetizer->map_offset];
+      packet->m2ts_header_start = m2ts_header_start;
+      GST_MEMDUMP ("M2TS header start", packet->m2ts_header_start, 4);
+    } else
+      packet->m2ts_header_start = NULL;
+
+    /* Get TS packet data start */
     packet_data = &packetizer->map_data[packetizer->map_offset + sync_offset];
 
     /* Check sync byte */
@@ -963,6 +985,7 @@ mpegts_packetizer_push_section (MpegTSPacketizer2 * packetizer,
   guint8 packet_cc;
   GList *others = NULL;
   guint8 version_number, section_number, last_section_number;
+  gboolean cc_discont = FALSE;
 
   data = packet->data;
   packet_cc = FLAGS_CONTINUITY_COUNTER (packet->scram_afc_cc);
@@ -977,6 +1000,12 @@ mpegts_packetizer_push_section (MpegTSPacketizer2 * packetizer,
     }
     stream = mpegts_packetizer_stream_new (packet->pid);
     packetizer->streams[packet->pid] = stream;
+  }
+
+  if (G_UNLIKELY (packet->afc_flags & MPEGTS_AFC_DISCONTINUITY_FLAG)) {
+    GST_DEBUG ("PID 0x%04x  discontinuity flag, resetting stream counter",
+        packet->pid);
+    stream->continuity_counter = CONTINUITY_UNSET;
   }
 
   GST_MEMDUMP ("Full packet data", packet->data,
@@ -1009,24 +1038,18 @@ mpegts_packetizer_push_section (MpegTSPacketizer2 * packetizer,
    *
    **/
 
-  if (packet->payload_unit_start_indicator) {
+  if (packet->payload_unit_start_indicator)
     pointer = *data++;
-    /* If the pointer is zero, we're guaranteed to be able to handle it */
-    if (pointer == 0) {
-      GST_LOG
-          ("PID 0x%04x PUSI and pointer == 0, skipping straight to section_start parsing",
-          packet->pid);
-      mpegts_packetizer_clear_section (stream);
-      goto section_start;
-    }
-  }
 
   if (stream->continuity_counter == CONTINUITY_UNSET ||
       (stream->continuity_counter + 1) % 16 != packet_cc) {
-    if (stream->continuity_counter != CONTINUITY_UNSET)
+    if (stream->continuity_counter != CONTINUITY_UNSET) {
       GST_WARNING ("PID 0x%04x section discontinuity (%d vs %d)", packet->pid,
           stream->continuity_counter, packet_cc);
+      cc_discont = TRUE;
+    }
     mpegts_packetizer_clear_section (stream);
+    stream->continuity_counter = packet_cc;
     /* If not a PUSI, not much we can do */
     if (!packet->payload_unit_start_indicator) {
       GST_LOG ("PID 0x%04x continuity discont/unset and not PUSI, bailing out",
@@ -1040,6 +1063,19 @@ mpegts_packetizer_push_section (MpegTSPacketizer2 * packetizer,
         pointer);
     goto section_start;
   }
+
+  if (packet->payload_unit_start_indicator && pointer == 0) {
+    /* If the pointer is zero, we're guaranteed to be able to handle it */
+    GST_LOG
+        ("PID 0x%04x PUSI and pointer == 0, skipping straight to section_start parsing",
+        packet->pid);
+    mpegts_packetizer_clear_section (stream);
+    stream->continuity_counter = packet_cc;
+    goto section_start;
+  }
+
+  stream->continuity_counter = packet_cc;
+
 
   GST_LOG ("Accumulating data from beginning of packet");
 
@@ -1192,7 +1228,7 @@ section_start:
    * * same last_section_number
    * * same section_number was seen
    */
-  if (seen_section_before (stream, table_id, subtable_extension,
+  if (!cc_discont && seen_section_before (stream, table_id, subtable_extension,
           version_number, section_number, last_section_number)) {
     GST_DEBUG
         ("PID 0x%04x Already processed table_id:0x%02x subtable_extension:0x%04x, version_number:%d, section_number:%d",
@@ -1273,7 +1309,7 @@ mpegts_packetizer_resync (MpegTSPCR * pcr, GstClockTime time,
  *
  * The idea is that the jitter is composed of:
  *
- *  J = N + n
+ *  J = D + n
  *
  *   D   : a constant network delay.
  *   n   : random added noise. The noise is concentrated around 0
@@ -1780,7 +1816,7 @@ _reevaluate_group_pcr_offset (MpegTSPCR * pcrtable, PCROffsetGroup * group)
 static PCROffsetGroup *
 _new_group (guint64 pcr, guint64 offset, guint64 pcr_offset, guint flags)
 {
-  PCROffsetGroup *group = g_slice_new0 (PCROffsetGroup);
+  PCROffsetGroup *group = g_new0 (PCROffsetGroup, 1);
 
   GST_DEBUG ("Input PCR %" GST_TIME_FORMAT " offset:%" G_GUINT64_FORMAT
       " pcr_offset:%" G_GUINT64_FORMAT " flags:%d",
@@ -2252,10 +2288,24 @@ mpegts_packetizer_pts_to_ts_internal (MpegTSPacketizer2 * packetizer,
   PACKETIZER_GROUP_LOCK (packetizer);
   pcrtable = get_pcr_table (packetizer, pcr_pid);
 
-  if (!GST_CLOCK_TIME_IS_VALID (pcrtable->base_time) && pcr_pid == 0x1fff &&
-      GST_CLOCK_TIME_IS_VALID (packetizer->last_in_time)) {
-    pcrtable->base_time = packetizer->last_in_time;
-    pcrtable->base_pcrtime = pts;
+  if (pcr_pid == 0x1fff && GST_CLOCK_TIME_IS_VALID (packetizer->last_in_time)) {
+    if (!GST_CLOCK_TIME_IS_VALID (pcrtable->base_time)) {
+      pcrtable->base_time = packetizer->last_in_time;
+      pcrtable->base_pcrtime = pts;
+    } else if (check_diff) {
+      /* Handle discont and wraparound */
+      guint64 tmp_pts = pts + pcrtable->pcroffset + packetizer->extra_shift;
+      if (pcrtable->base_pcrtime < tmp_pts
+          && tmp_pts - pcrtable->base_pcrtime >= 5 * GST_SECOND) {
+        guint64 diff = tmp_pts - pcrtable->base_pcrtime - 2 * GST_SECOND;
+
+        pcrtable->base_time += diff;
+        pcrtable->base_pcrtime += diff;
+      } else if (pcrtable->base_pcrtime > tmp_pts
+          && pcrtable->base_pcrtime - tmp_pts > PCR_GST_MAX_VALUE / 2) {
+        pcrtable->pcroffset += PCR_GST_MAX_VALUE;
+      }
+    }
   }
 
   /* Use clock skew if present */

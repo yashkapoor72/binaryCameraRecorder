@@ -64,6 +64,27 @@
 #include <gst/pbutils/pbutils.h>
 #include "gstsdpmessage.h"
 
+#ifndef GST_DISABLE_GST_DEBUG
+#define GST_CAT_DEFAULT ensure_debug_category()
+static GstDebugCategory *
+ensure_debug_category (void)
+{
+  static gsize cat_gonce = 0;
+
+  if (g_once_init_enter (&cat_gonce)) {
+    gsize cat_done;
+
+    cat_done = (gsize) _gst_debug_category_new ("sdpmessage", 0, "SDP message");
+
+    g_once_init_leave (&cat_gonce, cat_done);
+  }
+
+  return (GstDebugCategory *) cat_gonce;
+}
+#else
+#define ensure_debug_category() /* NOOP */
+#endif /* GST_DISABLE_GST_DEBUG */
+
 #define FREE_STRING(field)              g_free (field); (field) = NULL
 #define REPLACE_STRING(field, val)      FREE_STRING(field); (field) = g_strdup (val)
 
@@ -620,7 +641,7 @@ hex_to_int (gchar c)
 /**
  * gst_sdp_message_parse_uri:
  * @uri: the start of the uri
- * @msg: (out caller-allocates): the result #GstSDPMessage
+ * @msg: (transfer none): the result #GstSDPMessage
  *
  * Parse the null-terminated @uri and store the result in @msg.
  *
@@ -1787,6 +1808,33 @@ gst_sdp_message_add_media (GstSDPMessage * msg, GstSDPMedia * media)
   memcpy (nmedia, media, sizeof (GstSDPMedia));
   memset (media, 0, sizeof (GstSDPMedia));
 
+  return GST_SDP_OK;
+}
+
+/**
+ * gst_sdp_message_remove_media:
+ * @msg: a #GstSDPMessage
+ * @idx: the media index
+ *
+ * Remove the media at @idx from the array of medias in @msg if found.
+ *
+ * Returns: #GST_SDP_OK when the specified media is found at @idx and removed,
+ * #GST_SDP_EINVAL otherwise.
+ *
+ * Since: 1.24
+ */
+GstSDPResult
+gst_sdp_message_remove_media (GstSDPMessage * msg, guint idx)
+{
+  GstSDPMedia *media = NULL;
+
+  g_return_val_if_fail (msg != NULL, GST_SDP_EINVAL);
+  g_return_val_if_fail (idx <= gst_sdp_message_medias_len (msg),
+      GST_SDP_EINVAL);
+
+  media = &g_array_index (msg->medias, GstSDPMedia, idx);
+  gst_sdp_media_uninit (media);
+  g_array_remove_index (msg->medias, idx);
   return GST_SDP_OK;
 }
 
@@ -3121,7 +3169,7 @@ gst_sdp_parse_line (SDPContext * c, gchar type, gchar * buffer)
  * gst_sdp_message_parse_buffer:
  * @data: (array length=size): the start of the buffer
  * @size: the size of the buffer
- * @msg: (out caller-allocates): the result #GstSDPMessage
+ * @msg: (transfer none): the result #GstSDPMessage
  *
  * Parse the contents of @size bytes pointed to by @data and store the result in
  * @msg.
@@ -3439,7 +3487,7 @@ gst_sdp_parse_rtpmap (const gchar * rtpmap, gint * payload, gchar ** name,
     *params = NULL;
     goto out;
   } else {
-    *name = strdup (*name);
+    *name = g_strdup (*name);
   }
 
   t = p;
@@ -3614,7 +3662,9 @@ gst_sdp_media_get_caps_from_media (const GstSDPMedia * media, gint pt)
 
   /* check if we have a rate, if not, we need to look up the rate from the
    * default rates based on the payload types. */
-  if (rate == -1) {
+  /* Some broken RTSP server puts a rate of 0, also use the default in that
+   * case */
+  if (rate <= 0) {
     const GstRTPPayloadInfo *info;
 
     if (GST_RTP_PAYLOAD_IS_DYNAMIC (pt)) {
@@ -3822,7 +3872,7 @@ gst_sdp_media_set_media_from_caps (const GstCaps * caps, GstSDPMedia * media)
 
   /* get clock-rate, media type and params for the rtpmap attribute */
   if (!gst_structure_get_int (s, "clock-rate", &caps_rate)) {
-    GST_ERROR ("ignoring stream without payload type");
+    GST_ERROR ("ignoring stream without clock rate");
     goto error;
   }
   caps_enc = gst_structure_get_string (s, "encoding-name");
@@ -3911,6 +3961,8 @@ gst_sdp_media_set_media_from_caps (const GstCaps * caps, GstSDPMedia * media)
     if (g_str_has_prefix (fname, "x-gst-rtsp-server-rtx-time"))
       continue;
     if (g_str_has_prefix (fname, "rtcp-fb-"))
+      continue;
+    if (g_str_has_prefix (fname, "ssrc-"))
       continue;
 
     if (!strcmp (fname, "a-framesize")) {
@@ -4222,9 +4274,11 @@ sdp_add_attributes_to_caps (GArray * attributes, GstCaps * caps)
         continue;
       if (!strcmp (key, "rid"))
         continue;
+      if (!strcmp (key, "source-filter"))
+        continue;
 
       /* string must be valid UTF8 */
-      if (!g_utf8_validate (attr->value, -1, NULL))
+      if (attr->value != NULL && !g_utf8_validate (attr->value, -1, NULL))
         continue;
 
       if (!g_str_has_prefix (key, "x-"))

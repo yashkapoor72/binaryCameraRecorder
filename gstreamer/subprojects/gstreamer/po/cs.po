@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gstreamer 1.12.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
 "PO-Revision-Date: 2017-09-13 15:04+0200\n"
 "Last-Translator: Marek Černocký <marek@manet.cz>\n"
 "Language-Team: Czech <translation-team-cs@lists.sourceforge.net>\n"
@@ -43,8 +43,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Čárkami oddělovaný seznam dvojic název_kategorie:úroveň pro nastavení "
-"konkrétních úrovní pro jednotlivé kategorie. Příklad: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"konkrétních úrovní pro jednotlivé kategorie. Příklad: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "SEZNAM"
@@ -61,9 +61,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Zakázat ladění"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Povolit podrobnou diagnostiku načítání zásuvných modulů"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Dvojtečkou oddělované cesty obsahující zásuvné moduly"
@@ -831,6 +828,12 @@ msgstr "soukromá data"
 msgid "Private data"
 msgstr "Soukromá data"
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr "; "
@@ -870,13 +873,12 @@ msgstr "připojení nemá žádný zdroj [sink=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "připojení nemá žádný cíl [source=%s@%p]"
 
+msgid "No such property."
+msgstr ""
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "v elementu „%2$s“ není žádná vlastnost „%1$s“"
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "nelze nastavit vlastnost „%s“ v elementu „%s“ na „%s“"
 
 #, fuzzy, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -884,6 +886,18 @@ msgstr "Soubor „%s“ je soket."
 
 #, fuzzy, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "nelze nastavit vlastnost „%s“ v elementu „%s“ na „%s“"
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "element „%s“ neexistuje"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "nelze nastavit vlastnost „%s“ v elementu „%s“ na „%s“"
+
+#, fuzzy, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
 msgstr "nelze nastavit vlastnost „%s“ v elementu „%s“ na „%s“"
 
 msgid "Delayed linking failed."
@@ -906,10 +920,6 @@ msgstr "nelze připojit element „%s“ k elementu „%s“ se schopností %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "nelze připojit element „%s“ k elementu „%s“"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "element „%s“ neexistuje"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1058,6 +1068,10 @@ msgstr "Proud neobsahuje žádná data."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "Implementovaná rozhraní:\n"
 
+#, c-format
+msgid "%sElement Flags%s:\n"
+msgstr ""
+
 msgid "readable"
 msgstr "lze číst"
 
@@ -1073,6 +1087,9 @@ msgstr "lze ovládat"
 #, fuzzy
 msgid "conditionally available"
 msgstr "lze ovládat"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "lze změnit ve stavu PRÁZDNÉ, PŘIPRAVENO, POZASTAVENO nebo PŘEHRÁVÁ"
@@ -1342,6 +1359,13 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr "NÁZEV-VLASTNOSTI"
 
+msgid "Set the name of the program"
+msgstr ""
+
+#, fuzzy
+msgid "PROGRAM-NAME"
+msgstr "NÁZEV-VLASTNOSTI"
+
 msgid "Do not install a fault handler"
 msgstr "Neinstalovat obsluhu výjimek"
 
@@ -1397,6 +1421,9 @@ msgstr "Nastavuje se roura na PRÁZDNÁ…\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Uvolňuje se roura…\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Povolit podrobnou diagnostiku načítání zásuvných modulů"
 
 # On strike?
 #~ msgid "ERROR: Pipeline doesn't want to pause.\n"

@@ -26,6 +26,16 @@ gst_controller_headers = controller_mkenum_headers + files(
 )
 install_headers(gst_controller_headers, subdir : 'gstreamer-1.0/gst/controller/')
 
+doc_sources = []
+foreach s: gst_controller_sources + gst_controller_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'controller': pathsep.join(doc_sources)
+}
+
+
 controller_enums = gnome.mkenums_simple('controller-enumtypes',
   sources : controller_mkenum_headers,
   header_prefix : '#include <gst/controller/controller-prelude.h>',
@@ -37,7 +47,7 @@ gstcontroller_c = controller_enums[0]
 gstcontroller_h = controller_enums[1]
 
 gst_controller_gen_sources = [gstcontroller_h]
-gst_controller = library('gstcontroller-@0@'.format(apiversion),
+gst_controller = library('gstcontroller-@0@'.format(api_version),
   gst_controller_sources, gstcontroller_h, gstcontroller_c,
   c_args : gst_c_args + ['-DBUILDING_GST_CONTROLLER', '-DG_LOG_DOMAIN="GStreamer-Controller"'],
   install : true,
@@ -63,7 +73,7 @@ if build_gir
   gir = {
     'sources' : gst_controller_sources + gst_controller_headers + [gstcontroller_h] + [gstcontroller_c],
     'namespace': 'GstController',
-    'nsversion': apiversion,
+    'nsversion': api_version,
     'identifier_prefix' : 'Gst',
     'symbol_prefix' : 'gst',
     'export_packages' : pkg_name,
@@ -76,6 +86,7 @@ if build_gir
   library_def += {'gir': [gir]}
   if not static_build
     gst_controller_gir = gnome.generate_gir(gst_controller, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [gst_controller_gir]}
     gst_controller_gen_sources += [gst_controller_gir]
   endif
 endif

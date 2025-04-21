@@ -26,6 +26,7 @@
  * @short_description: Initialize GstValidate
  */
 
+#include "gst/gstidstr.h"
 #ifdef HAVE_CONFIG_H
 #  include "config.h"
 #endif /* HAVE_CONFIG_H */
@@ -54,6 +55,8 @@ GST_DEBUG_CATEGORY (gstvalidate_debug);
 
 static GMutex _gst_validate_registry_mutex;
 static GstRegistry *_gst_validate_registry_default = NULL;
+
+static GRecMutex init_lock = { 0, };
 
 G_LOCK_DEFINE_STATIC (all_configs_lock);
 static GList *all_configs = NULL;
@@ -136,9 +139,10 @@ gst_structure_validate_name (const gchar * name)
 }
 
 static gboolean
-_set_vars_func (GQuark field_id, const GValue * value, GstStructure * vars)
+_set_vars_func (const GstIdStr * fieldname, const GValue * value,
+    GstStructure * vars)
 {
-  gst_structure_id_set_value (vars, field_id, value);
+  gst_structure_id_str_set_value (vars, fieldname, value);
 
   return TRUE;
 }
@@ -197,8 +201,8 @@ create_config (const gchar * config)
 
     if (gst_structure_has_field (structure, "set-vars")) {
       gst_structure_remove_field (structure, "set-vars");
-      gst_structure_foreach (structure,
-          (GstStructureForeachFunc) _set_vars_func, local_vars);
+      gst_structure_foreach_id_str (structure,
+          (GstStructureForeachIdStrFunc) _set_vars_func, local_vars);
       gst_structure_free (structure);
     } else if (!loaded_globals
         && gst_structure_has_name (structure, "set-globals")) {
@@ -262,16 +266,23 @@ get_structures_from_array_in_meta (const gchar * fieldname)
   if (!meta)
     return NULL;
 
-  res = get_structures_from_array (meta, fieldname);
-  if (res)
-    return res;
-
   gst_structure_get (meta,
       "__lineno__", G_TYPE_INT, &current_lineno,
       "__debug__", G_TYPE_STRING, &debug,
       "__filename__", G_TYPE_STRING, &filename, NULL);
-  strs = gst_validate_utils_get_strv (meta, fieldname);
 
+  res = get_structures_from_array (meta, fieldname);
+  if (res) {
+    for (GList * tmp = res; tmp; tmp = tmp->next) {
+      gst_structure_set (tmp->data,
+          "__lineno__", G_TYPE_INT, current_lineno,
+          "__filename__", G_TYPE_STRING, filename,
+          "__debug__", G_TYPE_STRING, debug, NULL);
+    }
+    goto done;
+  }
+
+  strs = gst_validate_utils_get_strv (meta, fieldname);
   if (strs) {
     gint i;
 
@@ -291,6 +302,7 @@ get_structures_from_array_in_meta (const gchar * fieldname)
     }
   }
 
+done:
   g_free (filename);
   g_free (debug);
   g_strfreev (strs);
@@ -469,7 +481,9 @@ gst_validate_init_debug (void)
 void
 gst_validate_init (void)
 {
+  g_rec_mutex_lock (&init_lock);
   if (validate_initialized) {
+    g_rec_mutex_unlock (&init_lock);
     return;
   }
   gst_validate_init_debug ();
@@ -493,6 +507,7 @@ gst_validate_init (void)
   gst_validate_flow_init ();
   gst_validate_init_plugins ();
   gst_validate_init_runner ();
+  g_rec_mutex_unlock (&init_lock);
 }
 
 void
@@ -519,7 +534,6 @@ gst_validate_deinit (void)
   gst_validate_report_deinit ();
 
   g_mutex_unlock (&_gst_validate_registry_mutex);
-  g_mutex_clear (&_gst_validate_registry_mutex);
 }
 
 gboolean
@@ -582,6 +596,71 @@ gst_validate_get_test_file_scenario (GList ** structs,
   return TRUE;
 }
 
+static gchar **
+validate_test_include_paths (const gchar * includer_file)
+{
+  gchar **env_configdir;
+  gchar *configs_path = g_strdup (g_getenv ("GST_VALIDATE_TEST_CONFIG_PATH"));
+
+  if (includer_file) {
+    gchar *relative_dir = g_path_get_dirname (includer_file);
+    gchar *tmp_configs_path = configs_path ?
+        g_strdup_printf ("%s" G_SEARCHPATH_SEPARATOR_S "%s", configs_path,
+        relative_dir) : g_strdup (relative_dir);
+    g_free (relative_dir);
+
+    g_free (configs_path);
+    configs_path = tmp_configs_path;
+  }
+
+  env_configdir =
+      configs_path ? g_strsplit (configs_path, G_SEARCHPATH_SEPARATOR_S,
+      0) : NULL;
+  g_free (configs_path);
+
+  return env_configdir;
+}
+
+static gboolean
+_set_feature_rank (const GstIdStr * fieldname, GValue * value,
+    GstStructure * structure)
+{
+  GstRegistry *registry = gst_registry_get ();
+  guint rank = 0;
+
+  if (gst_validate_structure_file_field_is_metadata (fieldname))
+    return TRUE;
+
+  if (G_VALUE_TYPE (value) == G_TYPE_UINT) {
+    rank = (guint) g_value_get_uint (value);
+  } else if (G_VALUE_TYPE (value) == G_TYPE_INT) {
+    rank = g_value_get_int (value);
+  } else {
+    gst_validate_error_structure (structure,
+        "Invalid value %s for field '%s' (expecting int) in the 'features-rank' structure",
+        G_VALUE_TYPE_NAME (value), gst_value_serialize (value));
+
+    return FALSE;
+  }
+
+  GstPluginFeature *feature =
+      gst_registry_lookup_feature (registry, gst_id_str_as_str (fieldname));
+  if (!feature) {
+    if (gst_structure_has_name (structure, "mandatory")) {
+      gst_validate_error_structure (structure,
+          "Feature `%s` not found while its ranks has been requested to be set to %d",
+          gst_id_str_as_str (fieldname), rank);
+      return FALSE;
+    }
+
+    return TRUE;
+  }
+
+  gst_plugin_feature_set_rank (feature, rank);
+
+  return TRUE;
+}
+
 /* Only the first monitor pipeline will be used */
 GstStructure *
 gst_validate_setup_test_file (const gchar * testfile, gboolean use_fakesinks)
@@ -598,8 +677,8 @@ gst_validate_setup_test_file (const gchar * testfile, gboolean use_fakesinks)
   gst_validate_set_globals (NULL);
   gst_validate_structure_set_variables_from_struct_file (NULL, global_testfile);
   testfile_structs =
-      gst_validate_utils_structs_parse_from_filename (global_testfile, NULL,
-      NULL);
+      gst_validate_utils_structs_parse_from_filename (global_testfile,
+      validate_test_include_paths, NULL);
 
   if (!testfile_structs)
     gst_validate_abort ("Could not load test file: %s", global_testfile);
@@ -622,6 +701,21 @@ gst_validate_setup_test_file (const gchar * testfile, gboolean use_fakesinks)
 
   register_action_types ();
   gst_validate_scenario_check_and_set_needs_clock_sync (testfile_structs, &res);
+
+  GList *feature_ranks_def =
+      get_structures_from_array_in_meta ("features-rank");
+  for (GList * tmp = feature_ranks_def; tmp; tmp = tmp->next) {
+    GstStructure *feature_ranks = tmp->data;
+    if (!gst_structure_has_name (feature_ranks, "mandatory")
+        && !gst_structure_has_name (feature_ranks, "optional")) {
+      gst_validate_error_structure (res,
+          "Feature rank structures should have either `mandatory` or `optional` as a name, got: %s",
+          gst_structure_to_string (feature_ranks));
+      return NULL;
+    }
+    gst_structure_filter_and_map_in_place_id_str (feature_ranks,
+        (GstStructureFilterMapIdStrFunc) _set_feature_rank, feature_ranks);
+  }
 
   gst_validate_set_test_file_globals (res, global_testfile, use_fakesinks);
   gst_validate_structure_resolve_variables (NULL, res, NULL, 0);

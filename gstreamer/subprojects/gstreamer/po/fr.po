@@ -4,15 +4,16 @@
 #
 # Thomas Vander Stichele <thomas@apestaart.org>, 2004.
 # Claude Paroz <claude@2xlibre.net>, 2008-2012.
-# Stéphane Aulery <lkppo@free.fr>, 2015-2017, 2019, 2021.
+# Stéphane Aulery <lkppo@free.fr>, 2015-2022.
+# Christian Wiatr <w9204-fs@yahoo.com>, 2023.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gstreamer 1.19.2\n"
+"Project-Id-Version: gstreamer 1.21.90\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-09-23 01:32+0100\n"
-"PO-Revision-Date: 2021-11-21 00:53+0100\n"
-"Last-Translator: Stéphane Aulery <lkppo@free.fr>\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
+"PO-Revision-Date: 2023-06-04 11:11+0200\n"
+"Last-Translator: Christian Wiatr <w9204-fs@yahoo.com>\n"
 "Language-Team: French <traduc@traduc.org>\n"
 "Language: fr\n"
 "MIME-Version: 1.0\n"
@@ -20,6 +21,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "X-Bugs: Report translation errors to the Language-Team address.\n"
 "Plural-Forms: nplurals=2; plural=n>1;\n"
+"X-Generator: Poedit 2.4.2\n"
 
 msgid "Print the GStreamer version"
 msgstr "Affiche la version de GStreamer"
@@ -44,8 +46,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Liste séparée par des virgules de paires nom_catégorie:niveau définissant "
-"des niveaux spécifiques pour chaque catégorie. Exemple : GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"des niveaux spécifiques pour chaque catégorie. Exemple : "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "LISTE"
@@ -62,9 +64,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Désactive le débogage"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Active le diagnostic détaillé du chargement des greffons"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Chemins contenant des greffons, séparés par des deux-points"
@@ -839,13 +838,19 @@ msgstr "données-privées"
 msgid "Private data"
 msgstr "Données privées"
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
 
 #, c-format
 msgid "Invalid URI: %s"
-msgstr ""
+msgstr "URI incorrecte : %s"
 
 #, c-format
 msgid "No URI handler for the %s protocol found"
@@ -853,7 +858,7 @@ msgstr "Aucun gestionnaire d’URI trouvé pour le protocole %s"
 
 #, c-format
 msgid "URI scheme '%s' not supported"
-msgstr "schéma URI « %s » non pris en charge"
+msgstr "URI de schéma « %s » non prise en charge"
 
 #, c-format
 msgid "ERROR: from element %s: %s\n"
@@ -878,13 +883,12 @@ msgstr "lien sans source [sink=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "lien sans sink [source=%s@%p]"
 
+msgid "No such property."
+msgstr "Propriété non trouvée."
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "pas de propriété « %s » dans l’élément « %s »"
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "impossible de définir la propriété « %s » de l’élément « %s » à « %s »"
 
 #, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -893,6 +897,20 @@ msgstr "L'élément « %s » n'est pas de type GstPreset"
 #, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
 msgstr "impossible de définir le réglage « %s » de l’élément « %s »"
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "pas d’élément « %s »"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "impossible de définir la propriété « %s » de l’élément « %s » à « %s »"
+
+#, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
+msgstr ""
+"impossible de définir la propriété « %s » du fils de l'élément « %s » à "
+"« %s »"
 
 msgid "Delayed linking failed."
 msgstr "Échec du chargement dynamique différé."
@@ -913,10 +931,6 @@ msgstr "impossible de connecter %s à %s avec les capacités %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "impossible de connecter %s à %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "pas d’élément « %s »"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1066,6 +1080,10 @@ msgstr "Le flux ne contient aucune donnée."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "%sinterfaces implémentées%s :\n"
 
+#, fuzzy, c-format
+msgid "%sElement Flags%s:\n"
+msgstr "%sinterfaces implémentées%s :\n"
+
 msgid "readable"
 msgstr "accès en lecture"
 
@@ -1080,6 +1098,9 @@ msgstr "contrôlable"
 
 msgid "conditionally available"
 msgstr "dospinibilité conditionnelle"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "modifiable en l’état NULL, READY, PAUSED ou PLAYING"
@@ -1173,6 +1194,7 @@ msgstr ""
 
 msgid "Color output, even when not sending to a tty."
 msgstr ""
+"Couleur de la sortie, même quand le périphérique est différent d'un tty."
 
 #, c-format
 msgid "Could not load plugin file: %s\n"
@@ -1312,7 +1334,7 @@ msgstr "Une erreur s’est produite lors de l’attente de l’EOS\n"
 
 #, c-format
 msgid "Use Windows high-resolution clock, precision: %u ms\n"
-msgstr ""
+msgstr "Utiliser l'horloge haute résolution de Windows, précision à %u ms\n"
 
 msgid "Output tags (also known as metadata)"
 msgstr "Affiche les balises (aussi connues sous le nom de métadonnées)"
@@ -1339,6 +1361,13 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr "NOM-PROPRIÉTÉ"
 
+msgid "Set the name of the program"
+msgstr ""
+
+#, fuzzy
+msgid "PROGRAM-NAME"
+msgstr "NOM-PROPRIÉTÉ"
+
 msgid "Do not install a fault handler"
 msgstr "N’installe pas de gestionnaire de dysfonctionnement"
 
@@ -1353,11 +1382,18 @@ msgid ""
 "the position will be printed when stdout is a TTY. To enable printing "
 "position when stdout is not a TTY, use \"force-position\" option"
 msgstr ""
+"Ne pas imprimer la position actuelle du pipeline. Si cette option n'est pas "
+"spécifiée, la position sera imprimée lorsque stdout est un TTY. Pour activer "
+"la position d'impression lorsque stdout n'est pas un TTY, utilisez l'option "
+"\"force-position\""
 
 msgid ""
 "Allow printing current position of pipeline even if stdout is not a TTY. "
 "This option has no effect if the \"no-position\" option is specified"
 msgstr ""
+"Autoriser l'impression de la position actuelle du pipeline même si stdout "
+"n'est pas un TTY. Cette option n'a aucun effet si l'option \"no-position\" "
+"est spécifiée"
 
 #, c-format
 msgid "ERROR: pipeline could not be constructed: %s.\n"
@@ -1393,6 +1429,9 @@ msgstr "Définition du pipeline à NULL…\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Libération du pipeline…\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Active le diagnostic détaillé du chargement des greffons"
 
 #~ msgid "ERROR: Pipeline doesn't want to pause.\n"
 #~ msgstr "ERREUR : le pipeline refuse de se mettre en pause.\n"

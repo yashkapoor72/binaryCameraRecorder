@@ -177,27 +177,19 @@ _get_function_table (GstVulkanSwapper * swapper)
 #undef GET_PROC_ADDRESS_REQUIRED
 }
 
-static GstVideoFormat
-_vk_format_to_video_format (VkFormat format)
-{
-  switch (format) {
-      /* double check endianness */
-    case VK_FORMAT_R8G8B8A8_UNORM:
-      return GST_VIDEO_FORMAT_RGBA;
-    case VK_FORMAT_R8G8B8_UNORM:
-      return GST_VIDEO_FORMAT_RGB;
-    case VK_FORMAT_B8G8R8A8_UNORM:
-      return GST_VIDEO_FORMAT_BGRA;
-    case VK_FORMAT_B8G8R8_UNORM:
-      return GST_VIDEO_FORMAT_BGR;
-    default:
-      return GST_VIDEO_FORMAT_UNKNOWN;
-  }
-}
-
 static VkColorSpaceKHR
-_vk_color_space_from_video_info (GstVideoInfo * v_info)
+_vk_color_space_from_vk_format (GstVulkanSwapper * swapper, VkFormat format)
 {
+  GstVulkanSwapperPrivate *priv = GET_PRIV (swapper);
+  int i;
+
+  for (i = 0; i < priv->n_surf_formats; i++) {
+    if (format != priv->surf_formats[i].format)
+      continue;
+    return priv->surf_formats[i].colorSpace;
+  }
+
+  GST_WARNING_OBJECT (swapper, "unsupported format for swapper's colospaces");
   return VK_COLORSPACE_SRGB_NONLINEAR_KHR;
 }
 
@@ -206,7 +198,7 @@ _add_vk_format_to_list (GValue * list, VkFormat format)
 {
   GstVideoFormat v_format;
 
-  v_format = _vk_format_to_video_format (format);
+  v_format = gst_vulkan_format_to_video_format (format);
   if (v_format) {
     const gchar *format_str = gst_video_format_to_string (v_format);
     GValue item = G_VALUE_INIT;
@@ -298,10 +290,10 @@ _choose_queue (GstVulkanDevice * device, GstVulkanQueue * queue,
   return TRUE;
 }
 
-/*
+/**
  * gst_vulkan_swapper_choose_queue:
  * @swapper: a #GstVulkanSwapper
- * @available_queue: (transfer none): a #GstVulkanQueue chosen elsewhere
+ * @available_queue: (transfer none) (nullable): a #GstVulkanQueue chosen elsewhere
  * @error: a #GError
  */
 gboolean
@@ -678,7 +670,8 @@ gst_vulkan_swapper_get_supported_caps (GstVulkanSwapper * swapper,
 
   caps = gst_caps_new_empty_simple ("video/x-raw");
   gst_caps_set_features (caps, 0,
-      gst_caps_features_from_string (GST_CAPS_FEATURE_MEMORY_VULKAN_IMAGE));
+      gst_caps_features_new_single_static_str
+      (GST_CAPS_FEATURE_MEMORY_VULKAN_IMAGE));
   s = gst_caps_get_structure (caps, 0);
 
   {
@@ -808,7 +801,7 @@ _allocate_swapchain (GstVulkanSwapper * swapper, GstCaps * caps,
   }
 
   format = gst_vulkan_format_from_video_info (&priv->v_info, 0);
-  color_space = _vk_color_space_from_video_info (&priv->v_info);
+  color_space = _vk_color_space_from_vk_format (swapper, format);
 
   if ((priv->surf_props.supportedCompositeAlpha &
           VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0) {
@@ -1077,8 +1070,8 @@ _build_render_buffer_cmd (GstVulkanSwapper * swapper, guint32 swap_idx,
         .oldLayout = swap_img->barrier.image_layout,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         /* FIXME: implement exclusive transfers */
-        .srcQueueFamilyIndex = 0,
-        .dstQueueFamilyIndex = 0,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = swap_img->image,
         .subresourceRange = swap_img->barrier.subresource_range
     };
@@ -1103,8 +1096,12 @@ _build_render_buffer_cmd (GstVulkanSwapper * swapper, guint32 swap_idx,
   g_assert (priv->surface_location.h ==
       gst_vulkan_image_memory_get_height (swap_img));
 
-  gst_video_sink_center_rect (src, priv->surface_location, &priv->display_rect,
-      priv->force_aspect_ratio);
+  if (priv->force_aspect_ratio) {
+    gst_video_sink_center_rect (src, priv->surface_location,
+        &priv->display_rect, priv->force_aspect_ratio);
+  } else {
+    priv->display_rect = priv->surface_location;
+  }
 
   GST_TRACE_OBJECT (swapper, "rendering into result rectangle %ux%u+%u,%u "
       "src %ux%u dst %ux%u", priv->display_rect.w, priv->display_rect.h,
@@ -1145,8 +1142,8 @@ _build_render_buffer_cmd (GstVulkanSwapper * swapper, guint32 swap_idx,
         .oldLayout = img_mem->barrier.image_layout,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         /* FIXME: implement exclusive transfers */
-        .srcQueueFamilyIndex = 0,
-        .dstQueueFamilyIndex = 0,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = img_mem->image,
         .subresourceRange = img_mem->barrier.subresource_range
     };
@@ -1170,6 +1167,32 @@ _build_render_buffer_cmd (GstVulkanSwapper * swapper, guint32 swap_idx,
 
     vkCmdClearColorImage (cmd_buf->cmd, swap_img->image,
         swap_img->barrier.image_layout, &clear, 1, &clear_range);
+
+    /* *INDENT-OFF* */
+    image_memory_barrier = (VkImageMemoryBarrier) {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = NULL,
+        .srcAccessMask = swap_img->barrier.parent.access_flags,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout = swap_img->barrier.image_layout,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        /* FIXME: implement exclusive transfers */
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = swap_img->image,
+        .subresourceRange = swap_img->barrier.subresource_range
+    };
+    /* *INDENT-ON* */
+
+    vkCmdPipelineBarrier (cmd_buf->cmd,
+        swap_img->barrier.parent.pipeline_stages,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+        &image_memory_barrier);
+
+    swap_img->barrier.parent.pipeline_stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    swap_img->barrier.parent.access_flags = image_memory_barrier.dstAccessMask;
+    swap_img->barrier.image_layout = image_memory_barrier.newLayout;
+
     vkCmdBlitImage (cmd_buf->cmd, img_mem->image, img_mem->barrier.image_layout,
         swap_img->image, swap_img->barrier.image_layout, 1, &blit,
         VK_FILTER_LINEAR);
@@ -1184,8 +1207,8 @@ _build_render_buffer_cmd (GstVulkanSwapper * swapper, guint32 swap_idx,
         .oldLayout = swap_img->barrier.image_layout,
         .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         /* FIXME: implement exclusive transfers */
-        .srcQueueFamilyIndex = 0,
-        .dstQueueFamilyIndex = 0,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = swap_img->image,
         .subresourceRange = swap_img->barrier.subresource_range
     };

@@ -39,7 +39,7 @@ video_frame_get_perf_category (void)
   static GstDebugCategory *cat = NULL;
 
   if (g_once_init_enter (&cat)) {
-    GstDebugCategory *c;
+    GstDebugCategory *c = NULL;
 
     GST_DEBUG_CATEGORY_GET (c, "GST_PERFORMANCE");
     g_once_init_leave (&cat, c);
@@ -383,10 +383,15 @@ gst_video_frame_copy_plane (GstVideoFrame * dest, const GstVideoFrame * src,
 
     GST_CAT_DEBUG (CAT_PERFORMANCE, "copy plane %d, w:%d h:%d ", plane, w, h);
 
-    for (j = 0; j < h; j++) {
-      memcpy (dp, sp, w);
-      dp += ds;
-      sp += ss;
+    if (GST_VIDEO_INFO_PLANE_STRIDE (dinfo,
+            plane) == GST_VIDEO_INFO_PLANE_STRIDE (sinfo, plane)) {
+      memcpy (dp, sp, GST_VIDEO_INFO_PLANE_STRIDE (dinfo, plane) * h);
+    } else {
+      for (j = 0; j < h; j++) {
+        memcpy (dp, sp, w);
+        dp += ds;
+        sp += ss;
+      }
     }
   }
 

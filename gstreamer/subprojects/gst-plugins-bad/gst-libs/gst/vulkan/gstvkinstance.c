@@ -77,6 +77,7 @@ struct _GstVulkanInstancePrivate
   guint requested_api_major;
   guint requested_api_minor;
   uint32_t supported_instance_api;
+  uint32_t configured_instance_api;
 
   guint n_available_layers;
   VkLayerProperties *available_layers;
@@ -253,18 +254,20 @@ gst_vulkan_instance_class_init (GstVulkanInstanceClass * klass)
 
   /**
    * GstVulkanInstance::create-device:
-   * @object: the #GstVulkanDisplay
+   * @device: the #GstVulkanDevice
+   * @device_index: the index of the device
    *
    * Overrides the #GstVulkanDevice creation mechanism.
    * It can be called from any thread.
    *
    * Returns: (transfer full): the newly created #GstVulkanDevice.
    *
-   * Since: 1.18
+   * Since: 1.26
    */
   gst_vulkan_instance_signals[SIGNAL_CREATE_DEVICE] =
       g_signal_new ("create-device", G_TYPE_FROM_CLASS (klass),
-      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, GST_TYPE_VULKAN_DEVICE, 0);
+      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, GST_TYPE_VULKAN_DEVICE, 1,
+      G_TYPE_UINT);
 }
 
 static void
@@ -456,32 +459,14 @@ gst_vulkan_instance_get_extension_info (GstVulkanInstance * instance,
   return ret;
 }
 
-/* reimplement a specfic case of g_ptr_array_find_with_equal_func as that
- * requires Glib 2.54 */
-static gboolean
-ptr_array_find_string (GPtrArray * array, const gchar * str, guint * index)
-{
-  guint i;
-
-  for (i = 0; i < array->len; i++) {
-    gchar *val = (gchar *) g_ptr_array_index (array, i);
-    if (g_strcmp0 (val, str) == 0) {
-      if (index)
-        *index = i;
-      return TRUE;
-    }
-  }
-
-  return FALSE;
-}
-
 static gboolean
 gst_vulkan_instance_is_extension_enabled_unlocked (GstVulkanInstance * instance,
     const gchar * name, guint * index)
 {
   GstVulkanInstancePrivate *priv = GET_PRIV (instance);
 
-  return ptr_array_find_string (priv->enabled_extensions, name, index);
+  return g_ptr_array_find_with_equal_func (priv->enabled_extensions, name,
+      g_str_equal, index);
 }
 
 /**
@@ -627,7 +612,8 @@ gst_vulkan_instance_is_layer_enabled_unlocked (GstVulkanInstance * instance,
 {
   GstVulkanInstancePrivate *priv = GET_PRIV (instance);
 
-  return ptr_array_find_string (priv->enabled_layers, name, NULL);
+  return g_ptr_array_find_with_equal_func (priv->enabled_layers, name,
+      g_str_equal, NULL);
 }
 
 /**
@@ -896,7 +882,12 @@ gst_vulkan_instance_open (GstVulkanInstance * instance, GError ** error)
     requested_instance_api = priv->supported_instance_api;
   }
 
-  if (requested_instance_api > priv->supported_instance_api) {
+  /* Since Vulkan 1.1, it is possible to have an instance API version that is
+   * less than a device supported API.  As such, requesting a higher API version
+   * is no longer an error.
+   */
+  if (priv->supported_instance_api < VK_MAKE_VERSION (1, 1, 0)
+      && requested_instance_api > priv->supported_instance_api) {
     g_set_error (error, GST_VULKAN_ERROR, VK_ERROR_INITIALIZATION_FAILED,
         "Requested API version (%u.%u) is larger than the maximum supported "
         "version (%u.%u)", VK_VERSION_MAJOR (requested_instance_api),
@@ -940,6 +931,16 @@ gst_vulkan_instance_open (GstVulkanInstance * instance, GError ** error)
   {
     VkApplicationInfo app = { 0, };
     VkInstanceCreateInfo inst_info = { 0, };
+#if !defined (GST_DISABLE_DEBUG) && defined (VK_API_VERSION_1_2)
+    VkValidationFeaturesEXT validation_features;
+    VkValidationFeatureEnableEXT feat_list[] = {
+      VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT,
+      VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_RESERVE_BINDING_SLOT_EXT,
+#if defined (VK_API_VERSION_1_3)
+      VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
+#endif
+    };
+#endif
 
     /* *INDENT-OFF* */
     app = (VkApplicationInfo) {
@@ -948,7 +949,8 @@ gst_vulkan_instance_open (GstVulkanInstance * instance, GError ** error)
         .pApplicationName = APP_SHORT_NAME,
         .applicationVersion = 0,
         .pEngineName = APP_SHORT_NAME,
-        .engineVersion = 0,
+        .engineVersion = VK_MAKE_VERSION (GST_VERSION_MAJOR, GST_VERSION_MINOR,
+            GST_VERSION_MICRO),
         .apiVersion = requested_instance_api,
     };
 
@@ -963,11 +965,31 @@ gst_vulkan_instance_open (GstVulkanInstance * instance, GError ** error)
     };
     /* *INDENT-ON* */
 
+#if !defined (GST_DISABLE_DEBUG)
+    vulkan_debug_level =
+        gst_debug_category_get_threshold (GST_VULKAN_DEBUG_CAT);
+
+#if defined (VK_API_VERSION_1_2)
+    if (vulkan_debug_level >= GST_LEVEL_ERROR) {
+      /* *INDENT-OFF* */
+      validation_features = (VkValidationFeaturesEXT) {
+          .sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+          .pEnabledValidationFeatures = feat_list,
+          .enabledValidationFeatureCount = G_N_ELEMENTS (feat_list),
+      };
+      inst_info.pNext = &validation_features;
+      /* *INDENT-ON* */
+    }
+#endif
+#endif
+
     err = vkCreateInstance (&inst_info, NULL, &instance->instance);
     if (gst_vulkan_error_to_g_error (err, error, "vkCreateInstance") < 0) {
       goto error;
     }
   }
+
+  priv->configured_instance_api = requested_instance_api;
 
   err =
       vkEnumeratePhysicalDevices (instance->instance,
@@ -994,8 +1016,6 @@ gst_vulkan_instance_open (GstVulkanInstance * instance, GError ** error)
     goto error;
 
 #if !defined (GST_DISABLE_DEBUG)
-  vulkan_debug_level = gst_debug_category_get_threshold (GST_VULKAN_DEBUG_CAT);
-
   if (vulkan_debug_level >= GST_LEVEL_ERROR
       && gst_vulkan_instance_is_extension_enabled_unlocked (instance,
           VK_EXT_DEBUG_REPORT_EXTENSION_NAME, NULL)) {
@@ -1093,27 +1113,28 @@ gst_vulkan_instance_get_proc_address (GstVulkanInstance * instance,
 }
 
 /**
- * gst_vulkan_instance_create_device:
+ * gst_vulkan_instance_create_device_with_index:
  * @instance: a #GstVulkanInstance
- * @error: (optional): a #GError
+ * @device_index: the device index to create the new #GstVulkanDevice from
+ * @error: (out) (optional): a #GError
  *
  * Returns: (transfer full): a new #GstVulkanDevice
  *
- * Since: 1.18
+ * Since: 1.26
  */
 GstVulkanDevice *
-gst_vulkan_instance_create_device (GstVulkanInstance * instance,
-    GError ** error)
+gst_vulkan_instance_create_device_with_index (GstVulkanInstance * instance,
+    guint device_index, GError ** error)
 {
   GstVulkanDevice *device;
 
   g_return_val_if_fail (GST_IS_VULKAN_INSTANCE (instance), NULL);
 
   g_signal_emit (instance, gst_vulkan_instance_signals[SIGNAL_CREATE_DEVICE], 0,
-      &device);
+      device_index, &device);
 
   if (!device) {
-    device = gst_vulkan_device_new_with_index (instance, 0);
+    device = gst_vulkan_device_new_with_index (instance, device_index);
   }
 
   if (!gst_vulkan_device_open (device, error)) {
@@ -1125,9 +1146,25 @@ gst_vulkan_instance_create_device (GstVulkanInstance * instance,
 }
 
 /**
+ * gst_vulkan_instance_create_device:
+ * @instance: a #GstVulkanInstance
+ * @error: (out) (optional): a #GError
+ *
+ * Returns: (transfer full): a new #GstVulkanDevice
+ *
+ * Since: 1.18
+ */
+GstVulkanDevice *
+gst_vulkan_instance_create_device (GstVulkanInstance * instance,
+    GError ** error)
+{
+  return gst_vulkan_instance_create_device_with_index (instance, 0, error);
+}
+
+/**
  * gst_context_set_vulkan_instance:
  * @context: a #GstContext
- * @instance: a #GstVulkanInstance
+ * @instance: (transfer none) (nullable): a #GstVulkanInstance
  *
  * Sets @instance on @context
  *
@@ -1155,7 +1192,7 @@ gst_context_set_vulkan_instance (GstContext * context,
 /**
  * gst_context_get_vulkan_instance:
  * @context: a #GstContext
- * @instance: resulting #GstVulkanInstance
+ * @instance: (out) (optional) (nullable) (transfer full): resulting #GstVulkanInstance
  *
  * Returns: Whether @instance was in @context
  *
@@ -1293,9 +1330,9 @@ gst_vulkan_instance_check_version (GstVulkanInstance * instance,
 
   return (priv->requested_api_major == 0
       && VK_MAKE_VERSION (major, minor, patch) <= priv->supported_instance_api)
-      || (priv->requested_api_major >= 0 && (major < priv->requested_api_major
-          || (major == priv->requested_api_major
-              && minor <= priv->requested_api_minor)));
+      || (major < priv->requested_api_major
+      || (major == priv->requested_api_major
+          && minor <= priv->requested_api_minor));
 }
 
 /**
@@ -1305,7 +1342,7 @@ gst_vulkan_instance_check_version (GstVulkanInstance * instance,
  * @minor: (out): minor version
  * @patch: (out): patch version
  *
- * Retrieve the vulkan instance configured version.  Only returns the supported
+ * Retrieve the vulkan instance supported version.  Only returns the supported
  * API version by the instance without taking into account the requested API
  * version.  This means gst_vulkan_instance_check_version() will return
  * different values if a specific version has been requested (which is the
@@ -1335,4 +1372,66 @@ gst_vulkan_instance_get_version (GstVulkanInstance * instance,
   if (patch)
     *patch = VK_VERSION_PATCH (priv->supported_instance_api);
   GST_OBJECT_UNLOCK (instance);
+}
+
+/**
+ * gst_vulkan_instance_get_api_version:
+ * @instance: a #GstVulkanInstance
+ * @major: (out): major version
+ * @minor: (out): minor version
+ * @patch: (out): patch version
+ *
+ * Returns the vulkan API version configured when constructing the
+ * #GstVulkanInstance. This value can be any valid Vulkan API version and may
+ * not match gst_vulkan_instance_get_version() in any way.  This version is the
+ * maximum allowed vulkan API to be used in any capacity.
+ *
+ * This will not return valid values until gst_vulkan_instance_open() has been
+ * called.
+ *
+ * Since: 1.26
+ */
+void
+gst_vulkan_instance_get_api_version (GstVulkanInstance * instance,
+    guint * major, guint * minor, guint * patch)
+{
+  GstVulkanInstancePrivate *priv;
+
+  g_return_if_fail (GST_IS_VULKAN_INSTANCE (instance));
+
+  priv = GET_PRIV (instance);
+
+  GST_OBJECT_LOCK (instance);
+  if (major)
+    *major = VK_VERSION_MAJOR (priv->configured_instance_api);
+  if (minor)
+    *minor = VK_VERSION_MINOR (priv->configured_instance_api);
+  if (patch)
+    *patch = VK_VERSION_PATCH (priv->configured_instance_api);
+  GST_OBJECT_UNLOCK (instance);
+}
+
+/**
+ * gst_vulkan_instance_check_api_version:
+ * @instance: a #GstVulkanInstance
+ * @major: the API major version to check
+ * @minor: the API minor version to check
+ * @patch: the API patch version to check
+ *
+ * Returns: whether the #GstVulkanInstance supports the version specified
+ *          by @major, @minor and @patch.
+ *
+ * Since: 1.26
+ */
+gboolean
+gst_vulkan_instance_check_api_version (GstVulkanInstance * instance,
+    guint major, guint minor, guint patch)
+{
+  GstVulkanInstancePrivate *priv;
+
+  g_return_val_if_fail (GST_IS_VULKAN_INSTANCE (instance), FALSE);
+
+  priv = GET_PRIV (instance);
+
+  return VK_MAKE_VERSION (major, minor, patch) <= priv->configured_instance_api;
 }

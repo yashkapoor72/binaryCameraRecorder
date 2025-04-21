@@ -23,7 +23,9 @@
 #endif
 
 #include <gst/gl/gl.h>
+#include <gst/gl/gstglfuncs.h>
 #if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+#include <gstgldmabufbufferpool.h>
 #include <gst/gl/egl/gsteglimage.h>
 #include <gst/allocators/gstdmabuf.h>
 #endif
@@ -898,6 +900,9 @@ gst_gl_download_element_stop (GstBaseTransform * bt)
     dl->dmabuf_allocator = NULL;
   }
 
+  gst_clear_object (&dl->foreign_dmabuf_pool);
+  gst_clear_caps (&dl->foreign_dmabuf_caps);
+
   return TRUE;
 }
 
@@ -938,16 +943,84 @@ gst_gl_download_element_set_caps (GstBaseTransform * bt, GstCaps * in_caps,
   return TRUE;
 }
 
-static GstCaps *
-_set_caps_features (const GstCaps * caps, const gchar * feature_name)
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+static gboolean
+_convert_dma_drm (GstGLContext * context, GstStructure * s)
 {
-  GstCaps *tmp = gst_caps_copy (caps);
-  guint n = gst_caps_get_size (tmp);
-  guint i = 0;
+  const GValue *fmtval = gst_structure_get_value (s, "format");
 
-  for (i = 0; i < n; i++)
-    gst_caps_set_features (tmp, i,
-        gst_caps_features_from_string (feature_name));
+  if (!fmtval) {
+    return FALSE;
+  }
+
+  /* Convert from DMA_DRM to GstVideo formats */
+  if (G_VALUE_HOLDS_STRING (fmtval) &&
+      g_str_equal (g_value_get_string (fmtval), "DMA_DRM")) {
+    const GValue *drmval = gst_structure_get_value (s, "drm-format");
+    GValue newfmtval = G_VALUE_INIT;
+
+    if (context && gst_gl_dma_buf_transform_drm_formats_to_gst_formats (context,
+            drmval, GST_GL_DRM_FORMAT_INCLUDE_EMULATED, &newfmtval)) {
+      gst_structure_set_value (s, "format", &newfmtval);
+      gst_structure_remove_field (s, "drm-format");
+      g_value_unset (&newfmtval);
+    } else {
+      return FALSE;
+    }
+    /* Otherwise convert from GstVideo to DMA_DRM */
+  } else {
+    GValue drmfmtval = G_VALUE_INIT;
+
+    if (!context) {
+      gst_structure_remove_field (s, "drm-format");
+    } else if (gst_gl_dma_buf_transform_gst_formats_to_drm_formats (context,
+            fmtval, 0, &drmfmtval)) {
+      gst_structure_set_value (s, "drm-format", &drmfmtval);
+      g_value_unset (&drmfmtval);
+    } else {
+      return FALSE;
+    }
+
+    gst_structure_set (s, "format", G_TYPE_STRING,
+        gst_video_format_to_string (GST_VIDEO_FORMAT_DMA_DRM), NULL);
+  }
+
+  return TRUE;
+}
+#endif
+
+static GstCaps *
+_set_caps_features (GstGLContext * context, const GstCaps * caps,
+    const gchar * feature_name)
+{
+  GstCaps *tmp = gst_caps_new_empty ();
+  guint n = gst_caps_get_size (caps);
+  guint i = 0;
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  const gboolean new_feature_is_dmabuf =
+      g_str_equal (feature_name, GST_CAPS_FEATURE_MEMORY_DMABUF);
+#endif
+
+
+  for (i = 0; i < n; i++) {
+    GstStructure *s = gst_structure_copy (gst_caps_get_structure (caps, i));
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+    gboolean old_feature_is_dmabuf =
+        gst_caps_features_contains (gst_caps_get_features (caps, i),
+        GST_CAPS_FEATURE_MEMORY_DMABUF);
+
+    if (new_feature_is_dmabuf != old_feature_is_dmabuf) {
+      if (!_convert_dma_drm (context, s)) {
+        gst_clear_structure (&s);
+        continue;
+      }
+    }
+#endif
+
+    gst_caps_append_structure_full (tmp, s,
+        gst_caps_features_new_single_static_str (feature_name));
+  }
 
   return tmp;
 }
@@ -968,32 +1041,43 @@ static GstCaps *
 gst_gl_download_element_transform_caps (GstBaseTransform * bt,
     GstPadDirection direction, GstCaps * caps, GstCaps * filter)
 {
+  GstGLBaseFilter *base_filter = GST_GL_BASE_FILTER (bt);
+
+  GstGLContext *context;
   GstCaps *result, *tmp;
 
+  if (base_filter->display && !gst_gl_base_filter_find_gl_context (base_filter))
+    return NULL;
+
+  context = gst_gl_base_filter_get_gl_context (base_filter);
+
   if (direction == GST_PAD_SRC) {
-    GstCaps *sys_caps = gst_caps_simplify (_set_caps_features (caps,
+    GstCaps *sys_caps = gst_caps_simplify (_set_caps_features (context, caps,
             GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY));
 
-    tmp = _set_caps_features (sys_caps, GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+    tmp = _set_caps_features (context, sys_caps,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
     tmp = gst_caps_merge (tmp, sys_caps);
   } else {
     GstCaps *newcaps;
     tmp = gst_caps_ref (caps);
 
 #if GST_GL_HAVE_PLATFORM_EGL && defined(HAVE_NVMM)
-    newcaps = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_NVMM);
+    newcaps = _set_caps_features (context, caps, GST_CAPS_FEATURE_MEMORY_NVMM);
     _remove_field (newcaps, "texture-target");
     // FIXME: RGBA-only?
     tmp = gst_caps_merge (tmp, newcaps);
 #endif
 
 #if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
-    newcaps = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_DMABUF);
+    newcaps =
+        _set_caps_features (context, caps, GST_CAPS_FEATURE_MEMORY_DMABUF);
     _remove_field (newcaps, "texture-target");
     tmp = gst_caps_merge (tmp, newcaps);
 #endif
 
-    newcaps = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+    newcaps = _set_caps_features (context, caps,
+        GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
     _remove_field (newcaps, "texture-target");
     tmp = gst_caps_merge (tmp, newcaps);
   }
@@ -1140,6 +1224,7 @@ _try_export_dmabuf (GstGLDownloadElement * download, GstBuffer * inbuf)
   gsize offset[GST_VIDEO_MAX_PLANES];
   gint stride[GST_VIDEO_MAX_PLANES];
   GstCaps *src_caps;
+  GstVideoInfoDmaDrm out_info_drm;
   GstVideoInfo out_info;
   gsize total_offset;
   GstVideoAlignment *alig = NULL;
@@ -1151,6 +1236,11 @@ _try_export_dmabuf (GstGLDownloadElement * download, GstBuffer * inbuf)
       return NULL;
     alig = &glmem->valign;
   }
+
+  src_caps = gst_pad_get_current_caps (GST_BASE_TRANSFORM (download)->srcpad);
+  if (!gst_video_info_dma_drm_from_caps (&out_info_drm, src_caps) ||
+      !gst_video_info_dma_drm_to_video_info (&out_info_drm, &out_info))
+    goto export_complete;
 
   buffer = gst_buffer_new ();
   total_offset = 0;
@@ -1187,10 +1277,6 @@ _try_export_dmabuf (GstGLDownloadElement * download, GstBuffer * inbuf)
     }
   }
 
-  src_caps = gst_pad_get_current_caps (GST_BASE_TRANSFORM (download)->srcpad);
-  gst_video_info_from_caps (&out_info, src_caps);
-  gst_caps_unref (src_caps);
-
   if (download->add_videometa) {
     GstVideoMeta *meta;
 
@@ -1217,6 +1303,7 @@ _try_export_dmabuf (GstGLDownloadElement * download, GstBuffer * inbuf)
   }
 
 export_complete:
+  gst_clear_caps (&src_caps);
 
   return buffer;
 }
@@ -1237,8 +1324,14 @@ gst_gl_download_element_prepare_output_buffer (GstBaseTransform * bt,
   (void) bclass;
 
   in_sync_meta = gst_buffer_get_gl_sync_meta (inbuf);
-  if (in_sync_meta)
-    gst_gl_sync_meta_wait (in_sync_meta, context);
+  if (in_sync_meta) {
+    if (context) {
+      gst_gl_sync_meta_wait_cpu (in_sync_meta, context);
+    } else if (dl->mode != GST_GL_DOWNLOAD_MODE_PASSTHROUGH) {
+      GST_WARNING_OBJECT (dl, "No configured GL context in non-passthrough "
+          "mode. Cannot wait on incoming `GstGLSyncMeta`");
+    }
+  }
 
 #if GST_GL_HAVE_PLATFORM_EGL && defined(HAVE_NVMM)
   if (dl->mode == GST_GL_DOWNLOAD_MODE_NVMM) {
@@ -1285,6 +1378,16 @@ gst_gl_download_element_prepare_output_buffer (GstBaseTransform * bt,
   }
 #endif
 #if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  if (gst_is_gl_dmabuf_buffer (inbuf)) {
+    GstBuffer *wrapped_dmabuf = gst_gl_dmabuf_buffer_unwrap (inbuf);
+
+    if (wrapped_dmabuf) {
+      *outbuf = wrapped_dmabuf;
+
+      return GST_FLOW_OK;
+    }
+  }
+
   if (dl->mode == GST_GL_DOWNLOAD_MODE_DMABUF_EXPORTS) {
     GstBuffer *buffer = _try_export_dmabuf (dl, inbuf);
 
@@ -1299,22 +1402,26 @@ gst_gl_download_element_prepare_output_buffer (GstBaseTransform * bt,
 
       *outbuf = buffer;
     } else {
-      GstCaps *src_caps;
-      GstCapsFeatures *features;
+      GstCaps *sink_caps, *src_caps;
       gboolean ret;
 
-      src_caps = gst_pad_get_current_caps (bt->srcpad);
-      src_caps = gst_caps_make_writable (src_caps);
-      features = gst_caps_get_features (src_caps, 0);
-      gst_caps_features_remove (features, GST_CAPS_FEATURE_MEMORY_DMABUF);
+      sink_caps = gst_pad_get_current_caps (bt->sinkpad);
+      src_caps = _set_caps_features (context, sink_caps,
+          GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+      _remove_field (src_caps, "texture-target");
+      gst_caps_unref (sink_caps);
+
       g_atomic_int_set (&dl->try_dmabuf_exports, FALSE);
       dl->mode = GST_GL_DOWNLOAD_MODE_PBO_TRANSFERS;
 
       ret = gst_base_transform_update_src_caps (bt, src_caps);
       gst_caps_unref (src_caps);
 
-      if (!ret) {
-        GST_ERROR_OBJECT (bt, "DMABuf exportation didn't work and system "
+      if (ret) {
+        GST_WARNING_OBJECT (bt, "DMABuf export didn't work. Falling back to "
+            "system memory.");
+      } else {
+        GST_ERROR_OBJECT (bt, "DMABuf export didn't work and system "
             "memory is not supported.");
         return GST_FLOW_NOT_NEGOTIATED;
       }
@@ -1366,6 +1473,29 @@ gst_gl_download_element_decide_allocation (GstBaseTransform * trans,
   } else {
     download->add_videometa = FALSE;
   }
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  {
+    GstCaps *caps;
+    const GstCapsFeatures *features;
+
+    gst_clear_object (&download->foreign_dmabuf_pool);
+    gst_clear_caps (&download->foreign_dmabuf_caps);
+
+    gst_query_parse_allocation (query, &caps, NULL);
+    features = gst_caps_get_features (caps, 0);
+
+    if (gst_caps_features_contains (features, GST_CAPS_FEATURE_MEMORY_DMABUF) &&
+        gst_query_get_n_allocation_pools (query) > 0) {
+
+      gst_query_parse_nth_allocation_pool (query, 0,
+          &download->foreign_dmabuf_pool, NULL, NULL, NULL);
+      download->foreign_dmabuf_caps = gst_caps_ref (caps);
+
+      gst_query_remove_nth_allocation_pool (query, 0);
+    }
+  }
+#endif
 
   return GST_BASE_TRANSFORM_CLASS (parent_class)->decide_allocation (trans,
       query);
@@ -1439,6 +1569,17 @@ gst_gl_download_element_propose_allocation (GstBaseTransform * bt,
     }
   }
 #endif
+
+#if GST_GL_HAVE_PLATFORM_EGL && GST_GL_HAVE_DMABUF
+  if (!pool && GST_GL_DOWNLOAD_ELEMENT (bt)->foreign_dmabuf_pool) {
+    pool = gst_gl_dmabuf_buffer_pool_new (context,
+        GST_GL_DOWNLOAD_ELEMENT (bt)->foreign_dmabuf_pool,
+        GST_GL_DOWNLOAD_ELEMENT (bt)->foreign_dmabuf_caps);
+
+    GST_LOG_OBJECT (bt, "offering dma-buf-backed GL buffer pool");
+  }
+#endif
+
   if (!pool) {
     pool = gst_gl_buffer_pool_new (context);
   }
@@ -1447,13 +1588,16 @@ gst_gl_download_element_propose_allocation (GstBaseTransform * bt,
   /* the normal size of a frame */
   size = info.size;
   gst_buffer_pool_config_set_params (config, caps, size, 0, 0);
-  gst_buffer_pool_config_add_option (config,
-      GST_BUFFER_POOL_OPTION_GL_SYNC_META);
+  gst_buffer_pool_config_set_gl_min_free_queue_size (config, 1);
 
   if (!gst_buffer_pool_set_config (pool, config)) {
     gst_object_unref (pool);
     goto config_failed;
   }
+
+  if (context->gl_vtable->FenceSync)
+    gst_query_add_allocation_meta (query, GST_GL_SYNC_META_API_TYPE, NULL);
+
   gst_query_add_allocation_pool (query, pool, size, 1, 0);
 
   gst_object_unref (pool);

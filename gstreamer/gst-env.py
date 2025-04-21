@@ -110,7 +110,7 @@ def get_target_install_filename(target, filename):
 
 def get_pkgconfig_variable_from_pcfile(pcfile, varname):
     variables = {}
-    substre = re.compile('\$\{[^${}]+\}')
+    substre = re.compile(r'\$\{[^${}]+\}')
     with pcfile.open('r', encoding='utf-8') as f:
         for line in f:
             if '=' not in line:
@@ -175,6 +175,9 @@ def is_library_target_and_not_plugin(target, filename):
 
 
 def is_binary_target_and_in_path(target, filename, bindir):
+    if target['name'] in ['gst-dots-viewer']:
+        return True
+
     if target['type'] != 'executable':
         return False
     # Check if this file installed by this target is installed to bindir
@@ -278,32 +281,39 @@ def get_subprocess_env(options, gst_version):
     prepend_env_var(env, "GST_VALIDATE_APPS_DIR", os.path.normpath(
         "%s/subprojects/gst-examples/webrtc/check/validate/apps" %
         SCRIPTDIR), options.sysroot)
+    env["GST_VALIDATE_LAUNCHER_HTTP_SERVER_PATH"] = os.path.normpath(
+        "%s/subprojects/gst-devtools/validate/launcher/RangeHTTPServer.py" %
+        SCRIPTDIR)
 
     if options.wine:
         return get_wine_subprocess_env(options, env)
 
     prepend_env_var(env, "PATH", os.path.join(SCRIPTDIR, 'meson'),
-        options.sysroot)
+                    options.sysroot)
 
     env["GST_PLUGIN_SYSTEM_PATH"] = ""
     env["GST_PLUGIN_SCANNER"] = os.path.normpath(
         "%s/subprojects/gstreamer/libs/gst/helpers/gst-plugin-scanner" % options.builddir)
     env["GST_PTP_HELPER"] = os.path.normpath(
-        "%s/subprojects/gstreamer/libs/gst/helpers/gst-ptp-helper" % options.builddir)
+        "%s/subprojects/gstreamer/libs/gst/helpers/ptp/gst-ptp-helper" % options.builddir)
 
     if os.name == 'nt':
         lib_path_envvar = 'PATH'
     elif platform.system() == 'Darwin':
-        # RPATH is sufficient on macOS, and DYLD_LIBRARY_PATH can cause issues with dynamic linker path priority
+        # DYLD_LIBRARY_PATH is stripped when new shells are spawned and can
+        # cause issues with runtime linker resolution, so only set it when
+        # using --only-environment
         lib_path_envvar = None
+        if options.only_environment:
+            lib_path_envvar = 'DYLD_LIBRARY_PATH'
     else:
         lib_path_envvar = 'LD_LIBRARY_PATH'
 
     prepend_env_var(env, "GST_PLUGIN_PATH", os.path.join(SCRIPTDIR, 'subprojects',
-                                                        'gst-python', 'plugin'),
+                                                         'gst-python', 'plugin'),
                     options.sysroot)
     prepend_env_var(env, "GST_PLUGIN_PATH", os.path.join(PREFIX_DIR, 'lib',
-                                                        'gstreamer-1.0'),
+                                                         'gstreamer-1.0'),
                     options.sysroot)
     prepend_env_var(env, "GST_PLUGIN_PATH", os.path.join(options.builddir, 'subprojects',
                                                          'libnice', 'gst'),
@@ -316,10 +326,6 @@ def get_subprocess_env(options, gst_version):
                                                          'lib', 'girepository-1.0'),
                     options.sysroot)
     prepend_env_var(env, "PKG_CONFIG_PATH", os.path.join(PREFIX_DIR, 'lib', 'pkgconfig'),
-                    options.sysroot)
-
-    # gst-indent
-    prepend_env_var(env, "PATH", os.path.join(SCRIPTDIR, 'scripts'),
                     options.sysroot)
 
     # tools: gst-launch-1.0, gst-inspect-1.0
@@ -430,8 +436,13 @@ def get_subprocess_env(options, gst_version):
             # /usr/lib/site-packages/foo/bar.py , we will not add anything
             # to PYTHONPATH, but the current approach works with pygobject
             # and gst-python at least.
+            py_package = None
             if 'site-packages' in installpath_parts:
-                install_subpath = os.path.join(*installpath_parts[installpath_parts.index('site-packages') + 1:])
+                py_package = 'site-packages'
+            elif 'dist-packages' in installpath_parts:
+                py_package = 'dist-packages'
+            if py_package:
+                install_subpath = os.path.join(*installpath_parts[installpath_parts.index(py_package) + 1:])
                 if path.endswith(install_subpath):
                     if os.path.commonprefix(["gi/overrides", install_subpath]):
                         overrides_dirs.add(os.path.dirname(path))
@@ -443,10 +454,6 @@ def get_subprocess_env(options, gst_version):
             elif path.endswith('.gep'):
                 encoding_targets.add(
                     os.path.abspath(os.path.join(os.path.dirname(path), '..')))
-
-            if path.endswith('gstomx.conf'):
-                prepend_env_var(env, 'GST_OMX_CONFIG_DIR', os.path.dirname(path),
-                                options.sysroot)
 
         for p in sorted(presets):
             prepend_env_var(env, 'GST_PRESET_PATH', p, options.sysroot)
@@ -497,7 +504,7 @@ def get_subprocess_env(options, gst_version):
 
 def get_windows_shell():
     command = ['powershell.exe', '-noprofile', '-executionpolicy', 'bypass', '-file',
-        os.path.join(SCRIPTDIR, 'data', 'misc', 'cmd_or_ps.ps1')]
+               os.path.join(SCRIPTDIR, 'data', 'misc', 'cmd_or_ps.ps1')]
     result = subprocess.check_output(command)
     return result.decode().strip()
 
@@ -568,6 +575,7 @@ if __name__ == "__main__":
     if not args:
         if os.name != 'nt':
             args = [os.environ.get("SHELL", os.path.realpath("/bin/sh"))]
+        prompt_export = f'export PS1="[{gst_version}] $PS1"'
         if args[0].endswith('bash') and not str_to_bool(os.environ.get("GST_BUILD_DISABLE_PS1_OVERRIDE", r"FALSE")):
             # Let the GC remove the tmp file
             tmprc = tempfile.NamedTemporaryFile(mode='w')
@@ -575,19 +583,21 @@ if __name__ == "__main__":
             if os.path.exists(bashrc):
                 with open(bashrc, 'r') as src:
                     shutil.copyfileobj(src, tmprc)
-            tmprc.write('\nexport PS1="[%s] $PS1"' % gst_version)
+            tmprc.write('\n' + prompt_export)
             tmprc.flush()
             if is_bash_completion_available(options):
                 bash_completions_files = []
                 for p in BASH_COMPLETION_PATHS:
                     if os.path.exists(p):
                         bash_completions_files += os.listdir(path=p)
-                bc_rc = BC_RC.format(bash_completions=' '.join(bash_completions_files), bash_completions_paths=' '.join(BASH_COMPLETION_PATHS))
+                bc_rc = BC_RC.format(bash_completions=' '.join(bash_completions_files),
+                                     bash_completions_paths=' '.join(BASH_COMPLETION_PATHS))
                 tmprc.write(bc_rc)
                 tmprc.flush()
             args.append("--rcfile")
             args.append(tmprc.name)
         elif args[0].endswith('fish'):
+            prompt_export = None  # FIXME
             # Ignore SIGINT while using fish as the shell to make it behave
             # like other shells such as bash and zsh.
             # See: https://gitlab.freedesktop.org/gstreamer/gst-build/issues/18
@@ -600,6 +610,7 @@ if __name__ == "__main__":
             end'''.format(gst_version)
             args.append(prompt_cmd)
         elif args[0].endswith('zsh'):
+            prompt_export = f'export PROMPT="[{gst_version}] $PROMPT"'
             tmpdir = tempfile.TemporaryDirectory()
             # Let the GC remove the tmp file
             tmprc = open(os.path.join(tmpdir.name, '.zshrc'), 'w')
@@ -607,7 +618,7 @@ if __name__ == "__main__":
             if os.path.exists(zshrc):
                 with open(zshrc, 'r') as src:
                     shutil.copyfileobj(src, tmprc)
-            tmprc.write('\nexport PROMPT="[{}] $PROMPT"'.format(gst_version))
+            tmprc.write('\n' + prompt_export)
             tmprc.flush()
             env['ZDOTDIR'] = tmpdir.name
     try:
@@ -615,6 +626,8 @@ if __name__ == "__main__":
             for name, value in env.items():
                 print('{}={}'.format(name, shlex.quote(value)))
                 print('export {}'.format(name))
+            if prompt_export:
+                print(prompt_export)
         else:
             if os.environ.get("CI_PROJECT_NAME"):
                 print("Ignoring SIGINT when running on the CI,"

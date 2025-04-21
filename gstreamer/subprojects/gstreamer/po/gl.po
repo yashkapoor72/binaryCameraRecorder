@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gstreamer 1.0.3\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
 "PO-Revision-Date: 2012-12-15 03:29+0200\n"
 "Last-Translator: Fran Dieguez <frandieguez@ubuntu.com>\n"
 "Language-Team: Galician <proxecto@trasno.net>\n"
@@ -42,8 +42,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Lista de pares nome_categoría:nivel separados por comas para estabelecer "
-"niveis específicos para as categorías individuais. Exemplo: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"niveis específicos para as categorías individuais. Exemplo: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "LISTA"
@@ -58,9 +58,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Desactivar depuración"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Activar a saída detallada do diagnóstico de carga de engadidos"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Rutas separadas por punto e coma contendo os engadidos"
@@ -833,6 +830,12 @@ msgstr ""
 msgid "Private data"
 msgstr ""
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
@@ -872,13 +875,12 @@ msgstr ""
 msgid "link has no sink [source=%s@%p]"
 msgstr ""
 
+msgid "No such property."
+msgstr ""
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "non hai unha propiedade «%s» no elemento «%s»"
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "non foi posíbel estabelecer a propiedade «%s» no elemento «%s» a «%s»"
 
 #, fuzzy, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -886,6 +888,18 @@ msgstr "O ficheiro «%s» é un socket."
 
 #, fuzzy, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "non foi posíbel estabelecer a propiedade «%s» no elemento «%s» a «%s»"
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "non hai un elemento «%s»"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "non foi posíbel estabelecer a propiedade «%s» no elemento «%s» a «%s»"
+
+#, fuzzy, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
 msgstr "non foi posíbel estabelecer a propiedade «%s» no elemento «%s» a «%s»"
 
 msgid "Delayed linking failed."
@@ -906,10 +920,6 @@ msgstr "non foi posíbel ligar %s a %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "non foi posíbel ligar %s a %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "non hai un elemento «%s»"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1060,6 +1070,10 @@ msgstr "O fluxo non contén datos."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "Interfaces implementadas:\n"
 
+#, c-format
+msgid "%sElement Flags%s:\n"
+msgstr ""
+
 msgid "readable"
 msgstr "lexíbel"
 
@@ -1075,6 +1089,9 @@ msgstr "controlábel"
 #, fuzzy
 msgid "conditionally available"
 msgstr "controlábel"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "intercambiábel entre os estados NULL, READY, PAUSED ou PLAYING"
@@ -1328,6 +1345,12 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr ""
 
+msgid "Set the name of the program"
+msgstr ""
+
+msgid "PROGRAM-NAME"
+msgstr ""
+
 msgid "Do not install a fault handler"
 msgstr "Non instalar un manexador predeterminado"
 
@@ -1383,6 +1406,9 @@ msgstr "Estabelecendo a tubería a NULL...\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Liberando a tubería...\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Activar a saída detallada do diagnóstico de carga de engadidos"
 
 #~ msgid "link without source element"
 #~ msgstr "ligazón sen elemento orixe"

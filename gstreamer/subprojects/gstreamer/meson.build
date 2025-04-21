@@ -1,6 +1,6 @@
 project('gstreamer', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
 
@@ -16,9 +16,7 @@ else
 endif
 gst_version_is_dev = gst_version_minor % 2 == 1 and gst_version_micro < 90
 
-host_system = host_machine.system()
-
-apiversion = '1.0'
+api_version = '1.0'
 soversion = 0
 # maintaining compatibility with the previous libtool versioning
 # current = minor * 100 + micro
@@ -33,6 +31,20 @@ libexecdir = get_option('libexecdir')
 helpers_install_dir = join_paths(libexecdir, 'gstreamer-1.0')
 
 cc = meson.get_compiler('c')
+host_system = host_machine.system()
+static_build = get_option('default_library') == 'static'
+
+if host_system == 'darwin'
+  ios_test_code = '''#include <TargetConditionals.h>
+  #if ! TARGET_OS_IPHONE
+  #error "Not iOS/tvOS/watchOS/iPhoneSimulator"
+  #endif'''
+  if cc.compiles(ios_test_code, name : 'building for iOS')
+    host_system = 'ios'
+  endif
+
+  add_languages('objc', native: false, required: true)
+endif
 
 cdata = configuration_data()
 
@@ -64,8 +76,6 @@ if cc.get_id() == 'msvc'
       '/we4053', # one void operand for '?:'
       '/we4062', # enumerator 'identifier' in switch of enum 'enumeration' is not handled
       '/we4098', # 'function' : void function returning a value
-      '/we4101', # 'identifier' : unreferenced local variable
-      '/we4189', # 'identifier' : local variable is initialized but not referenced
     ])
   endif
   add_project_arguments(msvc_args, language: 'c')
@@ -82,18 +92,10 @@ endif
 
 # Symbol visibility
 have_visibility_hidden = false
-if cc.get_id() == 'msvc'
-  export_define = '__declspec(dllexport) extern'
-elif cc.has_argument('-fvisibility=hidden')
+if cc.has_argument('-fvisibility=hidden')
   add_project_arguments('-fvisibility=hidden', language: 'c')
-  export_define = 'extern __attribute__ ((visibility ("default")))'
   have_visibility_hidden = true
-else
-  export_define = 'extern'
 endif
-
-# Passing this through the command line would be too messy
-cdata.set('GST_API_EXPORT', export_define)
 
 # Disable strict aliasing
 if cc.has_argument('-fno-strict-aliasing')
@@ -106,25 +108,29 @@ if gst_version_is_dev
   add_project_arguments('-DG_DISABLE_DEPRECATED', language: 'c')
 endif
 
-cast_checks = get_option('gobject-cast-checks')
-if cast_checks.disabled() or (cast_checks.auto() and not gst_version_is_dev)
+# Same logic as in GLib.
+glib_debug = get_option('glib_debug')
+disable_cast_checks = glib_debug.disabled() or (
+  glib_debug.auto() and (not get_option('debug') or get_option('optimization') not in [ '0', 'g' ]))
+if disable_cast_checks
   message('Disabling GLib cast checks')
   add_project_arguments('-DG_DISABLE_CAST_CHECKS', language: 'c')
+  disable_cast_checks = true
 endif
 
-glib_asserts = get_option('glib-asserts')
-if glib_asserts.disabled() or (glib_asserts.auto() and not gst_version_is_dev)
+disable_glib_asserts = not get_option('glib_assert')
+if disable_glib_asserts
   message('Disabling GLib asserts')
   add_project_arguments('-DG_DISABLE_ASSERT', language: 'c')
 endif
 
-glib_checks = get_option('glib-checks')
-if glib_checks.disabled() or (glib_checks.auto() and not gst_version_is_dev)
+disable_glib_checks = not get_option('glib_checks')
+if disable_glib_checks
   message('Disabling GLib checks')
   add_project_arguments('-DG_DISABLE_CHECKS', language: 'c')
 endif
 
-cdata.set_quoted('GST_API_VERSION', apiversion)
+cdata.set_quoted('GST_API_VERSION', api_version)
 cdata.set_quoted('GST_DATADIR', datadir)
 cdata.set_quoted('LOCALEDIR', join_paths(prefix, get_option('localedir')))
 cdata.set_quoted('LIBDIR', join_paths(prefix, get_option('libdir')))
@@ -146,6 +152,8 @@ cdata.set_quoted('GST_PLUGIN_SUBDIR', get_option('libdir'),
   description: 'plugin directory path component, used to find plugins on relocatable builds')
 cdata.set_quoted('GST_PLUGIN_SCANNER_SUBDIR', libexecdir,
   description: 'libexecdir path component, used to find plugin-scanner on relocatable builds')
+cdata.set_quoted('GST_PTP_HELPER_SUBDIR', libexecdir,
+  description: 'libexecdir path component, used to find ptp-helper on relocatable builds')
 cdata.set('GST_DISABLE_OPTION_PARSING', not get_option('option-parsing'))
 
 mem_align_opt = get_option('memory-alignment')
@@ -273,13 +281,20 @@ foreach f : check_functions
   endif
 endforeach
 
+if host_system == 'windows'
+  if cc.has_function('_set_thread_local_invalid_parameter_handler', prefix : '#include <stdlib.h>')
+    cdata.set('HAVE__SET_THREAD_LOCAL_INVALID_PARAMETER_HANDLER', 1)
+  endif
+endif
+
 if cc.has_function('localtime_r', prefix : '#include<time.h>')
   cdata.set('HAVE_LOCALTIME_R', 1)
   # Needed by libcheck
   cdata.set('HAVE_DECL_LOCALTIME_R', 1)
 endif
 
-if cc.links('''#include <pthread.h>
+if cc.links('''#define _GNU_SOURCE
+               #include <pthread.h>
                int main() {
                  pthread_setname_np("example"); return 0;
                }''', name : 'pthread_setname_np(const char*)')
@@ -293,7 +308,7 @@ if cc.has_header_symbol('pthread.h', 'pthread_cond_timedwait_relative_np')
 endif
 
 # Check for futex(2)
-if cc.links('''#include <linux/futex.h>
+if cc.compiles('''#include <linux/futex.h>
                #include <sys/syscall.h>
                #include <unistd.h>
                int main (int argc, char ** argv) {
@@ -301,6 +316,15 @@ if cc.links('''#include <linux/futex.h>
                  return 0;
                }''', name : 'futex(2) system call')
   cdata.set('HAVE_FUTEX', 1)
+endif
+if cc.compiles('''#include <linux/futex.h>
+               #include <sys/syscall.h>
+               #include <unistd.h>
+               int main (int argc, char ** argv) {
+                 syscall (__NR_futex_time64, NULL, FUTEX_WAKE, FUTEX_WAIT);
+                 return 0;
+               }''', name : 'futex_time64(2) system call')
+  cdata.set('HAVE_FUTEX_TIME64', 1)
 endif
 
 # Check for posix timers and monotonic clock
@@ -340,14 +364,6 @@ endif
 
 # All supported platforms have long long now
 cdata.set('HAVE_LONG_LONG', 1)
-
-# We only want to use the __declspec(dllexport/import) dance in GST_EXPORT when
-# building with MSVC
-if cc.get_id() == 'msvc'
-  cdata.set('GSTCONFIG_BUILT_WITH_MSVC', 1)
-else
-  cdata.set('GSTCONFIG_BUILT_WITH_MSVC', 0)
-endif
 
 # -------------------------------------------------------------------------------------
 # config.h things needed by libcheck
@@ -423,6 +439,8 @@ if host_system == 'windows'
 
   if not building_for_win7
     add_project_arguments([
+      '-U_WIN32_WINNT',
+      '-UWINVER',
       '-D_WIN32_WINNT=_WIN32_WINNT_WIN7',
       '-DWINVER=_WIN32_WINNT_WIN7',
     ], language: ['c', 'cpp'])
@@ -480,26 +498,47 @@ endif
 
 gst_debug = get_option('gst_debug')
 if not gst_debug
-  add_project_arguments(['-Wno-unused'], language: 'c')
+  if cc.get_argument_syntax() == 'msvc'
+    msvc_args = cc.get_supported_arguments([
+      '/wd4101', # 'identifier' : unreferenced local variable
+      '/wd4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: 'c')
+  elif cc.has_argument('-Wno-unused')
+    add_project_arguments(['-Wno-unused'], language: 'c')
+  endif
+else
+  if cc.get_argument_syntax() == 'msvc' and gst_version_is_dev
+    msvc_args = cc.get_supported_arguments([
+      '/we4101', # 'identifier' : unreferenced local variable
+      '/we4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: 'c')
+  endif
 endif
 
+# NOTE: Keep entries alphabetically sorted
 warning_flags = [
-  '-Wmissing-declarations',
-  '-Wmissing-prototypes',
-  '-Wredundant-decls',
-  '-Wundef',
-  '-Wwrite-strings',
+  '-Waddress',
+  '-Waggregate-return',
   '-Wformat',
   '-Wformat-nonliteral',
   '-Wformat-security',
-  '-Wold-style-definition',
+  '-Wimplicit-fallthrough=3',
   '-Winit-self',
+  '-Wmissing-declarations',
   '-Wmissing-include-dirs',
-  '-Waddress',
-  '-Waggregate-return',
+  '-Wmissing-parameter-type',
+  '-Wmissing-prototypes',
   '-Wno-multichar',
-  '-Wvla',
+  '-Wold-style-definition',
   '-Wpointer-arith',
+  '-Wredundant-decls',
+  '-Wshift-negative-value',
+  '-Wtype-limits',
+  '-Wundef',
+  '-Wvla',
+  '-Wwrite-strings',
 ]
 
 foreach extra_arg : warning_flags
@@ -526,7 +565,7 @@ configinc = include_directories('.')
 libsinc = include_directories('libs')
 privinc = include_directories('gst')
 
-glib_req = '>= 2.62.0'
+glib_req = '>= 2.64.0'
 
 # Find dependencies
 glib_dep = dependency('glib-2.0', version: glib_req,
@@ -545,6 +584,28 @@ mathlib = cc.find_library('m', required : false)
 # Also provides clock_gettime in glibc < 2.17
 rt_lib = cc.find_library('rt', required : false)
 
+#
+# Solaris and Illumos distros split a lot of networking-related code
+# into '-lsocket -lnsl'.  Anything that calls socketpair(), getifaddr(),
+# etc. probably needs to include network_deps
+#
+socket_lib = cc.find_library('socket', required: false)
+nsl_lib    = cc.find_library('nsl',    required: false)
+network_deps = []
+if socket_lib.found()
+  network_deps += socket_lib
+endif
+if nsl_lib.found()
+  network_deps += nsl_lib
+endif
+
+# Check for libatomic for use of C11 atomics: some architectures need
+# to link explicitly to this library.
+# TODO: Once meson 1.7 is in use, this can be updated to
+# dependency('atomic')
+atomic_dep = cc.find_library('atomic', required: false)
+platform_deps += atomic_dep
+
 gir = find_program('g-ir-scanner', required : get_option('introspection'))
 gnome = import('gnome')
 
@@ -555,6 +616,7 @@ gir_init_section = [ '--add-init-section=extern void gst_init(gint*,gchar**);' +
     'g_setenv("GST_REGISTRY_1.0", "/no/way/this/exists.reg", TRUE);' + \
     'g_setenv("GST_PLUGIN_PATH_1_0", "", TRUE);' + \
     'g_setenv("GST_PLUGIN_SYSTEM_PATH_1_0", "", TRUE);' + \
+    'g_setenv("GST_TRACERS", "", TRUE);' + \
     'gst_init(NULL,NULL);', '--quiet']
 
 gst_c_args = ['-DHAVE_CONFIG_H']
@@ -562,7 +624,8 @@ gst_c_args = ['-DHAVE_CONFIG_H']
 # FIXME: This is only needed on windows and probably breaks when
 # default_library = 'both'. We should add this flag to static_c_args instead
 # when Meson supports it: https://github.com/mesonbuild/meson/issues/3304
-if get_option('default_library') == 'static'
+
+if static_build
   gst_c_args += ['-DGST_STATIC_COMPILATION']
 endif
 
@@ -627,8 +690,14 @@ if host_system == 'darwin'
   pkgconfig_libs = ['-Wl,-rpath,${libdir}']
 endif
 
-static_build = get_option('default_library') == 'static'
+if host_machine.system() == 'windows'
+  pathsep = ';'
+else
+  pathsep = ':'
+endif
+
 gst_libraries = []
+subdir('cmake')
 subdir('gst')
 subdir('libs')
 subdir('plugins')
@@ -656,6 +725,8 @@ endif
 
 configure_file(output : 'config.h', configuration : cdata)
 install_data('gst-element-check-1.0.m4', install_dir : join_paths(get_option('datadir'), 'aclocal'))
+
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.24.0', meson.project_version())
 
 plugin_names = []
 gst_plugins = []

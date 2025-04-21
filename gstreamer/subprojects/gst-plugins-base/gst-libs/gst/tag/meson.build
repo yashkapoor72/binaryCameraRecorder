@@ -26,6 +26,15 @@ tag_headers = tag_mkenum_headers + files([
 ])
 install_headers(tag_headers, subdir : 'gstreamer-1.0/gst/tag/')
 
+doc_sources = []
+foreach s: tag_sources + tag_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'tag': pathsep.join(doc_sources)
+}
+
 tag_enums = gnome.mkenums_simple('tag-enumtypes',
   sources : tag_mkenum_headers,
   body_prefix : '#ifdef HAVE_CONFIG_H\n#include "config.h"\n#endif',
@@ -112,6 +121,7 @@ if build_gir
   library_def = {'lib': library_def['lib'], 'gir': [gir]}
   if not static_build
     tag_gir = gnome.generate_gir(gsttag, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [tag_gir]}
     tag_gen_sources += [tag_gir]
   endif
 endif

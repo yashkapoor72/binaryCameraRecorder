@@ -5,16 +5,14 @@ foreach plugin : ['accurip', 'adpcmdec', 'adpcmenc', 'aiff', 'asfmux',
                   'debugutils', 'dvbsubenc',
                   'dvbsuboverlay', 'dvdspu', 'faceoverlay', 'festival',
                   'fieldanalysis', 'freeverb', 'frei0r', 'gaudieffects', 'gdp',
-                  'geometrictransform', 'id3tag', 'inter', 'interlace',
+                  'geometrictransform', 'id3tag', 'insertbin', 'inter', 'interlace',
                   'ivfparse', 'ivtc', 'jp2kdecimator', 'jpegformat', 'librfb',
                   'midi', 'mpegdemux', 'mpegpsmux', 'mpegtsdemux', 'mpegtsmux',
-                  'mxf', 'netsim', 'onvif', 'pcapparse', 'pnm', 'proxy',
+                  'mse', 'mxf', 'netsim', 'onvif', 'pcapparse', 'pnm', 'proxy',
                   'rawparse', 'removesilence', 'rist', 'rtmp2', 'rtp', 'sdp',
                   'segmentclip', 'siren', 'smooth', 'speed', 'subenc', 'switchbin',
-                  'timecode', 'transcode', 'videofilters',
+                  'tensordecoders', 'timecode', 'transcode', 'unixfd', 'videofilters',
                   'videoframe_audiolevel', 'videoparsers', 'videosignal',
                   'vmnc', 'y4m']
-  if not get_option(plugin).disabled()
-    subdir(plugin)
-  endif
+  subdir(plugin)
 endforeach

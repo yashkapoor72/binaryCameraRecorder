@@ -28,6 +28,7 @@
 #include <gst/va/vasurfaceimage.h>
 #include <gst/video/video.h>
 #include <va/va_drmcommon.h>
+#include <string.h>
 
 #include "gstvacaps.h"
 #include "gstvadisplay_priv.h"
@@ -60,6 +61,7 @@ struct _GstVaFilter
   GstVideoOrientationMethod orientation;
 
   guint32 scale_method;
+  guint32 interpolation_method;
 
   gboolean crop_enabled;
 
@@ -153,6 +155,8 @@ gst_va_filter_class_init (GstVaFilterClass * klass)
       G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (gobject_class, N_PROPERTIES, g_properties);
+
+  gst_type_mark_as_plugin_api (GST_TYPE_VA_INTERPOLATION_METHOD, 0);
 }
 
 static void
@@ -170,9 +174,14 @@ gst_va_filter_init (GstVaFilter * self)
 GstVaFilter *
 gst_va_filter_new (GstVaDisplay * display)
 {
+  GstVaFilter *self;
+
   g_return_val_if_fail (GST_IS_VA_DISPLAY (display), NULL);
 
-  return g_object_new (GST_TYPE_VA_FILTER, "display", display, NULL);
+  self = g_object_new (GST_TYPE_VA_FILTER, "display", display, NULL);
+  gst_object_ref_sink (self);
+
+  return self;
 }
 
 gboolean
@@ -358,9 +367,6 @@ gst_va_filter_open (GstVaFilter * self)
   if (!gst_va_filter_ensure_config_attributes (self, &attrib.value))
     return FALSE;
 
-  if (!gst_va_filter_ensure_pipeline_caps (self))
-    return FALSE;
-
   self->image_formats = gst_va_display_get_image_formats (self->display);
   if (!self->image_formats)
     return FALSE;
@@ -381,6 +387,11 @@ gst_va_filter_open (GstVaFilter * self)
       &self->context);
   if (status != VA_STATUS_SUCCESS) {
     GST_ERROR_OBJECT (self, "vaCreateContext: %s", vaErrorStr (status));
+    goto bail;
+  }
+
+  if (!gst_va_filter_ensure_pipeline_caps (self)) {
+    vaDestroyContext (dpy, self->context);
     goto bail;
   }
 
@@ -442,10 +453,8 @@ static const struct VaFilterCapMap {
   F(SkinToneEnhancement, 1),
   F(TotalColorCorrection, VAProcTotalColorCorrectionCount),
   F(HVSNoiseReduction, 0),
-  F(HighDynamicRangeToneMapping, 1),
-#if VA_CHECK_VERSION (1, 12, 0)
-  F(3DLUT, 1),
-#endif
+  F(HighDynamicRangeToneMapping, VAProcHighDynamicRangeMetadataTypeCount),
+  F(3DLUT, 16),
 #undef F
 };
 /* *INDENT-ON* */
@@ -480,7 +489,9 @@ struct VaFilter
     VAProcFilterCapDeinterlacing deint[VAProcDeinterlacingCount];
     VAProcFilterCapColorBalance cb[VAProcColorBalanceCount];
     VAProcFilterCapTotalColorCorrection cc[VAProcTotalColorCorrectionCount];
-    VAProcFilterCapHighDynamicRange hdr;
+      VAProcFilterCapHighDynamicRange
+        hdr[VAProcHighDynamicRangeMetadataTypeCount];
+    VAProcFilterCap3DLUT lut[16];
   } caps;
 };
 
@@ -662,12 +673,16 @@ gst_va_filter_install_properties (GstVaFilter * self, GObjectClass * klass)
         break;
       }
       case VAProcFilterHighDynamicRangeToneMapping:{
-        const VAProcFilterCapHighDynamicRange *caps = &filter->caps.hdr;
-        if (caps->metadata_type == VAProcHighDynamicRangeMetadataHDR10
-            && (caps->caps_flag & VA_TONE_MAPPING_HDR_TO_SDR)) {
-          g_object_class_install_property (klass, GST_VA_FILTER_PROP_HDR,
-              g_param_spec_boolean ("hdr-tone-mapping", "HDR tone mapping",
-                  "Enable HDR to SDR tone mapping", FALSE, common_flags));
+        guint j;
+        for (j = 0; j < filter->num_caps; j++) {
+          const VAProcFilterCapHighDynamicRange *caps = &filter->caps.hdr[j];
+          if (caps->metadata_type == VAProcHighDynamicRangeMetadataHDR10
+              && (caps->caps_flag & VA_TONE_MAPPING_HDR_TO_SDR)) {
+            g_object_class_install_property (klass, GST_VA_FILTER_PROP_HDR,
+                g_param_spec_boolean ("hdr-tone-mapping", "HDR tone mapping",
+                    "Enable HDR to SDR tone mapping", FALSE, common_flags));
+            break;
+          }
         }
       }
       default:
@@ -684,6 +699,36 @@ gst_va_filter_install_properties (GstVaFilter * self, GObjectClass * klass)
             common_flags));
   }
 
+  /**
+  * GstVaPostProc:scale-method
+  *
+  * Sets the scale method algorithm to use when resizing.
+  *
+  * Since: 1.22
+  */
+  if (GST_VA_DISPLAY_IS_IMPLEMENTATION (self->display, INTEL_IHD)) {
+    g_object_class_install_property (klass,
+        GST_VA_FILTER_PROP_SCALE_METHOD,
+        g_param_spec_enum ("scale-method", "Scale Method",
+            "Scale method to use",
+            GST_TYPE_VA_SCALE_METHOD, VA_FILTER_SCALING_DEFAULT, common_flags));
+  }
+
+  /**
+  * GstVaPostProc:interpolation-method
+  *
+  * Sets the interpolation method algorithm to use when resizing.
+  *
+  * Since: 1.26
+  */
+  if (GST_VA_DISPLAY_IS_IMPLEMENTATION (self->display, INTEL_IHD)) {
+    g_object_class_install_property (klass,
+        GST_VA_FILTER_PROP_INTERPOLATION_METHOD,
+        g_param_spec_enum ("interpolation-method", "Interpolation Method",
+            "Interpolation method to use for scaling",
+            GST_TYPE_VA_INTERPOLATION_METHOD, VA_FILTER_INTERPOLATION_DEFAULT,
+            common_flags));
+  }
   return TRUE;
 }
 
@@ -918,6 +963,18 @@ gst_va_filter_set_scale_method (GstVaFilter * self, guint32 method)
   return TRUE;
 }
 
+gboolean
+gst_va_filter_set_interpolation_method (GstVaFilter * self, guint32 method)
+{
+  g_return_val_if_fail (GST_IS_VA_FILTER (self), FALSE);
+
+  GST_OBJECT_LOCK (self);
+  self->interpolation_method = method;
+  GST_OBJECT_UNLOCK (self);
+
+  return TRUE;
+}
+
 static gboolean
 _from_video_orientation_method (GstVideoOrientationMethod orientation,
     guint * mirror, guint * rotation)
@@ -1058,16 +1115,18 @@ gst_va_filter_get_caps (GstVaFilter * self)
 
   if (mem_types & VA_SURFACE_ATTRIB_MEM_TYPE_VA) {
     feature_caps = gst_caps_copy (base_caps);
-    features = gst_caps_features_from_string (GST_CAPS_FEATURE_MEMORY_VA);
+    features =
+        gst_caps_features_new_single_static_str (GST_CAPS_FEATURE_MEMORY_VA);
     gst_caps_set_features_simple (feature_caps, features);
     caps = gst_caps_merge (caps, feature_caps);
   }
   if (mem_types & VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME
       || mem_types & VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2) {
-    feature_caps = gst_caps_copy (base_caps);
-    features = gst_caps_features_from_string (GST_CAPS_FEATURE_MEMORY_DMABUF);
-    gst_caps_set_features_simple (feature_caps, features);
-    caps = gst_caps_merge (caps, feature_caps);
+    feature_caps = gst_va_create_dma_caps (self->display,
+        VAEntrypointVideoProc, surface_formats,
+        self->min_width, self->max_width, self->min_height, self->max_height);
+    if (feature_caps)
+      caps = gst_caps_merge (caps, feature_caps);
   }
 
   gst_caps_unref (base_caps);
@@ -1250,9 +1309,7 @@ _config_color_properties (VAProcColorStandardType * std,
   if (worstscore == 0) {
     /* No properties specified, there's not a useful choice. */
     *std = VAProcColorStandardNone;
-    *props = (VAProcColorProperties) {
-    };
-
+    memset (props, 0, sizeof (VAProcColorProperties));
     return;
   }
 
@@ -1601,7 +1658,7 @@ _create_pipeline_buffer (GstVaFilter * self, GstVaSample * src,
     .output_surface_flag = dst->flags,
     .input_color_properties = self->input_color_properties,
     .output_color_properties = self->output_color_properties,
-    .filter_flags = self->scale_method,
+    .filter_flags = self->scale_method | self->interpolation_method,
     /* output to SDR */
     .output_hdr_metadata = NULL,
   };
@@ -1784,7 +1841,7 @@ gst_va_filter_compose (GstVaFilter * self, GstVaComposeTransaction * tx)
       .surface_region = &sample->input_region,
       .output_region = &sample->output_region,
       .output_background_color = 0xff000000,
-      .filter_flags = self->scale_method,
+      .filter_flags = self->scale_method | self->interpolation_method,
     };
     /* *INDENT-ON* */
     GST_OBJECT_UNLOCK (self);
@@ -1932,6 +1989,29 @@ gst_va_scale_method_get_type (void)
 
   if (g_once_init_enter (&type)) {
     const GType _type = g_enum_register_static ("GstVaScaleMethod", values);
+    g_once_init_leave (&type, _type);
+  }
+  return type;
+}
+
+GType
+gst_va_interpolation_method_get_type (void)
+{
+  static gsize type = 0;
+  static const GEnumValue values[] = {
+    {VA_FILTER_INTERPOLATION_DEFAULT, "Default interpolation", "default"},
+    {VA_FILTER_INTERPOLATION_NEAREST_NEIGHBOR, "Nearest neighbor interpolation",
+        "nearest-neighbor"},
+    {VA_FILTER_INTERPOLATION_BILINEAR, "Bilinear interpolation", "bilinear"},
+    {VA_FILTER_INTERPOLATION_ADVANCED, "Advanced interpolation method is "
+          "defined by each implementation and usually gives best quality.",
+        "advanced"},
+    {0, NULL, NULL},
+  };
+
+  if (g_once_init_enter (&type)) {
+    const GType _type =
+        g_enum_register_static ("GstVaInterpolationMethod", values);
     g_once_init_leave (&type, _type);
   }
   return type;

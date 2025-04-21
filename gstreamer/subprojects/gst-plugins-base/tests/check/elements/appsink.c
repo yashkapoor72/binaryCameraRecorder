@@ -23,6 +23,7 @@
 
 #include <gst/check/gstcheck.h>
 #include <gst/app/gstappsink.h>
+#include <gst/video/video.h>
 
 gint global_testdata;
 
@@ -199,7 +200,7 @@ GST_END_TEST;
 static const gint values[] = { 1, 2, 4 };
 
 static GstBufferList *
-create_buffer_list (void)
+create_buffer_list_with_buffer_duration (GstClockTime duration)
 {
   guint len;
   GstBuffer *buffer;
@@ -223,7 +224,25 @@ create_buffer_list (void)
   gst_buffer_fill (buffer, 0, &values[2], sizeof (gint));
   gst_buffer_list_add (mylist, buffer);
 
+  if (GST_CLOCK_TIME_IS_VALID (duration)) {
+    guint i;
+    GstClockTime dts = 0;
+    GstBuffer *current;
+
+    for (i = 0; i < gst_buffer_list_length (mylist); ++i) {
+      current = gst_buffer_list_get (mylist, i);
+      GST_BUFFER_DTS (current) = dts;
+      dts += duration;
+    }
+  }
+
   return mylist;
+}
+
+static GstBufferList *
+create_buffer_list (void)
+{
+  return create_buffer_list_with_buffer_duration (GST_CLOCK_TIME_NONE);
 }
 
 static GstFlowReturn
@@ -1068,6 +1087,161 @@ GST_START_TEST (test_caps_before_flush_race_condition)
 
 GST_END_TEST;
 
+static gboolean
+propose_allocation_cb (GstAppSink * appsink, GstQuery * query,
+    gpointer callback_data)
+{
+  guint *allocation_query_count = callback_data;
+  *allocation_query_count += 1;
+  fail_unless (gst_query_is_writable (query));
+  fail_unless (GST_QUERY_TYPE (query) == GST_QUERY_ALLOCATION);
+  gst_query_add_allocation_meta (query, GST_VIDEO_META_API_TYPE, NULL);
+  return TRUE;
+}
+
+/* Verifies that the allocation query callback is called */
+GST_START_TEST (test_query_allocation_callback)
+{
+  GstElement *sink;
+  GstAppSinkCallbacks callbacks = { NULL };
+  GstAppSink *app_sink;
+  GstQuery *query = NULL;
+  guint allocation_query_count = 0;
+  GstPad *sinkpad;
+
+  sink = setup_appsink ();
+  app_sink = GST_APP_SINK (sink);
+
+  sinkpad = gst_element_get_static_pad (sink, "sink");
+  fail_unless (sinkpad);
+
+  callbacks.propose_allocation = propose_allocation_cb;
+  gst_app_sink_set_callbacks (app_sink, &callbacks, &allocation_query_count,
+      NULL);
+
+  query = gst_query_new_allocation (NULL, FALSE);
+  fail_unless (gst_pad_query (sinkpad, query));
+
+  fail_unless_equals_int (allocation_query_count, 1);
+  fail_unless (gst_query_find_allocation_meta (query, GST_VIDEO_META_API_TYPE,
+          NULL));
+
+  ASSERT_SET_STATE (sink, GST_STATE_PLAYING, GST_STATE_CHANGE_ASYNC);
+
+  gst_object_unref (sinkpad);
+  gst_query_unref (query);
+
+  GST_DEBUG ("cleaning up appsink");
+  ASSERT_SET_STATE (sink, GST_STATE_NULL, GST_STATE_CHANGE_SUCCESS);
+  cleanup_appsink (sink);
+}
+
+GST_END_TEST;
+
+GST_START_TEST (test_query_allocation_signals)
+{
+  GstElement *sink;
+  GstQuery *query = NULL;
+  guint allocation_query_count = 0;
+  GstPad *sinkpad;
+
+  sink = setup_appsink ();
+
+  g_object_set (sink, "emit-signals", TRUE, NULL);
+  g_signal_connect (sink, "propose-allocation",
+      G_CALLBACK (propose_allocation_cb), &allocation_query_count);
+
+  sinkpad = gst_element_get_static_pad (sink, "sink");
+  fail_unless (sinkpad);
+  query = gst_query_new_allocation (NULL, FALSE);
+  fail_unless (gst_pad_query (sinkpad, query));
+
+  fail_unless_equals_int (allocation_query_count, 1);
+  fail_unless (gst_query_find_allocation_meta (query, GST_VIDEO_META_API_TYPE,
+          NULL));
+
+  ASSERT_SET_STATE (sink, GST_STATE_PLAYING, GST_STATE_CHANGE_ASYNC);
+
+  gst_object_unref (sinkpad);
+  if (query)
+    gst_query_unref (query);
+
+  GST_DEBUG ("cleaning up appsink");
+  ASSERT_SET_STATE (sink, GST_STATE_NULL, GST_STATE_CHANGE_SUCCESS);
+  cleanup_appsink (sink);
+}
+
+GST_END_TEST;
+
+struct TestBufferingLimitsParams
+{
+  guint64 max_time;
+  guint max_buffers;
+  guint max_bytes;
+  guint expected_num_samples;
+};
+
+static struct TestBufferingLimitsParams test_buffering_limit_params[] = {
+  /* no limits */
+  {0, 0, 0, 3},
+  /* exceeded time limit and max-time is not a multiple of buffer duration:
+   * this effectively means the queue will have to pass one additional buffer before blocking/dropping */
+  {50 * GST_MSECOND, 0, 0, 3},
+  /* exceeded buffers limit */
+  {0, 2, 0, 2},
+  /* exceeded bytes limit */
+  {0, 0, 2 * sizeof (guint), 2},
+  /* time and bytes; time is exceeded first */
+  {20 * GST_MSECOND, 0, 2 * sizeof (guint), 1},
+  /* time, buffers and bytes; bytes are exceeded first */
+  {60 * GST_MSECOND, 2, 1 * sizeof (guint), 1},
+};
+
+GST_START_TEST (test_buffering_limits)
+{
+  const gboolean use_lists = __i__ % 2;
+  struct TestBufferingLimitsParams *param =
+      &test_buffering_limit_params[__i__ / 2];
+  GstAppSink *app_sink = GST_APP_SINK (setup_appsink ());
+  guint num_samples = 0;
+  GstSample *queued_sample;
+  GstBufferList *list;
+  gint j;
+
+  ASSERT_SET_STATE (app_sink, GST_STATE_PLAYING, GST_STATE_CHANGE_ASYNC);
+
+  gst_app_sink_set_max_time (app_sink, param->max_time);
+  gst_app_sink_set_max_bytes (app_sink, param->max_bytes);
+  gst_app_sink_set_max_buffers (app_sink, param->max_buffers);
+  gst_app_sink_set_drop (app_sink, TRUE);
+
+  list = create_buffer_list_with_buffer_duration (20 * GST_MSECOND);
+
+  if (use_lists) {
+    gst_buffer_list_ref (list);
+    gst_pad_push_list (mysrcpad, list);
+  } else {
+    for (j = 0; j < gst_buffer_list_length (list); j++) {
+      GstBuffer *buf = gst_buffer_list_get (list, j);
+      gst_buffer_ref (buf);
+      gst_pad_push (mysrcpad, buf);
+    }
+  }
+
+  while ((queued_sample = gst_app_sink_try_pull_sample (app_sink, 0))) {
+    num_samples++;
+    gst_sample_unref (queued_sample);
+  }
+
+  fail_unless_equals_int (num_samples, param->expected_num_samples);
+
+  ASSERT_SET_STATE (app_sink, GST_STATE_NULL, GST_STATE_CHANGE_SUCCESS);
+  cleanup_appsink (GST_ELEMENT_CAST (app_sink));
+  gst_buffer_list_unref (list);
+}
+
+GST_END_TEST;
+
 static Suite *
 appsink_suite (void)
 {
@@ -1094,6 +1268,10 @@ appsink_suite (void)
   tcase_add_test (tc_chain, test_event_paused);
   tcase_add_test (tc_chain, test_reverse_stepping);
   tcase_add_test (tc_chain, test_caps_before_flush_race_condition);
+  tcase_add_test (tc_chain, test_query_allocation_callback);
+  tcase_add_test (tc_chain, test_query_allocation_signals);
+  tcase_add_loop_test (tc_chain, test_buffering_limits, 0,
+      G_N_ELEMENTS (test_buffering_limit_params) * 2);
 
   return s;
 }

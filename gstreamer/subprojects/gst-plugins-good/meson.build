@@ -1,6 +1,6 @@
 project('gst-plugins-good', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
 
@@ -22,7 +22,7 @@ if have_cxx
   cxx = meson.get_compiler('cpp')
 endif
 
-glib_req = '>= 2.62.0'
+glib_req = '>= 2.64.0'
 orc_req = '>= 0.4.17'
 
 if gst_version_is_stable
@@ -35,10 +35,24 @@ api_version = '1.0'
 
 plugins_install_dir = join_paths(get_option('libdir'), 'gstreamer-1.0')
 plugins = []
+plugin_sources = {}
 static_build = get_option('default_library') == 'static'
 
-cc = meson.get_compiler('c')
 host_system = host_machine.system()
+
+if host_system in ['ios', 'darwin']
+  have_objc = add_languages('objc', native: false)
+  have_objcpp = add_languages('objcpp', native: false)
+
+  if not have_objc
+    error('Building on MacOS/iOS/etc requires an ObjC compiler')
+  endif
+else
+  have_objc = false
+  have_objcpp = false
+endif
+
+cc = meson.get_compiler('c')
 
 if cc.get_id() == 'msvc'
   msvc_args = [
@@ -68,8 +82,6 @@ if cc.get_id() == 'msvc'
       '/we4053', # one void operand for '?:'
       '/we4062', # enumerator 'identifier' in switch of enum 'enumeration' is not handled
       '/we4098', # 'function' : void function returning a value
-      '/we4101', # 'identifier' : unreferenced local variable
-      '/we4189', # 'identifier' : local variable is initialized but not referenced
     ])
   endif
   if have_cxx
@@ -103,6 +115,10 @@ endif
 # Symbol visibility
 if cc.has_argument('-fvisibility=hidden')
   add_project_arguments('-fvisibility=hidden', language: 'c')
+
+  if have_objc
+    add_project_arguments('-fvisibility=hidden', language: 'objc')
+  endif
 endif
 
 # Disable strict aliasing
@@ -116,26 +132,25 @@ if gst_version_is_dev
   add_project_arguments('-DG_DISABLE_DEPRECATED', language: 'c')
 endif
 
-cast_checks = get_option('gobject-cast-checks')
-if cast_checks.disabled() or (cast_checks.auto() and not gst_version_is_dev)
+# Same logic as in GLib.
+glib_debug = get_option('glib_debug')
+if glib_debug.disabled() or (
+   glib_debug.auto() and (not get_option('debug') or get_option('optimization') not in [ '0', 'g' ]))
   message('Disabling GLib cast checks')
   add_project_arguments('-DG_DISABLE_CAST_CHECKS', language: 'c')
 endif
 
-glib_asserts = get_option('glib-asserts')
-if glib_asserts.disabled() or (glib_asserts.auto() and not gst_version_is_dev)
+if not get_option('glib_assert')
   message('Disabling GLib asserts')
   add_project_arguments('-DG_DISABLE_ASSERT', language: 'c')
 endif
 
-glib_checks = get_option('glib-checks')
-if glib_checks.disabled() or (glib_checks.auto() and not gst_version_is_dev)
+if not get_option('glib_checks')
   message('Disabling GLib checks')
   add_project_arguments('-DG_DISABLE_CHECKS', language: 'c')
 endif
 
 cdata = configuration_data()
-cdata.set('ENABLE_NLS', 1)
 
 check_headers = [
   ['HAVE_DLFCN_H', 'dlfcn.h'],
@@ -216,7 +231,7 @@ cdata.set('SIZEOF_INT', cc.sizeof('int'))
 cdata.set('SIZEOF_LONG', cc.sizeof('long'))
 cdata.set('SIZEOF_SHORT', cc.sizeof('short'))
 cdata.set('SIZEOF_VOIDP', cc.sizeof('void*'))
-cdata.set('SIZEOF_OFF_T', cc.sizeof('off_t'))
+cdata.set('SIZEOF_OFF_T', cc.sizeof('off_t', prefix : '#include<sys/types.h>'))
 
 have_rtld_noload = cc.has_header_symbol('dlfcn.h', 'RTLD_NOLOAD')
 cdata.set('HAVE_RTLD_NOLOAD', have_rtld_noload)
@@ -231,18 +246,29 @@ cdata.set_quoted('GST_LICENSE', 'LGPL')
 cdata.set_quoted('PACKAGE', 'gst-plugins-good')
 cdata.set_quoted('GETTEXT_PACKAGE', 'gst-plugins-good-1.0')
 cdata.set_quoted('LOCALEDIR', join_paths(get_option('prefix'), get_option('localedir')))
+cdata.set_quoted('PACKAGE_BUGREPORT', 'https://gitlab.freedesktop.org/gstreamer/gstreamer/issues/new')
 
+# NOTE: Keep entries alphabetically sorted
 warning_flags = [
-  '-Wmissing-declarations',
-  '-Wredundant-decls',
-  '-Wwrite-strings',
+  '-Waddress',
+  '-Wformat',
+  '-Wformat-security',
+  '-Wimplicit-fallthrough=3',
   '-Winit-self',
+  '-Wmissing-declarations',
   '-Wmissing-include-dirs',
+  '-Wmissing-parameter-type',
   '-Wno-multichar',
-  '-Wvla',
   '-Wpointer-arith',
+  '-Wredundant-decls',
+  '-Wshift-negative-value',
+  '-Wtype-limits',
+  '-Wundef',
+  '-Wvla',
+  '-Wwrite-strings',
 ]
 
+# C-only warnings
 warning_c_flags = [
   '-Wmissing-prototypes',
   '-Wold-style-definition',
@@ -321,6 +347,7 @@ gstglproto_dep = dependency('', required : false)
 gstglx11_dep = dependency('', required : false)
 gstglwayland_dep = dependency('', required : false)
 gstglegl_dep = dependency('', required : false)
+gstglviv_fb_dep = dependency('', required : false)
 
 have_gstgl = gstgl_dep.found()
 
@@ -340,9 +367,12 @@ if have_gstgl
   message('GStreamer OpenGL platforms: @0@'.format(' '.join(gst_gl_platforms)))
   message('GStreamer OpenGL apis: @0@'.format(' '.join(gst_gl_apis)))
 
-  foreach ws : ['x11', 'wayland', 'android', 'cocoa', 'eagl', 'win32', 'dispmanx', 'viv_fb']
+  foreach ws : ['x11', 'wayland', 'android', 'cocoa', 'eagl', 'win32', 'dispmanx']
     set_variable('gst_gl_have_window_@0@'.format(ws), gst_gl_winsys.contains(ws))
   endforeach
+  # Handling viv-fb separately, because the winsys is called "viv-fb", but the
+  # variable suffix must be "viv_fb" (dashes are not allowed in variable names).
+  set_variable('gst_gl_have_window_viv_fb', gst_gl_winsys.contains('viv-fb'))
 
   foreach p : ['glx', 'egl', 'cgl', 'eagl', 'wgl']
     set_variable('gst_gl_have_platform_@0@'.format(p), gst_gl_platforms.contains(p))
@@ -369,6 +399,10 @@ if have_gstgl
   if gst_gl_have_platform_egl
     gstglegl_dep = dependency('gstreamer-gl-egl-1.0', version : gst_req,
         fallback : ['gst-plugins-base', 'gstglegl_dep'], required: true)
+  endif
+  if gst_gl_have_window_viv_fb
+    gstglviv_fb_dep = dependency('gstreamer-gl-viv-fb-1.0', version : gst_req,
+        fallback : ['gst-plugins-base', 'gstglviv_fb_dep'], required: true)
   endif
 endif
 
@@ -449,13 +483,28 @@ endif
 
 if gst_debug_disabled
   message('GStreamer debug system is disabled')
-  if cc.has_argument('-Wno-unused')
-    add_project_arguments('-Wno-unused', language: 'c')
-  endif
-  if have_cxx and cxx.has_argument ('-Wno-unused')
-    add_project_arguments('-Wno-unused', language: 'cpp')
+  if cc.get_argument_syntax() == 'msvc'
+    msvc_args = cc.get_supported_arguments([
+      '/wd4101', # 'identifier' : unreferenced local variable
+      '/wd4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: ['c', 'cpp'])
+  else
+    if cc.has_argument('-Wno-unused')
+      add_project_arguments('-Wno-unused', language: 'c')
+    endif
+    if have_cxx and cxx.has_argument ('-Wno-unused')
+      add_project_arguments('-Wno-unused', language: 'cpp')
+    endif
   endif
 else
+  if cc.get_argument_syntax() == 'msvc' and gst_version_is_dev
+    msvc_args = cc.get_supported_arguments([
+      '/we4101', # 'identifier' : unreferenced local variable
+      '/we4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: ['c', 'cpp'])
+  endif
   message('GStreamer debug system is enabled')
 endif
 
@@ -467,6 +516,12 @@ plugins_pkgconfig_install_dir = join_paths(plugins_install_dir, 'pkgconfig')
 if get_option('default_library') == 'shared'
   # If we don't build static plugins there is no need to generate pc files
   plugins_pkgconfig_install_dir = disabler()
+endif
+
+if host_machine.system() == 'windows'
+  pathsep = ';'
+else
+  pathsep = ':'
 endif
 
 subdir('gst')
@@ -500,6 +555,7 @@ endif
 
 # xgettext is optional (on Windows for instance)
 if find_program('xgettext', required : get_option('nls')).found()
+  cdata.set('ENABLE_NLS', 1)
   subdir('po')
 endif
 
@@ -519,6 +575,8 @@ if gio_dep.version().version_compare('< 2.67.4')
 endif
 
 configure_file(output : 'config.h', configuration : cdata)
+
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.24.0', meson.project_version())
 
 plugin_names = []
 gst_plugins = []

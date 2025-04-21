@@ -57,13 +57,13 @@ struct _GstPulseSink
   GstPulseDeviceInfo device_info;
 
   gdouble volume;
-  gboolean volume_set:1;
-  gboolean mute:1;
-  gboolean mute_set:1;
+  gboolean volume_set;
+  gboolean mute;
+  gboolean mute_set;
   guint32 current_sink_idx;
   gchar *current_sink_name;
 
-  guint defer_pending;
+  volatile guint defer_pending;
 
   gint notify; /* atomic */
 

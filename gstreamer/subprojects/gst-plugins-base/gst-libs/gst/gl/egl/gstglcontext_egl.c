@@ -57,7 +57,28 @@
 #include "../viv-fb/gstglwindow_viv_fb_egl.h"
 #endif
 
+#if GST_GL_HAVE_DMABUF
+#ifdef HAVE_LIBDRM
+#include <drm_fourcc.h>
+#endif
+#else
+#define DRM_FORMAT_MOD_LINEAR  0ULL
+#endif
+
 #define GST_CAT_DEFAULT gst_gl_context_debug
+
+typedef struct _GstGLDmaFormat GstGLDmaFormat;
+
+/**
+ * GstGLDmaFormat: (skip)
+ *
+ * Opaque struct
+ */
+struct _GstGLDmaFormat
+{
+  gint fourcc;
+  GArray *modifiers;
+};
 
 static gboolean gst_gl_context_egl_create_context (GstGLContext * context,
     GstGLAPI gl_api, GstGLContext * other_context, GError ** error);
@@ -912,7 +933,55 @@ gst_gl_context_egl_create_context (GstGLContext * context,
 
   gst_gl_context_egl_dump_all_configs (egl);
 
-  if (gl_api & (GST_GL_API_OPENGL | GST_GL_API_OPENGL3)) {
+  if (gl_api & GST_GL_API_GLES2) {
+    gint i;
+
+  try_gles2:
+    if (!eglBindAPI (EGL_OPENGL_ES_API)) {
+      g_set_error (error, GST_GL_CONTEXT_ERROR, GST_GL_CONTEXT_ERROR_FAILED,
+          "Failed to bind OpenGL|ES API: %s",
+          gst_egl_get_error_string (eglGetError ()));
+      goto failure;
+    }
+
+    GST_INFO ("Bound OpenGL|ES");
+
+    for (i = 0; i < G_N_ELEMENTS (gles2_versions); i++) {
+      gint profileMask = 0;
+      gint contextFlags = 0;
+      guint maj = gles2_versions[i].major;
+      guint min = gles2_versions[i].minor;
+
+      if (!gst_gl_context_egl_choose_config (egl, GST_GL_API_GLES2, maj, error)) {
+        GST_DEBUG_OBJECT (context, "Failed to choose a GLES%d config: %s",
+            maj, error && *error ? (*error)->message : "Unknown");
+        g_clear_error (error);
+        continue;
+      }
+#if defined(EGL_KHR_create_context)
+      /* try a debug context */
+      contextFlags |= EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR;
+
+      egl->egl_context =
+          _create_context_with_flags (egl, (EGLContext) external_gl_context,
+          GST_GL_API_GLES2, maj, min, contextFlags, profileMask);
+
+      if (egl->egl_context)
+        break;
+
+      /* try without a debug context */
+      contextFlags &= ~EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR;
+#endif
+
+      egl->egl_context =
+          _create_context_with_flags (egl, (EGLContext) external_gl_context,
+          GST_GL_API_GLES2, maj, min, contextFlags, profileMask);
+
+      if (egl->egl_context)
+        break;
+    }
+    egl->gl_api = GST_GL_API_GLES2;
+  } else if (gl_api & (GST_GL_API_OPENGL | GST_GL_API_OPENGL3)) {
     GstGLAPI chosen_gl_api = 0;
     gint i;
 
@@ -1002,54 +1071,6 @@ gst_gl_context_egl_create_context (GstGLContext * context,
     }
 
     egl->gl_api = chosen_gl_api;
-  } else if (gl_api & GST_GL_API_GLES2) {
-    gint i;
-
-  try_gles2:
-    if (!eglBindAPI (EGL_OPENGL_ES_API)) {
-      g_set_error (error, GST_GL_CONTEXT_ERROR, GST_GL_CONTEXT_ERROR_FAILED,
-          "Failed to bind OpenGL|ES API: %s",
-          gst_egl_get_error_string (eglGetError ()));
-      goto failure;
-    }
-
-    GST_INFO ("Bound OpenGL|ES");
-
-    for (i = 0; i < G_N_ELEMENTS (gles2_versions); i++) {
-      gint profileMask = 0;
-      gint contextFlags = 0;
-      guint maj = gles2_versions[i].major;
-      guint min = gles2_versions[i].minor;
-
-      if (!gst_gl_context_egl_choose_config (egl, GST_GL_API_GLES2, maj, error)) {
-        GST_DEBUG_OBJECT (context, "Failed to choose a GLES%d config: %s",
-            maj, error && *error ? (*error)->message : "Unknown");
-        g_clear_error (error);
-        continue;
-      }
-#if defined(EGL_KHR_create_context)
-      /* try a debug context */
-      contextFlags |= EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR;
-
-      egl->egl_context =
-          _create_context_with_flags (egl, (EGLContext) external_gl_context,
-          GST_GL_API_GLES2, maj, min, contextFlags, profileMask);
-
-      if (egl->egl_context)
-        break;
-
-      /* try without a debug context */
-      contextFlags &= ~EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR;
-#endif
-
-      egl->egl_context =
-          _create_context_with_flags (egl, (EGLContext) external_gl_context,
-          GST_GL_API_GLES2, maj, min, contextFlags, profileMask);
-
-      if (egl->egl_context)
-        break;
-    }
-    egl->gl_api = GST_GL_API_GLES2;
   }
 
   if (egl->egl_context != EGL_NO_CONTEXT) {
@@ -1195,6 +1216,8 @@ gst_gl_context_egl_destroy_context (GstGLContext * context)
     gst_object_unref (window);
   }
 
+  g_clear_pointer (&egl->dma_formats, g_array_unref);
+
   gst_gl_context_egl_activate (context, FALSE);
 
   if (egl->egl_surface) {
@@ -1263,6 +1286,15 @@ gst_gl_context_egl_activate (GstGLContext * context, gboolean activate)
     }
     result = eglMakeCurrent (egl->egl_display, egl->egl_surface,
         egl->egl_surface, egl->egl_context);
+#if GST_GL_HAVE_WINDOW_WAYLAND
+    if (GST_IS_GL_WINDOW_WAYLAND_EGL (context->window)) {
+      if (eglSwapInterval (egl->egl_display, 0) == EGL_TRUE) {
+        GST_INFO ("Set EGL swap interval to 0");
+      } else {
+        GST_INFO ("Failed to set EGL swap interval to 0");
+      }
+    }
+#endif
   } else {
     result = eglMakeCurrent (egl->egl_display, EGL_NO_SURFACE,
         EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -1505,4 +1537,366 @@ gst_gl_context_egl_fill_info (GstGLContext * context, GError ** error)
 failure:
   gst_object_unref (display_egl);
   return FALSE;
+}
+
+#if GST_GL_HAVE_DMABUF
+static void
+_print_all_dma_formats (GstGLContext * context, GArray * dma_formats)
+{
+#ifndef GST_DISABLE_GST_DEBUG
+  GstGLDmaFormat *dma_fmt;
+  GstGLDmaModifier *dma_modifier;
+  const gchar *fmt_str, *gst_fmt_str;
+  GString *str;
+  guint i, j;
+
+  if (gst_debug_category_get_threshold (GST_CAT_DEFAULT) < GST_LEVEL_INFO)
+    return;
+
+  str = g_string_new (NULL);
+  g_string_append_printf (str, "\n============= All DMA Formats With"
+      " Modifiers =============");
+  g_string_append_printf (str, "\n| Gst Format   | DRM Format      "
+      "        | External Flag |");
+  g_string_append_printf (str, "\n|================================"
+      "========================|");
+
+  for (i = 0; i < dma_formats->len; i++) {
+    dma_fmt = &g_array_index (dma_formats, GstGLDmaFormat, i);
+
+    gst_fmt_str = gst_video_format_to_string
+        (gst_video_dma_drm_fourcc_to_format (dma_fmt->fourcc));
+
+    g_string_append_printf (str, "\n| %-12s |", gst_fmt_str);
+
+    if (!dma_fmt->modifiers) {
+      fmt_str = gst_video_dma_drm_fourcc_to_string (dma_fmt->fourcc, 0);
+      g_string_append_printf (str, " %-23s |", fmt_str);
+      g_string_append_printf (str, " %-13s |\n", "external only");
+    } else {
+      for (j = 0; j < dma_fmt->modifiers->len; j++) {
+        dma_modifier = &g_array_index (dma_fmt->modifiers, GstGLDmaModifier, j);
+
+        fmt_str = gst_video_dma_drm_fourcc_to_string (dma_fmt->fourcc,
+            dma_modifier->modifier);
+
+        if (j > 0)
+          g_string_append_printf (str, "|              |");
+
+        g_string_append_printf (str, " %-23s |", fmt_str);
+        g_string_append_printf (str, " %-13s |\n", dma_modifier->external_only ?
+            "external only" : "");
+      }
+    }
+
+    if (i < dma_formats->len - 1)
+      g_string_append_printf (str, "|--------------------------------"
+          "------------------------|");
+  }
+
+  g_string_append_printf (str, "================================="
+      "=========================");
+
+  GST_INFO_OBJECT (context, "%s", str->str);
+  g_string_free (str, TRUE);
+#endif
+}
+
+static int
+_compare_dma_formats (gconstpointer a, gconstpointer b)
+{
+  return ((((GstGLDmaFormat *) a)->fourcc) - (((GstGLDmaFormat *) b)->fourcc));
+}
+
+static void
+_free_dma_formats (gpointer data)
+{
+  GstGLDmaFormat *format = data;
+  if (format->modifiers)
+    g_array_unref (format->modifiers);
+}
+
+/**
+ * gst_gl_context_egl_get_dma_formats: (skip)
+ * @context: A #GstGLContextEGL object
+ *
+ * Returns: %TRUE if the array of DMABufs modifiers were fetched. Otherwise,
+ *     %FALSE
+ */
+static gboolean
+gst_gl_context_egl_fetch_dma_formats (GstGLContext * context)
+{
+  GstGLContextEGL *egl;
+  EGLDisplay egl_dpy = EGL_DEFAULT_DISPLAY;
+  GstGLDisplayEGL *gl_dpy_egl;
+  EGLint *formats = NULL, num_formats, mods_len = 0;
+  guint i, j;
+  gboolean ret;
+  EGLuint64KHR *modifiers = NULL;
+  EGLBoolean *ext_only = NULL;
+  GArray *dma_formats;
+
+  EGLBoolean (*gst_eglQueryDmaBufFormatsEXT) (EGLDisplay dpy,
+      EGLint max_formats, EGLint * formats, EGLint * num_formats);
+  EGLBoolean (*gst_eglQueryDmaBufModifiersEXT) (EGLDisplay dpy,
+      EGLint format, EGLint max_modifiers, EGLuint64KHR * modifiers,
+      EGLBoolean * external_only, EGLint * num_modifiers);
+
+  egl = GST_GL_CONTEXT_EGL (context);
+
+  GST_OBJECT_LOCK (context);
+  if (egl->dma_formats) {
+    GST_OBJECT_UNLOCK (context);
+    return TRUE;
+  }
+  GST_OBJECT_UNLOCK (context);
+
+  if (!gst_gl_context_check_feature (context,
+          "EGL_EXT_image_dma_buf_import_modifiers")) {
+    GST_WARNING_OBJECT (context, "\"EGL_EXT_image_dma_buf_import_modifiers\" "
+        "feature is not available");
+    goto failed;
+  }
+
+  gst_eglQueryDmaBufFormatsEXT =
+      gst_gl_context_get_proc_address (context, "eglQueryDmaBufFormatsEXT");
+  if (!gst_eglQueryDmaBufFormatsEXT) {
+    GST_ERROR_OBJECT (context, "\"eglQueryDmaBufFormatsEXT\" not exposed by the"
+        " implementation as required by EGL >= 1.2");
+    goto failed;
+  }
+
+  gst_eglQueryDmaBufModifiersEXT =
+      gst_gl_context_get_proc_address (context, "eglQueryDmaBufModifiersEXT");
+  if (!gst_eglQueryDmaBufModifiersEXT) {
+    GST_ERROR_OBJECT (context, "\"eglQueryDmaBufModifiersEXT\" not exposed by "
+        "the implementation as required by EGL >= 1.2");
+    goto failed;
+  }
+
+  gl_dpy_egl = gst_gl_display_egl_from_gl_display (context->display);
+  if (!gl_dpy_egl) {
+    GST_WARNING_OBJECT (context,
+        "Failed to retrieve GstGLDisplayEGL from %" GST_PTR_FORMAT,
+        context->display);
+    goto failed;
+  }
+  egl_dpy =
+      (EGLDisplay) gst_gl_display_get_handle (GST_GL_DISPLAY (gl_dpy_egl));
+  gst_object_unref (gl_dpy_egl);
+
+  ret = gst_eglQueryDmaBufFormatsEXT (egl_dpy, 0, NULL, &num_formats);
+  if (!ret) {
+    GST_WARNING_OBJECT (context, "Failed to get number of DMABuf formats: %s",
+        gst_egl_get_error_string (eglGetError ()));
+    goto failed;
+  }
+  if (num_formats == 0) {
+    GST_INFO_OBJECT (context, "No DMABuf formats available");
+    goto failed;
+  }
+
+  formats = g_new (EGLint, num_formats);
+
+  ret = gst_eglQueryDmaBufFormatsEXT (egl_dpy, num_formats, formats,
+      &num_formats);
+  if (!ret) {
+    GST_ERROR_OBJECT (context, "Failed to get number of DMABuf formats: %s",
+        gst_egl_get_error_string (eglGetError ()));
+    goto failed;
+  }
+  if (num_formats == 0) {
+    GST_ERROR_OBJECT (context, "No DMABuf formats available");
+    goto failed;
+  }
+
+  dma_formats = g_array_sized_new (FALSE, FALSE, sizeof (GstGLDmaFormat),
+      num_formats);
+  g_array_set_clear_func (dma_formats, _free_dma_formats);
+
+  for (i = 0; i < num_formats; i++) {
+    EGLint num_mods = 0;
+    GstGLDmaFormat dma_frmt;
+
+    dma_frmt.fourcc = formats[i];
+    dma_frmt.modifiers = NULL;
+
+    ret = gst_eglQueryDmaBufModifiersEXT (egl_dpy, formats[i], 0,
+        NULL, NULL, &num_mods);
+    if (!ret) {
+      GST_WARNING_OBJECT (context, "Failed to get number of DMABuf modifiers: "
+          "%s", gst_egl_get_error_string (eglGetError ()));
+      continue;
+    }
+
+    if (num_mods > 0) {
+
+      if (mods_len == 0) {
+        modifiers = g_new (EGLuint64KHR, num_mods);
+        ext_only = g_new0 (EGLBoolean, num_mods);
+        mods_len = num_mods;
+      } else if (mods_len < num_mods) {
+        modifiers = g_renew (EGLuint64KHR, modifiers, num_mods);
+        ext_only = g_renew (EGLBoolean, ext_only, num_mods);
+        memset (ext_only, 0, num_mods * sizeof (EGLBoolean));
+        mods_len = num_mods;
+      }
+
+      ret = gst_eglQueryDmaBufModifiersEXT (egl_dpy, formats[i], num_mods,
+          modifiers, ext_only, &num_mods);
+      if (!ret) {
+        GST_ERROR_OBJECT (context, "Failed to get number of DMABuf modifiers: "
+            "%s", gst_egl_get_error_string (eglGetError ()));
+        continue;
+      }
+
+      dma_frmt.modifiers = g_array_sized_new (FALSE, FALSE,
+          sizeof (GstGLDmaModifier), num_mods);
+      dma_frmt.modifiers = g_array_set_size (dma_frmt.modifiers, num_mods);
+
+      for (j = 0; j < num_mods; j++) {
+        GstGLDmaModifier *modifier =
+            &g_array_index (dma_frmt.modifiers, GstGLDmaModifier, j);
+        modifier->modifier = modifiers[j];
+        modifier->external_only = ext_only[j];
+      }
+    }
+
+    g_array_append_val (dma_formats, dma_frmt);
+  }
+
+  g_array_sort (dma_formats, _compare_dma_formats);
+
+  _print_all_dma_formats (context, dma_formats);
+
+  GST_OBJECT_LOCK (context);
+  egl->dma_formats = dma_formats;
+  GST_OBJECT_UNLOCK (context);
+
+  g_free (formats);
+  g_free (modifiers);
+  g_free (ext_only);
+
+  return TRUE;
+
+failed:
+  {
+    g_free (formats);
+    return FALSE;
+  }
+}
+#endif /* GST_GL_HAVE_DMABUF */
+
+/**
+ * gst_gl_context_egl_get_format_modifiers: (skip)
+ * @context: an EGL #GStGLContext
+ * @fourcc: the FourCC format to look up
+ * @modifiers: (out) (nullable) (element-type GstGLDmaModifier) (transfer none):
+ *     #GArray of modifiers for @fourcc
+ *
+ * Don't modify the content of @modifiers.
+ *
+ * Returns: %TRUE if the @modifiers for @fourcc were fetched correctly.
+ *
+ * Since: 1.24
+ */
+gboolean
+gst_gl_context_egl_get_format_modifiers (GstGLContext * context, gint fourcc,
+    const GArray ** modifiers)
+{
+#if GST_GL_HAVE_DMABUF
+  GstGLContextEGL *egl;
+  GstGLDmaFormat *format;
+  guint index;
+  gboolean ret = FALSE;
+
+  g_return_val_if_fail (GST_IS_GL_CONTEXT_EGL (context), FALSE);
+
+  if (!gst_gl_context_egl_fetch_dma_formats (context))
+    return FALSE;
+
+  egl = GST_GL_CONTEXT_EGL (context);
+
+  GST_OBJECT_LOCK (context);
+  if (!egl->dma_formats)
+    goto beach;
+
+  if (!g_array_binary_search (egl->dma_formats, &fourcc, _compare_dma_formats,
+          &index))
+    goto beach;
+
+  format = &g_array_index (egl->dma_formats, GstGLDmaFormat, index);
+  if (!format)
+    goto beach;
+
+  *modifiers = format->modifiers;
+  ret = TRUE;
+
+beach:
+  GST_OBJECT_UNLOCK (context);
+  return ret;
+#endif
+  return FALSE;
+}
+
+/**
+ * gst_gl_context_egl_format_supports_modifier: (skip)
+ * @context: an EGL #GstGLContext
+ * @fourcc: the FourCC format to look up
+ * @modifier: the format modifier to check
+ * @include_externam: whether to take external-only modifiers into account
+ *
+ * Returns: %TRUE if @fourcc supports @modifier.
+ *
+ * Since: 1.26
+ */
+gboolean
+gst_gl_context_egl_format_supports_modifier (GstGLContext * context,
+    guint32 fourcc, guint64 modifier, gboolean include_external)
+{
+#if GST_GL_HAVE_DMABUF
+  const GArray *dma_modifiers;
+  guint i;
+
+  g_return_val_if_fail (GST_IS_GL_CONTEXT_EGL (context), FALSE);
+
+  if (!gst_gl_context_egl_get_format_modifiers (context, fourcc,
+          &dma_modifiers))
+    return FALSE;
+
+  if (!dma_modifiers) {
+    /* fourcc found, but no modifier info; consider only linear is supported */
+    return (modifier == DRM_FORMAT_MOD_LINEAR);
+  }
+
+  for (i = 0; i < dma_modifiers->len; i++) {
+    GstGLDmaModifier *mod = &g_array_index (dma_modifiers, GstGLDmaModifier, i);
+
+    if (!mod->external_only || include_external) {
+      if (mod->modifier == modifier)
+        return TRUE;
+    }
+  }
+#endif
+  return FALSE;
+}
+
+/**
+ * gst_gl_context_egl_supports_modifier: (skip)
+ * @context: an EGL #GStGLContext
+ *
+ * Returns: %TRUE if the @context supports the modifiers.
+ *
+ * Since: 1.24
+ */
+gboolean
+gst_gl_context_egl_supports_modifier (GstGLContext * context)
+{
+#if GST_GL_HAVE_DMABUF
+  g_return_val_if_fail (GST_IS_GL_CONTEXT_EGL (context), FALSE);
+
+  return gst_gl_context_egl_fetch_dma_formats (context);
+#else
+  return FALSE;
+#endif
 }

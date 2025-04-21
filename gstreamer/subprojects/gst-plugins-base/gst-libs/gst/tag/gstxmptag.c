@@ -213,7 +213,7 @@ typedef GHashTable GstXmpSchema;
 #define gst_xmp_schema_lookup g_hash_table_lookup
 #define gst_xmp_schema_insert g_hash_table_insert
 static GstXmpSchema *
-gst_xmp_schema_new ()
+gst_xmp_schema_new (void)
 {
   return g_hash_table_new (g_direct_hash, g_direct_equal);
 }
@@ -276,7 +276,7 @@ gst_xmp_tag_create (const gchar * gst_tag, const gchar * xmp_tag,
 {
   XmpTag *xmpinfo;
 
-  xmpinfo = g_slice_new (XmpTag);
+  xmpinfo = g_new (XmpTag, 1);
   xmpinfo->gst_tag = gst_tag;
   xmpinfo->tag_name = xmp_tag;
   xmpinfo->type = xmp_type;
@@ -653,7 +653,7 @@ deserialize_exif_altitude (XmpTag * xmptag, GstTagList * taglist,
 
   /* clean up entry */
   g_free (ptag->str);
-  g_slice_free (PendingXmpTag, ptag);
+  g_free (ptag);
   *pending_tags = g_slist_delete_link (*pending_tags, entry);
 }
 
@@ -748,7 +748,7 @@ deserialize_exif_gps_speed (XmpTag * xmptag, GstTagList * taglist,
 
   /* clean up entry */
   g_free (ptag->str);
-  g_slice_free (PendingXmpTag, ptag);
+  g_free (ptag);
   *pending_tags = g_slist_delete_link (*pending_tags, entry);
 }
 
@@ -842,7 +842,7 @@ deserialize_exif_gps_direction (XmpTag * xmptag, GstTagList * taglist,
 
   /* clean up entry */
   g_free (ptag->str);
-  g_slice_free (PendingXmpTag, ptag);
+  g_free (ptag);
   *pending_tags = g_slist_delete_link (*pending_tags, entry);
 }
 
@@ -1066,7 +1066,7 @@ _init_xmp_tag_map (gpointer user_data)
 }
 
 static void
-xmp_tags_initialize ()
+xmp_tags_initialize (void)
 {
   static GOnce my_once = G_ONCE_INIT;
   g_once (&my_once, (GThreadFunc) _init_xmp_tag_map, NULL);
@@ -1356,7 +1356,7 @@ gst_tag_list_from_xmp_buffer (GstBuffer * buffer)
                   /* we shouldn't find a xmp structure here */
                   g_assert (xmp_tag->gst_tag != NULL);
 
-                  ptag = g_slice_new (PendingXmpTag);
+                  ptag = g_new (PendingXmpTag, 1);
                   ptag->xmp_tag = xmp_tag;
                   ptag->str = g_strdup (v);
 
@@ -1449,7 +1449,7 @@ gst_tag_list_from_xmp_buffer (GstBuffer * buffer)
 
             context_tag = last_xmp_tag;
           } else {
-            ptag = g_slice_new (PendingXmpTag);
+            ptag = g_new (PendingXmpTag, 1);
             ptag->xmp_tag = last_xmp_tag;
             ptag->str = g_strdup (part);
 
@@ -1476,7 +1476,7 @@ gst_tag_list_from_xmp_buffer (GstBuffer * buffer)
     read_one_tag (list, ptag->xmp_tag, ptag->str, &pending_tags);
 
     g_free (ptag->str);
-    g_slice_free (PendingXmpTag, ptag);
+    g_free (ptag);
   }
 
   GST_INFO ("xmp packet parsed, %d entries", gst_tag_list_n_tags (list));

@@ -32,12 +32,19 @@
 #if GST_GL_HAVE_PLATFORM_EGL
 #include "egl/gsteglimage.h"
 #include "egl/gsteglimage_private.h"
+#include "egl/gsteglimagecache.h"
 #include "egl/gstglmemoryegl.h"
 #include "egl/gstglcontext_egl.h"
 #endif
 
 #if GST_GL_HAVE_DMABUF
 #include <gst/allocators/gstdmabuf.h>
+#ifdef HAVE_LIBDRM
+#include <drm_fourcc.h>
+#endif
+#else
+/* to avoid ifdef in _gst_gl_upload_set_caps_unlocked() */
+#define DRM_FORMAT_MOD_LINEAR  0ULL
 #endif
 
 #if GST_GL_HAVE_VIV_DIRECTVIV
@@ -91,7 +98,11 @@ typedef struct _UploadMethod UploadMethod;
 
 struct _GstGLUploadPrivate
 {
-  GstVideoInfo in_info;
+  union
+  {
+    GstVideoInfo in_info;
+    GstVideoInfoDmaDrm in_info_drm;
+  };
   GstVideoInfo out_info;
   GstCaps *in_caps;
   GstCaps *out_caps;
@@ -116,6 +127,63 @@ struct _GstGLUploadPrivate
 G_DEFINE_TYPE_WITH_CODE (GstGLUpload, gst_gl_upload, GST_TYPE_OBJECT,
     G_ADD_PRIVATE (GstGLUpload) DEBUG_INIT);
 
+static gboolean
+filter_features (GstCapsFeatures * features,
+    G_GNUC_UNUSED GstStructure * structure, gpointer user_data)
+{
+  const GstCapsFeatures *user_features = user_data;
+  const GstIdStr *feature;
+  guint i, num;
+
+  if (gst_caps_features_is_any (features))
+    return TRUE;
+
+  num = gst_caps_features_get_size (user_features);
+  for (i = 0; i < num; i++) {
+    feature = gst_caps_features_get_nth_id_str (user_features, i);
+    if (gst_caps_features_contains_id_str (features, feature))
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
+static gboolean
+_filter_caps_with_features (const GstCaps * caps,
+    const GstCapsFeatures * features, GstCaps ** ret_caps)
+{
+  GstCaps *tmp = NULL;
+  gboolean ret = TRUE;
+
+  if (gst_caps_is_empty (caps))
+    return FALSE;
+
+  if (gst_caps_is_any (caps)) {
+    if (ret_caps) {
+      tmp = gst_caps_new_empty ();
+      gst_caps_set_features_simple (tmp, gst_caps_features_copy (features));
+      *ret_caps = tmp;
+    }
+
+    return TRUE;
+  }
+
+  tmp = gst_caps_copy (caps);
+  gst_caps_filter_and_map_in_place (tmp, filter_features, (gpointer) features);
+
+  if (gst_caps_is_empty (tmp)) {
+    gst_clear_caps (&tmp);
+    ret = FALSE;
+  }
+
+  if (ret_caps)
+    *ret_caps = tmp;
+  else
+    gst_clear_caps (&tmp);
+
+  return ret;
+}
+
 static GstCaps *
 _set_caps_features_with_passthrough (const GstCaps * caps,
     const gchar * feature_name, GstCapsFeatures * passthrough)
@@ -131,7 +199,7 @@ _set_caps_features_with_passthrough (const GstCaps * caps,
     GstStructure *s = gst_caps_get_structure (caps, i);
 
     orig_features = gst_caps_get_features (caps, i);
-    features = gst_caps_features_new (feature_name, NULL);
+    features = gst_caps_features_new_static_str (feature_name, NULL);
 
     if (gst_caps_features_is_any (orig_features)) {
       /* if we have any features, we add both the features with and without @passthrough */
@@ -189,6 +257,42 @@ _caps_intersect_texture_target (GstCaps * caps, GstGLTextureTarget target_mask)
   return ret;
 }
 
+static gboolean
+_structure_check_target (GstStructure * structure,
+    GstGLTextureTarget target_mask)
+{
+  const GValue *target_val;
+  const gchar *target_str;
+  GstGLTextureTarget target;
+  guint i;
+
+  target_val = gst_structure_get_value (structure, "texture-target");
+
+  /* If no texture-target set, it means a default of 2D. */
+  if (!target_val)
+    return (1 << GST_GL_TEXTURE_TARGET_2D) & target_mask;
+
+  if (G_VALUE_HOLDS_STRING (target_val)) {
+    target_str = g_value_get_string (target_val);
+    target = gst_gl_texture_target_from_string (target_str);
+
+    return (1 << target) & target_mask;
+  } else if (GST_VALUE_HOLDS_LIST (target_val)) {
+    guint num_values = gst_value_list_get_size (target_val);
+
+    for (i = 0; i < num_values; i++) {
+      const GValue *val = gst_value_list_get_value (target_val, i);
+
+      target_str = g_value_get_string (val);
+      target = gst_gl_texture_target_from_string (target_str);
+      if ((1 << target) & target_mask)
+        return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
 typedef enum
 {
   METHOD_FLAG_CAN_SHARE_CONTEXT = 1,
@@ -213,6 +317,85 @@ struct _UploadMethod
       GstBuffer ** outbuf);
   void (*free) (gpointer impl);
 } _UploadMethod;
+
+struct PassthroughUpload
+{
+  GstGLUpload *upload;
+};
+
+static gpointer
+_passthrough_upload_new (GstGLUpload * upload)
+{
+  struct PassthroughUpload *passthrough = g_new0 (struct PassthroughUpload, 1);
+
+  passthrough->upload = upload;
+
+  return passthrough;
+}
+
+static GstStaticCaps _passthrough_upload_caps =
+GST_STATIC_CAPS (GST_VIDEO_DMA_DRM_CAPS_MAKE);
+
+static GstCaps *
+_passthrough_upload_transform_caps (gpointer impl, GstGLContext * context,
+    GstPadDirection direction, GstCaps * caps)
+{
+  GstCaps *passthrough_caps = gst_static_caps_get (&_passthrough_upload_caps);
+  GstCaps *out_caps;
+
+  out_caps = gst_caps_intersect_full (caps, passthrough_caps,
+      GST_CAPS_INTERSECT_FIRST);
+  gst_caps_unref (passthrough_caps);
+
+  return out_caps;
+}
+
+static gboolean
+_passthrough_upload_accept (gpointer impl, GstBuffer * buffer,
+    GstCaps * in_caps, GstCaps * out_caps)
+{
+  GstCaps *caps;
+  gboolean res;
+
+  caps = gst_caps_intersect (in_caps, out_caps);
+  res = !gst_caps_is_empty (caps);
+  gst_caps_unref (caps);
+
+  return res;
+}
+
+static void
+_passthrough_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
+    GstQuery * query)
+{
+}
+
+static GstGLUploadReturn
+_passthrough_upload_perform (gpointer impl, GstBuffer * buffer,
+    GstBuffer ** outbuf)
+{
+  *outbuf = gst_buffer_ref (buffer);
+
+  return GST_GL_UPLOAD_DONE;
+}
+
+static void
+_passthrough_upload_free (gpointer impl)
+{
+  g_free (impl);
+}
+
+static const UploadMethod _passthrough_upload = {
+  "Dmabuf Passthrough",
+  0,
+  &_passthrough_upload_caps,
+  &_passthrough_upload_new,
+  &_passthrough_upload_transform_caps,
+  &_passthrough_upload_accept,
+  &_passthrough_upload_propose_allocation,
+  &_passthrough_upload_perform,
+  &_passthrough_upload_free
+};
 
 struct GLMemoryUpload
 {
@@ -243,15 +426,24 @@ _gl_memory_upload_transform_caps (gpointer impl, GstGLContext * context,
       (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
   GstCaps *ret;
 
-  ret =
-      _set_caps_features_with_passthrough (caps,
-      GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
-
-  gst_caps_features_free (passthrough);
-
   if (direction == GST_PAD_SINK) {
     GstCaps *tmp;
+    GstCapsFeatures *filter_features;
     GstGLTextureTarget target_mask;
+
+    filter_features =
+        gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY, NULL);
+    if (!_filter_caps_with_features (caps, filter_features, &tmp)) {
+      gst_caps_features_free (filter_features);
+      gst_caps_features_free (passthrough);
+      return NULL;
+    }
+    gst_caps_features_free (filter_features);
+
+    ret = _set_caps_features_with_passthrough (tmp,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+    gst_caps_unref (tmp);
 
     if (upload->input_target != GST_GL_TEXTURE_TARGET_NONE) {
       target_mask = 1 << upload->input_target;
@@ -267,6 +459,9 @@ _gl_memory_upload_transform_caps (gpointer impl, GstGLContext * context,
   } else {
     gint i, n;
 
+    ret = _set_caps_features_with_passthrough (caps,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+
     n = gst_caps_get_size (ret);
     for (i = 0; i < n; i++) {
       GstStructure *s = gst_caps_get_structure (ret, i);
@@ -274,6 +469,12 @@ _gl_memory_upload_transform_caps (gpointer impl, GstGLContext * context,
       gst_structure_remove_fields (s, "texture-target", NULL);
     }
   }
+
+  gst_caps_features_free (passthrough);
+
+  GST_DEBUG_OBJECT (upload->upload, "direction %s, transformed %"
+      GST_PTR_FORMAT " into %" GST_PTR_FORMAT,
+      direction == GST_PAD_SRC ? "src" : "sink", caps, ret);
 
   return ret;
 }
@@ -327,36 +528,74 @@ _gl_memory_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
   GstBufferPool *pool = NULL;
   guint n_pools, i;
   GstCaps *caps;
-  GstCapsFeatures *features;
+  GstCapsFeatures *features_gl, *features_sys;
+  GstAllocator *allocator = NULL;
+  GstAllocationParams params;
+  gboolean use_sys_mem = FALSE;
+  const gchar *target_pool_option_str = NULL;
 
   gst_query_parse_allocation (query, &caps, NULL);
   if (caps == NULL)
     goto invalid_caps;
-  features = gst_caps_get_features (caps, 0);
 
+  g_assert (gst_caps_is_fixed (caps));
+
+  features_gl =
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+      NULL);
+  features_sys =
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
+      NULL);
   /* Only offer our custom allocator if that type of memory was negotiated. */
-  if (gst_caps_features_contains (features, GST_CAPS_FEATURE_MEMORY_GL_MEMORY)) {
-    GstAllocator *allocator;
-    GstAllocationParams params;
-    gst_allocation_params_init (&params);
+  if (_filter_caps_with_features (caps, features_sys, NULL)) {
+    use_sys_mem = TRUE;
+  } else if (!_filter_caps_with_features (caps, features_gl, NULL)) {
+    gst_caps_features_free (features_gl);
+    gst_caps_features_free (features_sys);
+    return;
+  }
+  gst_caps_features_free (features_gl);
+  gst_caps_features_free (features_sys);
 
+  if (upload->upload->priv->out_caps) {
+    GstGLTextureTarget target;
+
+    target = _caps_get_texture_target (upload->upload->priv->out_caps,
+        GST_GL_TEXTURE_TARGET_2D);
+
+    /* Do not provide the allocator and pool for system memory caps
+       because the external oes kind GL memory can not be mapped. */
+    if (target == GST_GL_TEXTURE_TARGET_EXTERNAL_OES && use_sys_mem)
+      return;
+
+    target_pool_option_str =
+        gst_gl_texture_target_to_buffer_pool_option (target);
+  }
+
+  gst_allocation_params_init (&params);
+
+
+  if (!use_sys_mem) {
     allocator =
         GST_ALLOCATOR (gst_gl_memory_allocator_get_default (upload->
             upload->context));
-    gst_query_add_allocation_param (query, allocator, &params);
-    gst_object_unref (allocator);
+  }
+
+  gst_query_add_allocation_param (query, allocator, &params);
+  gst_clear_object (&allocator);
 
 #if GST_GL_HAVE_PLATFORM_EGL
-    if (upload->upload->context
-        && gst_gl_context_get_gl_platform (upload->upload->context) ==
-        GST_GL_PLATFORM_EGL) {
+  if (upload->upload->context
+      && gst_gl_context_get_gl_platform (upload->upload->context) ==
+      GST_GL_PLATFORM_EGL) {
+    if (!use_sys_mem) {
       allocator =
           GST_ALLOCATOR (gst_allocator_find (GST_GL_MEMORY_EGL_ALLOCATOR_NAME));
-      gst_query_add_allocation_param (query, allocator, &params);
-      gst_object_unref (allocator);
     }
-#endif
+    gst_query_add_allocation_param (query, allocator, &params);
+    gst_clear_object (&allocator);
   }
+#endif
 
   n_pools = gst_query_get_n_allocation_pools (query);
   for (i = 0; i < n_pools; i++) {
@@ -372,7 +611,6 @@ _gl_memory_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
     GstVideoInfo info;
     gsize size;
 
-
     if (!gst_video_info_from_caps (&info, caps))
       goto invalid_caps;
 
@@ -382,19 +620,12 @@ _gl_memory_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
     /* the normal size of a frame */
     size = info.size;
     gst_buffer_pool_config_set_params (config, caps, size, 0, 0);
+    /* keep one buffer around before allowing acquire */
+    gst_buffer_pool_config_set_gl_min_free_queue_size (config, 1);
     gst_buffer_pool_config_add_option (config,
         GST_BUFFER_POOL_OPTION_GL_SYNC_META);
-    if (upload->upload->priv->out_caps) {
-      GstGLTextureTarget target;
-      const gchar *target_pool_option_str;
-
-      target =
-          _caps_get_texture_target (upload->upload->priv->out_caps,
-          GST_GL_TEXTURE_TARGET_2D);
-      target_pool_option_str =
-          gst_gl_texture_target_to_buffer_pool_option (target);
+    if (target_pool_option_str)
       gst_buffer_pool_config_add_option (config, target_pool_option_str);
-    }
 
     if (!gst_buffer_pool_set_config (pool, config)) {
       gst_object_unref (pool);
@@ -486,11 +717,13 @@ static const UploadMethod _gl_memory_upload = {
 };
 
 #if GST_GL_HAVE_DMABUF
+
 struct DmabufUpload
 {
   GstGLUpload *upload;
 
   GstEGLImage *eglimage[GST_VIDEO_MAX_PLANES];
+  GstEGLImageCache *eglimage_cache;
   GstGLFormat formats[GST_VIDEO_MAX_PLANES];
   GstBuffer *outbuf;
   GstGLVideoAllocationParams *params;
@@ -504,9 +737,7 @@ struct DmabufUpload
 };
 
 static GstStaticCaps _dma_buf_upload_caps =
-    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE_WITH_FEATURES
-    (GST_CAPS_FEATURE_MEMORY_DMABUF,
-        GST_GL_MEMORY_VIDEO_FORMATS_STR) ";"
+    GST_STATIC_CAPS (GST_VIDEO_DMA_DRM_CAPS_MAKE ";"
     GST_VIDEO_CAPS_MAKE (GST_GL_MEMORY_VIDEO_FORMATS_STR));
 
 static gpointer
@@ -514,8 +745,265 @@ _dma_buf_upload_new (GstGLUpload * upload)
 {
   struct DmabufUpload *dmabuf = g_new0 (struct DmabufUpload, 1);
   dmabuf->upload = upload;
+  dmabuf->eglimage_cache = gst_egl_image_cache_new ();
   dmabuf->target = GST_GL_TEXTURE_TARGET_2D;
   return dmabuf;
+}
+
+static void
+_set_default_formats_list (GstStructure * structure)
+{
+  GValue formats = G_VALUE_INIT;
+
+  g_value_init (&formats, GST_TYPE_LIST);
+  gst_value_deserialize (&formats, GST_GL_MEMORY_VIDEO_FORMATS_STR);
+  gst_structure_take_value (structure, "format", &formats);
+}
+
+static gboolean
+_dma_buf_convert_format_field_in_structure (GstGLContext * context,
+    GstStructure * structure, GstPadDirection direction,
+    GstGLDrmFormatFlags flags)
+{
+  const GValue *val;
+
+  if (direction == GST_PAD_SRC) {
+    GValue drm_formats = G_VALUE_INIT;
+
+    /* No context available, we can not know the real modifiers.
+       Just leaving all format related fields blank. */
+    if (!context) {
+      gst_structure_set (structure, "format", G_TYPE_STRING, "DMA_DRM", NULL);
+      gst_structure_remove_field (structure, "drm-format");
+
+      return TRUE;
+    }
+
+    /* When no format provided, just list all supported formats
+       and find all the possible drm-format. */
+    if (!(val = gst_structure_get_value (structure, "format"))) {
+      _set_default_formats_list (structure);
+      val = gst_structure_get_value (structure, "format");
+    }
+
+    if (gst_gl_dma_buf_transform_gst_formats_to_drm_formats (context,
+            val, flags, &drm_formats)) {
+      gst_structure_take_value (structure, "drm-format", &drm_formats);
+    } else {
+      return FALSE;
+    }
+
+    gst_structure_set (structure, "format", G_TYPE_STRING, "DMA_DRM", NULL);
+  } else {
+    GValue gst_formats = G_VALUE_INIT;
+
+    /* Reject the traditional "format" field directly. */
+    if (g_strcmp0 (gst_structure_get_string (structure, "format"),
+            "DMA_DRM") != 0)
+      return FALSE;
+
+    /* If no drm-field in the src, we just list all
+       supported formats in dst. */
+    if (!(val = gst_structure_get_value (structure, "drm-format"))) {
+      gst_structure_remove_field (structure, "format");
+      gst_structure_remove_field (structure, "drm-format");
+      _set_default_formats_list (structure);
+      return TRUE;
+    }
+
+    if (gst_gl_dma_buf_transform_drm_formats_to_gst_formats (context,
+            val, flags, &gst_formats)) {
+      gst_structure_take_value (structure, "format", &gst_formats);
+    } else {
+      return FALSE;
+    }
+
+    gst_structure_remove_field (structure, "drm-format");
+  }
+
+  return TRUE;
+}
+
+static gboolean
+_dma_buf_check_formats_in_structure (GstGLContext * context,
+    GstStructure * structure, gboolean include_external)
+{
+  const GValue *all_formats;
+  GstVideoFormat gst_format;
+  guint32 fourcc;
+
+  all_formats = gst_structure_get_value (structure, "format");
+  if (!all_formats)
+    return FALSE;
+
+  if (G_VALUE_HOLDS_STRING (all_formats)) {
+    gst_format =
+        gst_video_format_from_string (g_value_get_string (all_formats));
+    if (gst_format == GST_VIDEO_FORMAT_UNKNOWN)
+      return FALSE;
+
+    fourcc = gst_video_dma_drm_fourcc_from_format (gst_format);
+    if (fourcc == DRM_FORMAT_INVALID)
+      return FALSE;
+
+    if (context &&
+        !gst_gl_context_egl_format_supports_modifier (context, fourcc,
+            DRM_FORMAT_MOD_LINEAR, include_external))
+      return FALSE;
+
+    return TRUE;
+  } else if (GST_VALUE_HOLDS_LIST (all_formats)) {
+    GValue video_value = G_VALUE_INIT;
+    guint num_values = gst_value_list_get_size (all_formats);
+    GArray *gst_formats = g_array_new (FALSE, FALSE, sizeof (GstVideoFormat));
+    guint i;
+
+    for (i = 0; i < num_values; i++) {
+      const GValue *val = gst_value_list_get_value (all_formats, i);
+
+      gst_format = gst_video_format_from_string (g_value_get_string (val));
+      if (gst_format == GST_VIDEO_FORMAT_UNKNOWN)
+        continue;
+
+      fourcc = gst_video_dma_drm_fourcc_from_format (gst_format);
+      if (fourcc == DRM_FORMAT_INVALID)
+        continue;
+
+      if (context &&
+          !gst_gl_context_egl_format_supports_modifier (context, fourcc,
+              DRM_FORMAT_MOD_LINEAR, include_external))
+        continue;
+
+      g_array_append_val (gst_formats, gst_format);
+    }
+
+    if (gst_formats->len == 0) {
+      g_array_unref (gst_formats);
+      return FALSE;
+    }
+
+    if (gst_formats->len == 1) {
+      g_value_init (&video_value, G_TYPE_STRING);
+      gst_format = g_array_index (gst_formats, GstVideoFormat, 0);
+      g_value_set_string (&video_value,
+          gst_video_format_to_string (gst_format));
+    } else {
+      GValue item = G_VALUE_INIT;
+
+      gst_value_list_init (&video_value, gst_formats->len);
+
+      for (i = 0; i < gst_formats->len; i++) {
+        g_value_init (&item, G_TYPE_STRING);
+
+        gst_format = g_array_index (gst_formats, GstVideoFormat, i);
+        g_value_set_string (&item, gst_video_format_to_string (gst_format));
+        gst_value_list_append_value (&video_value, &item);
+        g_value_unset (&item);
+      }
+    }
+
+    g_array_unref (gst_formats);
+
+    gst_structure_take_value (structure, "format", &video_value);
+
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+static GstCaps *
+_dma_buf_upload_transform_caps_common (GstCaps * caps,
+    GstGLContext * context, GstPadDirection direction,
+    GstGLDrmFormatFlags flags,
+    GstGLTextureTarget target_mask,
+    const gchar * from_feature, const gchar * to_feature)
+{
+  guint i, n;
+  GstCaps *ret_caps, *tmp_caps, *caps_to_transform;
+  GstCapsFeatures *passthrough, *features;
+
+  if (direction == GST_PAD_SINK) {
+    g_return_val_if_fail
+        (!g_strcmp0 (from_feature, GST_CAPS_FEATURE_MEMORY_DMABUF) ||
+        !g_strcmp0 (from_feature, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY), NULL);
+    g_return_val_if_fail
+        (!g_strcmp0 (to_feature, GST_CAPS_FEATURE_MEMORY_GL_MEMORY), NULL);
+  } else {
+    g_return_val_if_fail
+        (!g_strcmp0 (to_feature, GST_CAPS_FEATURE_MEMORY_DMABUF) ||
+        !g_strcmp0 (to_feature, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY), NULL);
+    g_return_val_if_fail
+        (!g_strcmp0 (from_feature, GST_CAPS_FEATURE_MEMORY_GL_MEMORY), NULL);
+  }
+
+  features = gst_caps_features_new_static_str (from_feature, NULL);
+  if (!_filter_caps_with_features (caps, features, &caps_to_transform)) {
+    gst_caps_features_free (features);
+    return NULL;
+  }
+  gst_caps_features_free (features);
+
+  if (gst_caps_is_any (caps_to_transform)) {
+    tmp_caps = caps_to_transform;
+    goto passthrough;
+  }
+
+  tmp_caps = gst_caps_new_empty ();
+  n = gst_caps_get_size (caps_to_transform);
+
+  for (i = 0; i < n; i++) {
+    GstStructure *s;
+    GstCapsFeatures *features;
+
+    features = gst_caps_get_features (caps_to_transform, i);
+    g_assert (gst_caps_features_contains (features, from_feature));
+
+    s = gst_caps_get_structure (caps_to_transform, i);
+
+    if (direction == GST_PAD_SRC && !_structure_check_target (s, target_mask))
+      continue;
+
+    s = gst_structure_copy (s);
+
+    if (!g_strcmp0 (from_feature, GST_CAPS_FEATURE_MEMORY_DMABUF) ||
+        !g_strcmp0 (to_feature, GST_CAPS_FEATURE_MEMORY_DMABUF)) {
+      /* Convert drm-format/format fields for DMABuf */
+      if (!_dma_buf_convert_format_field_in_structure (context, s,
+              direction, flags)) {
+        gst_structure_free (s);
+        continue;
+      }
+    } else {
+      if (!_dma_buf_check_formats_in_structure (context, s,
+              flags & GST_GL_DRM_FORMAT_INCLUDE_EXTERNAL)) {
+        gst_structure_free (s);
+        continue;
+      }
+    }
+
+    gst_caps_append_structure_full (tmp_caps, s,
+        gst_caps_features_copy (features));
+  }
+
+  gst_caps_unref (caps_to_transform);
+
+  if (gst_caps_is_empty (tmp_caps)) {
+    gst_caps_unref (tmp_caps);
+    return NULL;
+  }
+
+passthrough:
+  /* Change the feature name. */
+  passthrough = gst_caps_features_new_static_str
+      (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION, NULL);
+  ret_caps = _set_caps_features_with_passthrough (tmp_caps,
+      to_feature, passthrough);
+
+  gst_caps_features_free (passthrough);
+  gst_caps_unref (tmp_caps);
+
+  return ret_caps;
 }
 
 static GstCaps *
@@ -523,8 +1011,7 @@ _dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
     GstPadDirection direction, GstCaps * caps)
 {
   struct DmabufUpload *dmabuf = impl;
-  GstCapsFeatures *passthrough;
-  GstCaps *ret;
+  GstCaps *ret, *tmp;
 
   if (context) {
     const GstGLFuncs *gl = context->gl_vtable;
@@ -538,17 +1025,36 @@ _dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
 
     if (!gst_gl_context_check_feature (context, "EGL_KHR_image_base"))
       return NULL;
+
+    if (!gst_gl_context_egl_supports_modifier (context))
+      return NULL;
   }
 
-  passthrough = gst_caps_features_from_string
-      (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
+  g_assert (dmabuf->target == GST_GL_TEXTURE_TARGET_2D);
 
   if (direction == GST_PAD_SINK) {
-    GstCaps *tmp;
+    GstGLDrmFormatFlags flags =
+        GST_GL_DRM_FORMAT_INCLUDE_EXTERNAL | GST_GL_DRM_FORMAT_LINEAR_ONLY;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
-        GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+    ret = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        flags, 1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_DMABUF,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+    tmp = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        flags, 1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+    if (!ret) {
+      ret = tmp;
+      tmp = NULL;
+    }
+    if (tmp)
+      ret = gst_caps_merge (ret, tmp);
+
+    if (!ret) {
+      GST_DEBUG_OBJECT (dmabuf->upload,
+          "direction %s, fails to transformed DMA caps %" GST_PTR_FORMAT,
+          "sink", caps);
+      return NULL;
+    }
 
     tmp = _caps_intersect_texture_target (ret, 1 << GST_GL_TEXTURE_TARGET_2D);
     gst_caps_unref (ret);
@@ -556,9 +1062,27 @@ _dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
   } else {
     gint i, n;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
-        GST_CAPS_FEATURE_MEMORY_DMABUF, passthrough);
+    ret = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        GST_GL_DRM_FORMAT_INCLUDE_EXTERNAL | GST_GL_DRM_FORMAT_LINEAR_ONLY,
+        1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_DMABUF);
+    tmp = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        GST_GL_DRM_FORMAT_INCLUDE_EXTERNAL | GST_GL_DRM_FORMAT_LINEAR_ONLY,
+        1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+    if (!ret) {
+      ret = tmp;
+      tmp = NULL;
+    }
+    if (tmp)
+      ret = gst_caps_merge (ret, tmp);
+
+    if (!ret) {
+      GST_DEBUG_OBJECT (dmabuf->upload,
+          "direction %s, fails to transformed DMA caps %" GST_PTR_FORMAT,
+          "src", caps);
+      return NULL;
+    }
 
     n = gst_caps_get_size (ret);
     for (i = 0; i < n; i++) {
@@ -568,44 +1092,11 @@ _dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
     }
   }
 
-  gst_caps_features_free (passthrough);
-
-  GST_DEBUG_OBJECT (dmabuf->upload, "transformed %" GST_PTR_FORMAT " into %"
-      GST_PTR_FORMAT, caps, ret);
+  GST_DEBUG_OBJECT (dmabuf->upload, "direction %s, \n\ttransformed %"
+      GST_PTR_FORMAT "\n\tinto %" GST_PTR_FORMAT,
+      direction == GST_PAD_SRC ? "src" : "sink", caps, ret);
 
   return ret;
-}
-
-static GQuark
-_eglimage_quark (gint plane)
-{
-  static GQuark quark[5] = { 0 };
-  static const gchar *quark_str[] = {
-    "GstGLDMABufEGLImage0",
-    "GstGLDMABufEGLImage1",
-    "GstGLDMABufEGLImage2",
-    "GstGLDMABufEGLImage3",
-    "GstGLDMABufEGLImage",
-  };
-
-  if (!quark[plane])
-    quark[plane] = g_quark_from_static_string (quark_str[plane]);
-
-  return quark[plane];
-}
-
-static GstEGLImage *
-_get_cached_eglimage (GstMemory * mem, gint plane)
-{
-  return gst_mini_object_get_qdata (GST_MINI_OBJECT (mem),
-      _eglimage_quark (plane));
-}
-
-static void
-_set_cached_eglimage (GstMemory * mem, GstEGLImage * eglimage, gint plane)
-{
-  return gst_mini_object_set_qdata (GST_MINI_OBJECT (mem),
-      _eglimage_quark (plane), eglimage, (GDestroyNotify) gst_egl_image_unref);
 }
 
 static gboolean
@@ -613,12 +1104,15 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
     GstCaps * out_caps)
 {
   struct DmabufUpload *dmabuf = impl;
-  GstVideoInfo *in_info = &dmabuf->upload->priv->in_info;
+  GstVideoInfoDmaDrm *in_info_drm = &dmabuf->upload->priv->in_info_drm;
+  GstVideoInfo *in_info = &in_info_drm->vinfo;
   GstVideoInfo *out_info = &dmabuf->out_info;
-  guint n_planes = GST_VIDEO_INFO_N_PLANES (in_info);
+  guint n_planes;
   GstVideoMeta *meta;
   guint n_mem;
   GstMemory *mems[GST_VIDEO_MAX_PLANES];
+  GstMemory *previous_mem = NULL;
+  GstEGLImageCacheEntry *cache_entry = NULL;
   gsize offset[GST_VIDEO_MAX_PLANES];
   gint fd[GST_VIDEO_MAX_PLANES];
   guint i;
@@ -640,11 +1134,41 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
     return FALSE;
   }
 
+  if (!gst_gl_context_egl_supports_modifier (dmabuf->upload->context)) {
+    GST_DEBUG_OBJECT (dmabuf->upload, "no modifier support");
+    return FALSE;
+  }
+
   if (dmabuf->target == GST_GL_TEXTURE_TARGET_EXTERNAL_OES &&
       !gst_gl_context_check_feature (dmabuf->upload->context,
           "GL_OES_EGL_image_external")) {
+    GST_DEBUG_OBJECT (dmabuf->upload, "no GL_OES_EGL_image_external extension");
+    return FALSE;
+  }
+
+  if (!gst_caps_features_contains (gst_caps_get_features (in_caps, 0),
+          GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY) &&
+      !gst_caps_features_contains (gst_caps_get_features (in_caps, 0),
+          GST_CAPS_FEATURE_MEMORY_DMABUF)) {
     GST_DEBUG_OBJECT (dmabuf->upload,
-        "no EGL_KHR_image_base_external extension");
+        "Not a DMABuf or SystemMemory caps %" GST_PTR_FORMAT, in_caps);
+    return FALSE;
+  }
+
+  if (dmabuf->direct && !gst_egl_image_check_dmabuf_direct_with_dma_drm
+      (dmabuf->upload->context, in_info_drm, dmabuf->target)) {
+    GST_DEBUG_OBJECT (dmabuf->upload,
+        "Direct mode does not support %" GST_FOURCC_FORMAT ":0x%016"
+        G_GINT64_MODIFIER "x with target: %s",
+        GST_FOURCC_ARGS (in_info_drm->drm_fourcc), in_info_drm->drm_modifier,
+        gst_gl_texture_target_to_string (dmabuf->target));
+    return FALSE;
+  }
+
+  if (!dmabuf->direct && in_info_drm->drm_modifier != DRM_FORMAT_MOD_LINEAR
+      && in_info_drm->drm_modifier != DRM_FORMAT_MOD_INVALID) {
+    GST_DEBUG_OBJECT (dmabuf->upload,
+        "Indirect uploads are only support for linear formats.");
     return FALSE;
   }
 
@@ -654,22 +1178,25 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
     return FALSE;
   }
 
-  /* We cannot have multiple dmabuf per plane */
-  if (n_mem > n_planes) {
-    GST_DEBUG_OBJECT (dmabuf->upload,
-        "number of memory (%u) != number of planes (%u)", n_mem, n_planes);
-    return FALSE;
-  }
+  n_planes = GST_VIDEO_INFO_N_PLANES (in_info);
 
   /* Update video info based on video meta */
   if (meta) {
     in_info->width = meta->width;
     in_info->height = meta->height;
+    n_planes = meta->n_planes;
 
     for (i = 0; i < meta->n_planes; i++) {
       in_info->offset[i] = meta->offset[i];
       in_info->stride[i] = meta->stride[i];
     }
+  }
+
+  /* We cannot have multiple dmabuf per plane */
+  if (n_mem > n_planes) {
+    GST_DEBUG_OBJECT (dmabuf->upload,
+        "number of memory (%u) != number of planes (%u)", n_mem, n_planes);
+    return FALSE;
   }
 
   if (out_caps != dmabuf->out_caps) {
@@ -682,7 +1209,8 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
      * the tile dimension. This is because the shader needs to know the padded
      * size in order to correctly sample into these special buffer.
      */
-    if (meta && GST_VIDEO_FORMAT_INFO_IS_TILED (out_info->finfo)) {
+    if (!dmabuf->direct && meta &&
+        GST_VIDEO_FORMAT_INFO_IS_TILED (out_info->finfo)) {
       out_info->width = meta->width;
       out_info->height = meta->height;
 
@@ -695,10 +1223,9 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
 
   if (dmabuf->params)
     gst_gl_allocation_params_free ((GstGLAllocationParams *) dmabuf->params);
-  if (!(dmabuf->params =
-          gst_gl_video_allocation_params_new_wrapped_gl_handle (dmabuf->
-              upload->context, NULL, out_info, -1, NULL, dmabuf->target, 0,
-              NULL, NULL, NULL)))
+  if (!(dmabuf->params = gst_gl_video_allocation_params_new_wrapped_gl_handle
+          (dmabuf->upload->context, NULL, out_info, -1, NULL, dmabuf->target,
+              0, NULL, NULL, NULL)))
     return FALSE;
 
   /* Find and validate all memories */
@@ -708,7 +1235,10 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
     guint mem_idx;
     gsize mem_skip;
 
-    plane_size = gst_gl_get_plane_data_size (in_info, NULL, i);
+    if (GST_VIDEO_INFO_FORMAT (in_info) == GST_VIDEO_FORMAT_DMA_DRM)
+      plane_size = 1;
+    else
+      plane_size = gst_gl_get_plane_data_size (in_info, NULL, i);
 
     if (!gst_buffer_find_memory (buffer, in_info->offset[i], plane_size,
             &mem_idx, &length, &mem_skip)) {
@@ -736,42 +1266,41 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
   }
 
   if (dmabuf->direct) {
-    /* Check if this format is supported by the driver */
     dmabuf->n_mem = 1;
-    if (!gst_egl_image_check_dmabuf_direct (dmabuf->upload->context, in_info,
-            dmabuf->target)) {
-      GST_DEBUG_OBJECT (dmabuf->upload, "direct check failed");
-      return FALSE;
-    }
-  } else
+  } else {
     dmabuf->n_mem = n_planes;
+  }
 
-  /* Now create an EGLImage for each dmabufs */
+  /* Now create an EGLImage for each dmabuf */
   for (i = 0; i < dmabuf->n_mem; i++) {
-    gint cache_id = dmabuf->direct ? 4 : i;
-
-    /* check if one is cached */
-    dmabuf->eglimage[i] = _get_cached_eglimage (mems[i], cache_id);
+    /*
+     * Check if an EGLImage is cached. Remember the previous memory and cache
+     * entry to avoid repeated lookups if all mems[i] point to the same memory.
+     */
+    dmabuf->eglimage[i] = gst_egl_image_cache_lookup (dmabuf->eglimage_cache,
+        mems[i], i, &previous_mem, &cache_entry);
     if (dmabuf->eglimage[i]) {
       dmabuf->formats[i] = dmabuf->eglimage[i]->format;
       continue;
     }
 
     /* otherwise create one and cache it */
-    if (dmabuf->direct)
-      dmabuf->eglimage[i] =
-          gst_egl_image_from_dmabuf_direct_target (dmabuf->upload->context, fd,
-          offset, in_info, dmabuf->target);
-    else
-      dmabuf->eglimage[i] = gst_egl_image_from_dmabuf (dmabuf->upload->context,
-          fd[i], in_info, i, offset[i]);
+    if (dmabuf->direct) {
+      dmabuf->eglimage[i] = gst_egl_image_from_dmabuf_direct_target_with_dma_drm
+          (dmabuf->upload->context, n_planes, fd, offset, in_info_drm,
+          dmabuf->target);
+    } else {
+      dmabuf->eglimage[i] = gst_egl_image_from_dmabuf
+          (dmabuf->upload->context, fd[i], in_info, i, offset[i]);
+    }
 
     if (!dmabuf->eglimage[i]) {
       GST_DEBUG_OBJECT (dmabuf->upload, "could not create eglimage");
       return FALSE;
     }
 
-    _set_cached_eglimage (mems[i], dmabuf->eglimage[i], cache_id);
+    gst_egl_image_cache_store (dmabuf->eglimage_cache, mems[i], i,
+        dmabuf->eglimage[i], &cache_entry);
     dmabuf->formats[i] = dmabuf->eglimage[i]->format;
   }
 
@@ -782,7 +1311,8 @@ static void
 _dma_buf_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
     GstQuery * query)
 {
-  /* nothing to do for now. */
+  /* The raw method always adds the GST_VIDEO_META_API_TYPE
+     and so nothing to do here. */
 }
 
 static void
@@ -837,13 +1367,14 @@ _dma_buf_upload_free (gpointer impl)
 
   if (dmabuf->params)
     gst_gl_allocation_params_free ((GstGLAllocationParams *) dmabuf->params);
+  gst_egl_image_cache_unref (dmabuf->eglimage_cache);
 
   g_free (impl);
 }
 
 static const UploadMethod _dma_buf_upload = {
   "Dmabuf",
-  METHOD_FLAG_CAN_ACCEPT_RAW,
+  0,
   &_dma_buf_upload_caps,
   &_dma_buf_upload_new,
   &_dma_buf_upload_transform_caps,
@@ -870,8 +1401,11 @@ _direct_dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
     GstPadDirection direction, GstCaps * caps)
 {
   struct DmabufUpload *dmabuf = impl;
-  GstCapsFeatures *passthrough;
-  GstCaps *ret;
+  GstCaps *ret, *tmp;
+  GstGLDrmFormatFlags flags = 0;
+
+  if (dmabuf->target == GST_GL_TEXTURE_TARGET_EXTERNAL_OES)
+    flags |= GST_GL_DRM_FORMAT_INCLUDE_EXTERNAL;
 
   if (context) {
     const GstGLFuncs *gl = context->gl_vtable;
@@ -886,20 +1420,40 @@ _direct_dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
     if (dmabuf->target == GST_GL_TEXTURE_TARGET_EXTERNAL_OES &&
         !gst_gl_context_check_feature (context, "GL_OES_EGL_image_external"))
       return NULL;
-  }
 
-  passthrough = gst_caps_features_from_string
-      (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
+    if (!gst_gl_context_egl_supports_modifier (context))
+      return NULL;
+  }
 
   if (direction == GST_PAD_SINK) {
     gint i, n;
-    GstCaps *tmp;
     GstGLTextureTarget target_mask;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
-        GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+    ret = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        flags, 1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_DMABUF,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+    tmp = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        flags, 1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+    if (!ret) {
+      ret = tmp;
+      tmp = NULL;
+    }
+    if (tmp)
+      ret = gst_caps_merge (ret, tmp);
 
+    if (!ret) {
+      GST_DEBUG_OBJECT (dmabuf->upload,
+          "direction %s, fails to transformed DMA caps %" GST_PTR_FORMAT,
+          "sink", caps);
+      return NULL;
+    }
+
+    /* The direct mode, sampling an imported texture will return an RGBA
+       vector in the same colorspace as the source image. If the source
+       image is stored in YUV(or some other basis) then the YUV values will
+       be transformed to RGB values. So, any input format is transformed to:
+       "video/x-raw(memory:GLMemory), format=(string)RGBA" as output. */
     gst_caps_set_simple (ret, "format", G_TYPE_STRING, "RGBA", NULL);
 
     n = gst_caps_get_size (ret);
@@ -916,21 +1470,37 @@ _direct_dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
     ret = tmp;
   } else {
     gint i, n;
-    GstCaps *tmp;
-    GValue formats = G_VALUE_INIT;
-    gchar *format_str = g_strdup (GST_GL_MEMORY_VIDEO_FORMATS_STR);
+    GstCaps *tmp_caps;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
-        GST_CAPS_FEATURE_MEMORY_DMABUF, passthrough);
+    /* The src caps may only contain RGBA format, and we should list
+       all possible supported formats to detect the conversion for
+       DMABuf kind memory. */
+    tmp_caps = gst_caps_copy (caps);
+    for (i = 0; i < gst_caps_get_size (tmp_caps); i++)
+      _set_default_formats_list (gst_caps_get_structure (tmp_caps, i));
 
-    g_value_init (&formats, GST_TYPE_LIST);
-    gst_value_deserialize (&formats, format_str);
-    tmp = gst_caps_copy (ret);
-    gst_caps_set_value (tmp, "format", &formats);
-    gst_caps_append (ret, tmp);
-    g_free (format_str);
-    g_value_unset (&formats);
+    ret = _dma_buf_upload_transform_caps_common (tmp_caps, context, direction,
+        flags, 1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_DMABUF);
+    gst_caps_unref (tmp_caps);
+
+    tmp = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        flags, 1 << dmabuf->target, GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+
+    if (!ret) {
+      ret = tmp;
+      tmp = NULL;
+    }
+    if (tmp)
+      ret = gst_caps_merge (ret, tmp);
+
+    if (!ret) {
+      GST_DEBUG_OBJECT (dmabuf->upload,
+          "direction %s, fails to transformed DMA caps %" GST_PTR_FORMAT,
+          "src", caps);
+      return NULL;
+    }
 
     n = gst_caps_get_size (ret);
     for (i = 0; i < n; i++) {
@@ -940,10 +1510,9 @@ _direct_dma_buf_upload_transform_caps (gpointer impl, GstGLContext * context,
     }
   }
 
-  gst_caps_features_free (passthrough);
-
-  GST_DEBUG_OBJECT (dmabuf->upload, "transformed %" GST_PTR_FORMAT " into %"
-      GST_PTR_FORMAT, caps, ret);
+  GST_DEBUG_OBJECT (dmabuf->upload, "direction %s, transformed %"
+      GST_PTR_FORMAT " into %" GST_PTR_FORMAT,
+      direction == GST_PAD_SRC ? "src" : "sink", caps, ret);
 
   return ret;
 }
@@ -1012,14 +1581,24 @@ _upload_meta_upload_transform_caps (gpointer impl, GstGLContext * context,
   GstCapsFeatures *passthrough =
       gst_caps_features_from_string
       (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
+  GstCapsFeatures *filter_features;
   GstCaps *ret;
 
   if (direction == GST_PAD_SINK) {
     GstCaps *tmp;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
+    filter_features = gst_caps_features_from_string
+        (GST_CAPS_FEATURE_META_GST_VIDEO_GL_TEXTURE_UPLOAD_META);
+    if (!_filter_caps_with_features (caps, filter_features, &tmp)) {
+      gst_caps_features_free (filter_features);
+      gst_caps_features_free (passthrough);
+      return NULL;
+    }
+    gst_caps_features_free (filter_features);
+
+    ret = _set_caps_features_with_passthrough (tmp,
         GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+    gst_caps_unref (tmp);
 
     tmp = _caps_intersect_texture_target (ret, 1 << GST_GL_TEXTURE_TARGET_2D);
     gst_caps_unref (ret);
@@ -1241,6 +1820,7 @@ struct RawUpload
   GstGLUpload *upload;
   struct RawUploadFrame *in_frame;
   GstGLVideoAllocationParams *params;
+  GstCapsFeatures *features;
 };
 
 static struct RawUploadFrame *
@@ -1253,12 +1833,12 @@ _raw_upload_frame_new (struct RawUpload *raw, GstBuffer * buffer)
   if (!buffer)
     return NULL;
 
-  frame = g_slice_new (struct RawUploadFrame);
+  frame = g_new (struct RawUploadFrame, 1);
   frame->ref_count = 1;
 
   if (!gst_video_frame_map (&frame->frame, &raw->upload->priv->in_info,
           buffer, GST_MAP_READ)) {
-    g_slice_free (struct RawUploadFrame, frame);
+    g_free (frame);
     return NULL;
   }
 
@@ -1286,7 +1866,7 @@ _raw_upload_frame_unref (struct RawUploadFrame *frame)
 {
   if (g_atomic_int_dec_and_test (&frame->ref_count)) {
     gst_video_frame_unmap (&frame->frame);
-    g_slice_free (struct RawUploadFrame, frame);
+    g_free (frame);
   }
 }
 
@@ -1296,6 +1876,8 @@ _raw_data_upload_new (GstGLUpload * upload)
   struct RawUpload *raw = g_new0 (struct RawUpload, 1);
 
   raw->upload = upload;
+  raw->features = gst_caps_features_new_single_static_str
+      (GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
 
   return raw;
 }
@@ -1311,11 +1893,22 @@ _raw_data_upload_transform_caps (gpointer impl, GstGLContext * context,
 
   if (direction == GST_PAD_SINK) {
     GstGLTextureTarget target_mask = 0;
+    GstCapsFeatures *filter_features;
     GstCaps *tmp;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
+    filter_features =
+        gst_caps_features_new_single_static_str
+        (GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+    if (!_filter_caps_with_features (caps, filter_features, &tmp)) {
+      gst_caps_features_free (filter_features);
+      gst_caps_features_free (passthrough);
+      return NULL;
+    }
+    gst_caps_features_free (filter_features);
+
+    ret = _set_caps_features_with_passthrough (tmp,
         GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+    gst_caps_unref (tmp);
 
     target_mask |= 1 << GST_GL_TEXTURE_TARGET_2D;
     target_mask |= 1 << GST_GL_TEXTURE_TARGET_RECTANGLE;
@@ -1348,6 +1941,11 @@ _raw_data_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
 {
   struct RawUpload *raw = impl;
   GstCapsFeatures *features;
+
+  /* Also consider the omited system memory feature cases, such as
+     video/x-raw(meta:GstVideoOverlayComposition) */
+  if (!_filter_caps_with_features (in_caps, raw->features, NULL))
+    return FALSE;
 
   features = gst_caps_get_features (out_caps, 0);
   if (!gst_caps_features_contains (features, GST_CAPS_FEATURE_MEMORY_GL_MEMORY))
@@ -1420,6 +2018,7 @@ _raw_data_upload_free (gpointer impl)
   if (raw->params)
     gst_gl_allocation_params_free ((GstGLAllocationParams *) raw->params);
 
+  gst_caps_features_free (raw->features);
   g_free (raw);
 }
 
@@ -1437,6 +2036,83 @@ static const UploadMethod _raw_data_upload = {
   &_raw_data_upload_perform,
   &_raw_data_upload_free
 };
+
+#if GST_GL_HAVE_DMABUF
+
+static gpointer
+_raw_data_upload_drm_new (GstGLUpload * upload)
+{
+  struct RawUpload *raw = g_new0 (struct RawUpload, 1);
+
+  raw->upload = upload;
+  raw->features = gst_caps_features_new_single_static_str
+      (GST_CAPS_FEATURE_MEMORY_DMABUF);
+
+  return raw;
+}
+
+static GstCaps *
+_raw_data_upload_drm_transform_caps (gpointer impl, GstGLContext * context,
+    GstPadDirection direction, GstCaps * caps)
+{
+  struct RawUpload *raw = impl;
+  GstGLDrmFormatFlags flags =
+      GST_GL_DRM_FORMAT_LINEAR_ONLY | GST_GL_DRM_FORMAT_INCLUDE_EMULATED;
+  GstCaps *ret;
+
+  if (direction == GST_PAD_SINK) {
+    ret = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        flags, 1 << GST_GL_TEXTURE_TARGET_2D, GST_CAPS_FEATURE_MEMORY_DMABUF,
+        GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+
+    if (!ret) {
+      GST_DEBUG_OBJECT (raw->upload,
+          "direction %s, fails to transformed DMA caps %" GST_PTR_FORMAT,
+          "sink", caps);
+      return NULL;
+    }
+  } else {
+    gint i, n;
+
+    ret = _dma_buf_upload_transform_caps_common (caps, context, direction,
+        flags, 1 << GST_GL_TEXTURE_TARGET_2D, GST_CAPS_FEATURE_MEMORY_GL_MEMORY,
+        GST_CAPS_FEATURE_MEMORY_DMABUF);
+
+    if (!ret) {
+      GST_DEBUG_OBJECT (raw->upload,
+          "direction %s, fails to transformed DMA caps %" GST_PTR_FORMAT,
+          "src", caps);
+      return NULL;
+    }
+
+    n = gst_caps_get_size (ret);
+    for (i = 0; i < n; i++) {
+      GstStructure *s = gst_caps_get_structure (ret, i);
+
+      gst_structure_remove_fields (s, "texture-target", NULL);
+    }
+  }
+
+  return ret;
+}
+
+static GstStaticCaps _raw_data_upload_drm_caps =
+    GST_STATIC_CAPS (GST_VIDEO_DMA_DRM_CAPS_MAKE ";"
+    GST_VIDEO_CAPS_MAKE (GST_GL_MEMORY_VIDEO_FORMATS_STR));
+
+static const UploadMethod _raw_data_upload_drm = {
+  "Raw Data DRM",
+  0,
+  &_raw_data_upload_drm_caps,
+  &_raw_data_upload_drm_new,
+  &_raw_data_upload_drm_transform_caps,
+  &_raw_data_upload_accept,
+  &_raw_data_upload_propose_allocation,
+  &_raw_data_upload_perform,
+  &_raw_data_upload_free
+};
+
+#endif /* GST_GL_HAVE_DMABUF */
 
 #if GST_GL_HAVE_VIV_DIRECTVIV
 #ifndef GL_BGRA_EXT
@@ -1499,10 +2175,21 @@ _directviv_upload_transform_caps (gpointer impl, GstGLContext * context,
 
   if (direction == GST_PAD_SINK) {
     GstCaps *tmp;
+    GstCapsFeatures *filter_features;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
+    filter_features =
+        gst_caps_features_new_single_static_str
+        (GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+    if (!_filter_caps_with_features (caps, filter_features, &tmp)) {
+      gst_caps_features_free (filter_features);
+      gst_caps_features_free (passthrough);
+      return NULL;
+    }
+    gst_caps_features_free (filter_features);
+
+    ret = _set_caps_features_with_passthrough (tmp,
         GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+    gst_caps_unref (tmp);
 
     gst_caps_set_simple (ret, "format", G_TYPE_STRING, "RGBA", NULL);
     tmp = _caps_intersect_texture_target (ret, 1 << GST_GL_TEXTURE_TARGET_2D);
@@ -1546,6 +2233,17 @@ _directviv_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
   }
   if (!directviv->TexDirectInvalidateVIV || !directviv->TexDirectVIVMap)
     return FALSE;
+
+  features =
+      gst_caps_features_new_single_static_str
+      (GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+  /* Also consider the omited system memory feature cases, such as
+     video/x-raw(meta:GstVideoOverlayComposition) */
+  if (!_filter_caps_with_features (in_caps, features, NULL)) {
+    gst_caps_features_free (features);
+    return FALSE;
+  }
+  gst_caps_features_free (features);
 
   features = gst_caps_get_features (out_caps, 0);
   if (!gst_caps_features_contains (features, GST_CAPS_FEATURE_MEMORY_GL_MEMORY))
@@ -1702,7 +2400,8 @@ _directviv_upload_perform_gl_thread (GstGLContext * context,
 
   gl->BindTexture (GL_TEXTURE_2D, out_gl_mem->tex_id);
   directviv->TexDirectVIVMap (GL_TEXTURE_2D, width, height,
-      gl_format, (void **) &unmap_data->map.data, &unmap_data->phys_addr);
+      gl_format, (void **) &unmap_data->map.data,
+      (GLuint *) & unmap_data->phys_addr);
   directviv->TexDirectInvalidateVIV (GL_TEXTURE_2D);
 }
 
@@ -1812,13 +2511,22 @@ _nvmm_upload_transform_caps (gpointer impl, GstGLContext * context,
 
   if (direction == GST_PAD_SINK) {
     GstCaps *tmp;
+    GstCapsFeatures *filter_features;
 
-    ret =
-        _set_caps_features_with_passthrough (caps,
+    filter_features =
+        gst_caps_features_new_single_static_str (GST_CAPS_FEATURE_MEMORY_NVMM);
+    if (!_filter_caps_with_features (caps, filter_features, &tmp)) {
+      gst_caps_features_free (filter_features);
+      gst_caps_features_free (passthrough);
+      return NULL;
+    }
+    gst_caps_features_free (filter_features);
+
+    ret = _set_caps_features_with_passthrough (tmp,
         GST_CAPS_FEATURE_MEMORY_GL_MEMORY, passthrough);
+    gst_caps_unref (tmp);
 
-    tmp =
-        _caps_intersect_texture_target (ret,
+    tmp = _caps_intersect_texture_target (ret,
         1 << GST_GL_TEXTURE_TARGET_EXTERNAL_OES);
     gst_caps_unref (ret);
     ret = tmp;
@@ -1854,6 +2562,7 @@ _nvmm_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
   GstVideoInfo *out_info = &nvmm->out_info;
   GstVideoMeta *meta;
   GstMapInfo in_map_info = GST_MAP_INFO_INIT;
+  GstCapsFeatures *features;
   guint n_mem;
   guint i;
 
@@ -1876,6 +2585,10 @@ _nvmm_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
 
   if (!gst_gl_context_check_feature (nvmm->upload->context,
           "EGL_KHR_image_base"))
+    return FALSE;
+
+  features = gst_caps_get_features (in_caps, 0);
+  if (!gst_caps_features_contains (features, GST_CAPS_FEATURE_MEMORY_NVMM))
     return FALSE;
 
   if (!gst_buffer_map (buffer, &in_map_info, GST_MAP_READ)) {
@@ -2233,7 +2946,9 @@ static const UploadMethod _nvmm_upload = {
 
 #endif /* HAVE_NVMM */
 
-static const UploadMethod *upload_methods[] = { &_gl_memory_upload,
+static const UploadMethod *upload_methods[] = {
+  &_passthrough_upload,
+  &_gl_memory_upload,
 #if GST_GL_HAVE_DMABUF
   &_direct_dma_buf_upload,
   &_direct_dma_buf_external_upload,
@@ -2247,7 +2962,10 @@ static const UploadMethod *upload_methods[] = { &_gl_memory_upload,
 #endif /* HAVE_NVMM */
   &_upload_meta_upload,
   /* Raw data must always be last / least preferred */
-  &_raw_data_upload
+  &_raw_data_upload,
+#if GST_GL_HAVE_DMABUF
+  &_raw_data_upload_drm,
+#endif
 };
 
 static GMutex upload_global_lock;
@@ -2367,42 +3085,24 @@ gst_gl_upload_transform_caps (GstGLUpload * upload, GstGLContext * context,
   GstCaps *result, *tmp;
   gint i;
 
+  GST_OBJECT_LOCK (upload);
+
+  // Prefer caps from the currently configured method, if any
   if (upload->priv->method) {
     tmp = upload->priv->method->transform_caps (upload->priv->method_impl,
         context, direction, caps);
-
-    if (tmp) {
-      /* If we're generating sink pad caps, make sure to include raw caps if needed by
-       * the current method */
-      if (direction == GST_PAD_SRC
-          && (upload->priv->method->flags & METHOD_FLAG_CAN_ACCEPT_RAW)) {
-        GstCapsFeatures *passthrough =
-            gst_caps_features_from_string
-            (GST_CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
-        GstCaps *raw_tmp = _set_caps_features_with_passthrough (tmp,
-            GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY, passthrough);
-        gst_caps_append (tmp, raw_tmp);
-        gst_caps_features_free (passthrough);
-      }
-
-      if (filter) {
-        result =
-            gst_caps_intersect_full (filter, tmp, GST_CAPS_INTERSECT_FIRST);
-        gst_caps_unref (tmp);
-      } else {
-        result = tmp;
-      }
-      if (!gst_caps_is_empty (result))
-        return result;
-      else
-        gst_caps_unref (result);
-    }
+    if (!tmp)
+      tmp = gst_caps_new_empty ();
+  } else {
+    tmp = gst_caps_new_empty ();
   }
-
-  tmp = gst_caps_new_empty ();
 
   for (i = 0; i < G_N_ELEMENTS (upload_methods); i++) {
     GstCaps *tmp2;
+
+    // Checked above already and put to the front
+    if (upload->priv->method == upload_methods[i])
+      continue;
 
     tmp2 =
         upload_methods[i]->transform_caps (upload->priv->upload_impl[i],
@@ -2418,6 +3118,8 @@ gst_gl_upload_transform_caps (GstGLUpload * upload, GstGLContext * context,
   } else {
     result = tmp;
   }
+
+  GST_OBJECT_UNLOCK (upload);
 
   return result;
 }
@@ -2456,7 +3158,14 @@ _gst_gl_upload_set_caps_unlocked (GstGLUpload * upload, GstCaps * in_caps,
   gst_caps_replace (&upload->priv->in_caps, in_caps);
   gst_caps_replace (&upload->priv->out_caps, out_caps);
 
-  gst_video_info_from_caps (&upload->priv->in_info, in_caps);
+  gst_video_info_dma_drm_init (&upload->priv->in_info_drm);
+  if (gst_video_is_dma_drm_caps (in_caps)) {
+    gst_video_info_dma_drm_from_caps (&upload->priv->in_info_drm, in_caps);
+  } else {
+    gst_video_info_from_caps (&upload->priv->in_info, in_caps);
+    gst_video_info_dma_drm_from_video_info (&upload->priv->in_info_drm,
+        &upload->priv->in_info, DRM_FORMAT_MOD_LINEAR);
+  }
   gst_video_info_from_caps (&upload->priv->out_info, out_caps);
 
   upload->priv->method = NULL;
@@ -2536,7 +3245,7 @@ _upload_find_method (GstGLUpload * upload, gpointer last_impl)
   upload->priv->method = upload_methods[method_i];
   upload->priv->method_impl = upload->priv->upload_impl[method_i];
 
-  GST_DEBUG_OBJECT (upload, "attempting upload with uploader %s",
+  GST_INFO_OBJECT (upload, "attempting upload with uploader %s",
       upload->priv->method->name);
 
   upload->priv->method_i++;
@@ -2624,7 +3333,7 @@ restart:
           last_method != NULL ? last_method->name : "None",
           upload->priv->method->name, caps, upload->priv->out_caps);
 
-      if (caps == NULL || !gst_caps_is_subset (caps, upload->priv->out_caps)) {
+      if (caps == NULL || !gst_caps_is_subset (upload->priv->out_caps, caps)) {
         gst_buffer_replace (&outbuf, NULL);
         ret = GST_GL_UPLOAD_RECONFIGURE;
       }
@@ -2650,4 +3359,95 @@ restart:
   return ret;
 
 #undef NEXT_METHOD
+}
+
+/**
+ * gst_gl_upload_fixate_caps:
+ * @upload: a #GstGLUpload
+ * @direction: the pad #GstPadDirection
+ * @caps: a #GstCaps as the reference
+ * @othercaps: (transfer full): a #GstCaps to fixate
+ *
+ * Fixate the @othercaps based on the information of the @caps.
+ *
+ * Returns: (transfer full): the fixated caps
+ *
+ * Since: 1.24
+ */
+GstCaps *
+gst_gl_upload_fixate_caps (GstGLUpload * upload, GstPadDirection direction,
+    GstCaps * caps, GstCaps * othercaps)
+{
+  guint n, i;
+  GstGLTextureTarget target;
+  GstCaps *ret_caps = NULL;
+
+  GST_DEBUG_OBJECT (upload, "Fixate caps %" GST_PTR_FORMAT ", using caps %"
+      GST_PTR_FORMAT ", direction is %s.", othercaps, caps,
+      direction == GST_PAD_SRC ? "src" : "sink");
+
+  if (direction == GST_PAD_SRC) {
+    ret_caps = gst_caps_fixate (othercaps);
+    goto out;
+  }
+
+  if (gst_caps_is_fixed (othercaps)) {
+    ret_caps = othercaps;
+    goto out;
+  }
+
+  // If a method is currently configured then fixate to the caps of this method
+  // if possible.
+  GST_OBJECT_LOCK (upload);
+  if (upload->priv->method) {
+    GstCaps *current_method_caps =
+        upload->priv->method->transform_caps (upload->priv->method_impl,
+        upload->context, GST_PAD_SINK, caps);
+    GstCaps *tmp = gst_caps_intersect_full (current_method_caps, othercaps,
+        GST_CAPS_INTERSECT_FIRST);
+
+    if (!gst_caps_is_empty (tmp)) {
+      gst_caps_unref (othercaps);
+      othercaps = tmp;
+    } else {
+      gst_caps_unref (tmp);
+    }
+    gst_caps_unref (current_method_caps);
+  }
+  GST_OBJECT_UNLOCK (upload);
+
+  /* Prefer target 2D->rectangle->oes */
+  for (target = GST_GL_TEXTURE_TARGET_2D;
+      target <= GST_GL_TEXTURE_TARGET_EXTERNAL_OES; target++) {
+    n = gst_caps_get_size (othercaps);
+    for (i = 0; i < n; i++) {
+      GstStructure *s;
+
+      s = gst_caps_get_structure (othercaps, i);
+      if (_structure_check_target (s, 1 << target))
+        break;
+    }
+
+    /* If the target is found, fixate the other fields */
+    if (i < n) {
+      ret_caps = gst_caps_new_empty ();
+      gst_caps_append_structure_full (ret_caps,
+          gst_structure_copy (gst_caps_get_structure (othercaps, i)),
+          gst_caps_features_copy (gst_caps_get_features (othercaps, i)));
+
+      ret_caps = gst_caps_fixate (ret_caps);
+      gst_caps_set_simple (ret_caps, "texture-target", G_TYPE_STRING,
+          gst_gl_texture_target_to_string (target), NULL);
+
+      gst_caps_unref (othercaps);
+
+      goto out;
+    }
+  }
+
+  ret_caps = gst_caps_fixate (othercaps);
+
+out:
+  GST_DEBUG_OBJECT (upload, "Fixate return %" GST_PTR_FORMAT, ret_caps);
+  return ret_caps;
 }

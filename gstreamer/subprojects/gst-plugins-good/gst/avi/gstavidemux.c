@@ -909,8 +909,8 @@ gst_avi_demux_handle_sink_event (GstPad * pad, GstObject * parent,
       for (i = 0; i < avi->num_streams; i++) {
         avi->stream[i].discont = TRUE;
       }
-      /* fall through to default case so that the event gets passed downstream */
     }
+      /* FALLTHROUGH */
     default:
       res = gst_pad_event_default (pad, parent, event);
       break;
@@ -3467,7 +3467,7 @@ gst_avi_demux_stream_header_push (GstAviDemux * avi)
         /* Need more data */
         return ret;
       }
-      /* fall-though */
+      /* FALLTHROUGH */
     case GST_AVI_DEMUX_HEADER_INFO:
       GST_DEBUG_OBJECT (avi, "skipping junk between header and data ...");
       while (TRUE) {
@@ -4488,9 +4488,9 @@ gst_avi_demux_do_seek (GstAviDemux * avi, GstSegment * segment,
   gboolean next;
 
   seek_time = segment->position;
-  keyframe = ! !(flags & GST_SEEK_FLAG_KEY_UNIT);
-  before = ! !(flags & GST_SEEK_FLAG_SNAP_BEFORE);
-  after = ! !(flags & GST_SEEK_FLAG_SNAP_AFTER);
+  keyframe = !!(flags & GST_SEEK_FLAG_KEY_UNIT);
+  before = !!(flags & GST_SEEK_FLAG_SNAP_BEFORE);
+  after = !!(flags & GST_SEEK_FLAG_SNAP_AFTER);
 
   GST_DEBUG_OBJECT (avi, "seek to: %" GST_TIME_FORMAT
       " keyframe seeking:%d, %s", GST_TIME_ARGS (seek_time), keyframe,
@@ -4763,10 +4763,10 @@ avi_demux_handle_seek_push (GstAviDemux * avi, GstPad * pad, GstEvent * event)
   gst_segment_do_seek (&seeksegment, rate, format, flags,
       cur_type, cur, stop_type, stop, &update);
 
-  keyframe = ! !(flags & GST_SEEK_FLAG_KEY_UNIT);
+  keyframe = !!(flags & GST_SEEK_FLAG_KEY_UNIT);
   cur = seeksegment.position;
-  before = ! !(flags & GST_SEEK_FLAG_SNAP_BEFORE);
-  after = ! !(flags & GST_SEEK_FLAG_SNAP_AFTER);
+  before = !!(flags & GST_SEEK_FLAG_SNAP_BEFORE);
+  after = !!(flags & GST_SEEK_FLAG_SNAP_AFTER);
 
   GST_DEBUG_OBJECT (avi,
       "Seek requested: ts %" GST_TIME_FORMAT " stop %" GST_TIME_FORMAT

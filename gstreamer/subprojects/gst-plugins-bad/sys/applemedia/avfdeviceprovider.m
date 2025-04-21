@@ -32,6 +32,7 @@
 #include <gst/gst.h>
 
 static GstDevice *gst_avf_device_new (const gchar * device_name, int device_index,
+                                      const gchar * device_uid,
                                       GstCaps * caps, GstAvfDeviceType type,
                                       GstStructure *props);
 G_DEFINE_TYPE (GstAVFDeviceProvider, gst_avf_device_provider,
@@ -47,6 +48,8 @@ gst_avf_device_provider_class_init (GstAVFDeviceProviderClass * klass)
   // TODO: Add start/stop callbacks to receive device notifications.
   // https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/886
   dm_class->probe = gst_avf_device_provider_probe;
+
+  gst_avf_video_src_debug_init ();
 
   gst_device_provider_class_set_static_metadata (dm_class,
                                                  "AVF Device Provider", "Source/Video",
@@ -79,7 +82,7 @@ gst_av_capture_device_get_props (AVCaptureDevice *device)
   g_free (unique_id);
   g_free (model_id);
 
-#if !HAVE_IOS
+#ifndef HAVE_IOS
   char *manufacturer = g_strdup ([[device manufacturer] UTF8String]);
   gst_structure_set (props,
     "avf.manufacturer", G_TYPE_STRING, manufacturer,
@@ -97,8 +100,9 @@ gst_avf_device_provider_probe (GstDeviceProvider * provider)
   GList *result;
 
   result = NULL;
-
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+G_GNUC_END_IGNORE_DEPRECATIONS
   AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
   for (int i = 0; i < [devices count]; i++) {
     AVCaptureDevice *device = [devices objectAtIndex:i];
@@ -107,11 +111,13 @@ gst_avf_device_provider_probe (GstDeviceProvider * provider)
     GstCaps *caps = gst_av_capture_device_get_caps (device, output, GST_AVF_VIDEO_SOURCE_ORIENTATION_DEFAULT);
     GstStructure *props = gst_av_capture_device_get_props (device);
     const gchar *deviceName = [[device localizedName] UTF8String];
-    GstDevice *gst_device = gst_avf_device_new (deviceName, i, caps, GST_AVF_DEVICE_TYPE_VIDEO_SOURCE, props);
+    const gchar *deviceUid = [[device uniqueID] UTF8String];
+    GstDevice *gst_device = gst_avf_device_new (deviceName, i, deviceUid, caps, GST_AVF_DEVICE_TYPE_VIDEO_SOURCE, props);
 
     result = g_list_prepend (result, gst_object_ref_sink (gst_device));
 
     gst_structure_free (props);
+    gst_caps_unref (caps);
   }
 
   result = g_list_reverse (result);
@@ -121,7 +127,8 @@ gst_avf_device_provider_probe (GstDeviceProvider * provider)
 
 enum
 {
-  PROP_DEVICE_INDEX = 1
+  PROP_DEVICE_INDEX = 1,
+  PROP_DEVICE_UNIQUE_ID,
 };
 
 G_DEFINE_TYPE (GstAvfDevice, gst_avf_device, GST_TYPE_DEVICE);
@@ -137,6 +144,16 @@ static void gst_avf_device_set_property (GObject * object, guint prop_id,
                                          const GValue * value, GParamSpec * pspec);
 
 static void
+gst_avf_device_finalize (GObject * object)
+{
+  GstAvfDevice *avf_dev = GST_AVF_DEVICE (object);
+
+  g_free (avf_dev->device_uid);
+
+  G_OBJECT_CLASS (gst_avf_device_parent_class)->finalize (object);
+}
+
+static void
 gst_avf_device_class_init (GstAvfDeviceClass * klass)
 {
   GstDeviceClass *dev_class = GST_DEVICE_CLASS (klass);
@@ -145,6 +162,7 @@ gst_avf_device_class_init (GstAvfDeviceClass * klass)
   dev_class->create_element = gst_avf_device_create_element;
   dev_class->reconfigure_element = gst_avf_device_reconfigure_element;
 
+  object_class->finalize = GST_DEBUG_FUNCPTR (gst_avf_device_finalize);
   object_class->get_property = gst_avf_device_get_property;
   object_class->set_property = gst_avf_device_set_property;
 
@@ -152,6 +170,10 @@ gst_avf_device_class_init (GstAvfDeviceClass * klass)
       g_param_spec_int ("device-index", "Device Index",
           "The zero-based device index", -1, G_MAXINT, 0,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT_ONLY));
+  g_object_class_install_property (object_class, PROP_DEVICE_UNIQUE_ID,
+      g_param_spec_string ("device-unique-id", "Device UID",
+          "An identifier that uniquely identifies the device",
+          NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT_ONLY));
 }
 
 static void
@@ -166,7 +188,7 @@ gst_avf_device_create_element (GstDevice * device, const gchar * name)
   GstElement *elem;
 
   elem = gst_element_factory_make (avf_dev->element, name);
-  g_object_set (elem, "device-index", avf_dev->device_index, NULL);
+  g_object_set (elem, "device-index", avf_dev->device_index, "device-unique-id", avf_dev->device_uid, NULL);
 
   return elem;
 }
@@ -177,7 +199,7 @@ gst_avf_device_reconfigure_element (GstDevice * device, GstElement * element)
   GstAvfDevice *avf_dev = GST_AVF_DEVICE (device);
 
   if (!strcmp (avf_dev->element, "avfvideosrc") && GST_IS_AVF_VIDEO_SRC (element)) {
-    g_object_set (element, "device-index", avf_dev->device_index, NULL);
+    g_object_set (element, "device-index", avf_dev->device_index, "device-unique-id", avf_dev->device_uid, NULL);
     return TRUE;
   }
 
@@ -195,6 +217,9 @@ gst_avf_device_get_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_DEVICE_INDEX:
       g_value_set_int (value, device->device_index);
+      break;
+    case PROP_DEVICE_UNIQUE_ID:
+      g_value_set_string (value, device->device_uid);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -214,6 +239,9 @@ gst_avf_device_set_property (GObject * object, guint prop_id,
     case PROP_DEVICE_INDEX:
       device->device_index = g_value_get_int (value);
       break;
+    case PROP_DEVICE_UNIQUE_ID:
+      device->device_uid = g_value_dup_string (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -221,13 +249,15 @@ gst_avf_device_set_property (GObject * object, guint prop_id,
 }
 
 static GstDevice *
-gst_avf_device_new (const gchar * device_name, int device_index, GstCaps * caps, GstAvfDeviceType type, GstStructure *props)
+gst_avf_device_new (const gchar * device_name, int device_index, const gchar * device_uid,
+                    GstCaps * caps, GstAvfDeviceType type, GstStructure *props)
 {
   GstAvfDevice *gstdev;
   const gchar *element = NULL;
   const gchar *klass = NULL;
 
   g_return_val_if_fail (device_name, NULL);
+  g_return_val_if_fail (device_uid, NULL);
   g_return_val_if_fail (caps, NULL);
 
 
@@ -244,7 +274,8 @@ gst_avf_device_new (const gchar * device_name, int device_index, GstCaps * caps,
 
   gstdev = g_object_new (GST_TYPE_AVF_DEVICE,
                          "display-name", device_name, "caps", caps, "device-class", klass,
-                         "device-index", device_index, "properties", props, NULL);
+                         "device-index", device_index, "device-unique-id", device_uid,
+                         "properties", props, NULL);
 
   gstdev->type = type;
   gstdev->element = element;

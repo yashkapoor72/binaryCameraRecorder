@@ -822,7 +822,7 @@ main (int argc, char *argv[])
     /* no duration, seek to 1 second, this could EOS */
     position = 1 * GST_SECOND;
 
-  /* seek to the a position in the file. Most files have a black first frame so
+  /* seek to the position in the file. Most files have a black first frame so
    * by seeking to somewhere else we have a bigger chance of getting something
    * more interesting. An optimisation would be to detect black images and then
    * seek a little more */
@@ -1009,6 +1009,9 @@ while in `PLAYING` state and without interrupting the data flow.
 
 There are some important things to consider when building dynamic
 pipelines:
+
+  - There are `insertbin` and `switchbin` elements, that target some
+    cases of dynamical pipeline changes, and might fulfill your needs.
 
   - When removing elements from the pipeline, make sure that there is no
     dataflow on unlinked pads because that will cause a fatal pipeline

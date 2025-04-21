@@ -459,9 +459,13 @@ gst_mpd_client_init (GstMPDClient * client)
 GstMPDClient *
 gst_mpd_client_new (void)
 {
+  GstMPDClient *ret;
+
   GST_DEBUG_CATEGORY_INIT (gst_dash_mpd_client_debug, "dashmpdclient", 0,
       "DashmMpdClient");
-  return g_object_new (GST_TYPE_MPD_CLIENT, NULL);
+  ret = g_object_new (GST_TYPE_MPD_CLIENT, NULL);
+  gst_object_ref_sink (ret);
+  return ret;
 }
 
 GstMPDClient *
@@ -1768,7 +1772,7 @@ gst_mpd_client_stream_seek (GstMPDClient * client, GstActiveStream * stream,
 
     g_return_val_if_fail (GST_MPD_MULT_SEGMENT_BASE_NODE
         (stream->cur_seg_template)->SegmentTimeline == NULL, FALSE);
-    if (!GST_CLOCK_TIME_IS_VALID (duration)) {
+    if (!GST_CLOCK_TIME_IS_VALID (duration) || duration == 0) {
       return FALSE;
     }
 

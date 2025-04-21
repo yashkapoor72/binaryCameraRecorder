@@ -170,6 +170,31 @@ _g_checksum_to_webrtc_string (GChecksumType type)
   }
 }
 
+void
+_remove_optional_offer_fields (GstCaps * offer_caps)
+{
+  int i;
+
+  for (i = 0; i < gst_caps_get_size (offer_caps); i++) {
+    GstStructure *s = gst_caps_get_structure (offer_caps, i);
+    const gchar *mtype = gst_structure_get_string (s, "media");
+    const gchar *encoding_name = gst_structure_get_string (s, "encoding-name");
+
+    if (mtype == NULL || encoding_name == NULL) {
+      continue;
+    }
+
+    /* Special cases for different codecs - sender-only fields
+     * that we don't need to care about for SDP intersection */
+    if (g_str_equal (mtype, "audio")) {
+      if (g_str_equal (encoding_name, "OPUS")) {
+        gst_structure_remove_fields (s, "sprop-stereo", "sprop-maxcapturerate",
+            NULL);
+      }
+    }
+  }
+}
+
 GstCaps *
 _rtp_caps_from_media (const GstSDPMedia * media)
 {
@@ -222,4 +247,29 @@ webrtc_kind_from_caps (const GstCaps * caps)
     return GST_WEBRTC_KIND_VIDEO;
 
   return GST_WEBRTC_KIND_UNKNOWN;
+}
+
+char *
+_get_msid_from_media (const GstSDPMedia * media)
+{
+  int i;
+
+  for (i = 0; i < gst_sdp_media_attributes_len (media); i++) {
+    const GstSDPAttribute *attr = gst_sdp_media_get_attribute (media, i);
+    const char *start, *end;
+
+    if (!attr->value)
+      continue;
+
+    start = strstr (attr->value, "msid:");
+    if (!start)
+      continue;
+
+    start += strlen ("msid:");
+    end = strstr (start, " ");
+    if (end)
+      return g_strndup (start, end - start);
+  }
+
+  return NULL;
 }

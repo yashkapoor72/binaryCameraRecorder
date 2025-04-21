@@ -43,6 +43,10 @@
 
 #include "rtsp-onvif-media.h"
 #include "rtsp-latency-bin.h"
+#include "rtsp-server-internal.h"
+
+GST_DEBUG_CATEGORY_STATIC (rtsp_onvif_media_debug);
+#define GST_CAT_DEFAULT rtsp_onvif_media_debug
 
 struct GstRTSPOnvifMediaPrivate
 {
@@ -108,6 +112,13 @@ gst_rtsp_onvif_media_setup_sdp (GstRTSPMedia * media, GstSDPMessage * sdp,
     }
 
     n_caps = gst_caps_get_size (caps);
+    if (n_caps == 0) {
+      GST_ERROR ("media caps for stream %p are %" GST_PTR_FORMAT, stream, caps);
+      res = FALSE;
+      gst_caps_unref (caps);
+      break;
+    }
+
     for (j = 0; res && j < n_caps; j++) {
       GstStructure *s = gst_caps_get_structure (caps, j);
       GstCaps *media_caps = gst_caps_new_full (gst_structure_copy (s), NULL);
@@ -234,6 +245,9 @@ gst_rtsp_onvif_media_class_init (GstRTSPOnvifMediaClass * klass)
   gobject_class->finalize = gst_rtsp_onvif_media_finalize;
 
   media_class->setup_sdp = gst_rtsp_onvif_media_setup_sdp;
+
+  GST_DEBUG_CATEGORY_INIT (rtsp_onvif_media_debug, "rtsponvifmedia", 0,
+      "GstRTSPOnvifMedia");
 }
 
 static void
@@ -272,10 +286,15 @@ gst_rtsp_onvif_media_collect_backchannel (GstRTSPOnvifMedia * media)
   if (!element)
     return ret;
 
+  GST_LOG_OBJECT (media, "Looking for backchannel bin onvif-backchannel");
+
   backchannel_bin =
       gst_bin_get_by_name (GST_BIN (element), "onvif-backchannel");
-  if (!backchannel_bin)
+  if (!backchannel_bin) {
+    GST_ERROR_OBJECT (media,
+        "onvif-backchannel bin not found in media pipeline");
     goto out;
+  }
 
   /* We don't want the backchannel element, which is a receiver, to affect
    * latency on the complete pipeline. That's why we remove it from the
@@ -298,7 +317,9 @@ gst_rtsp_onvif_media_collect_backchannel (GstRTSPOnvifMedia * media)
   if (!pad)
     goto out;
 
-  gst_rtsp_media_create_stream (GST_RTSP_MEDIA (media), latency_bin, pad);
+  GST_LOG_OBJECT (media, "Creating backchannel stream");
+  gst_rtsp_media_create_and_join_stream (GST_RTSP_MEDIA (media), latency_bin,
+      pad);
   ret = TRUE;
 
 out:

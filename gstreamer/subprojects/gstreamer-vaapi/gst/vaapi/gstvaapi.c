@@ -29,14 +29,14 @@
 #include "gstvaapisink.h"
 #include "gstvaapidecodebin.h"
 
-#if USE_ENCODERS
+#if GST_VAAPI_USE_ENCODERS
 #include "gstvaapiencode_h264.h"
 #include "gstvaapiencode_mpeg2.h"
 #include "gstvaapiencode_jpeg.h"
 #include "gstvaapiencode_vp8.h"
 #include "gstvaapiencode_h265.h"
 
-#if USE_VP9_ENCODER
+#if GST_VAAPI_USE_VP9_ENCODER
 #include "gstvaapiencode_vp9.h"
 #endif
 #endif
@@ -51,7 +51,7 @@ static void
 plugin_add_dependencies (GstPlugin * plugin)
 {
   const gchar *envvars[] = { "GST_VAAPI_ALL_DRIVERS", "LIBVA_DRIVER_NAME",
-    "DISPLAY", "WAYLAND_DISPLAY", NULL
+    "DISPLAY", "WAYLAND_DISPLAY", "GST_VAAPI_DRM_DEVICE", NULL
   };
   const gchar *kernel_paths[] = { "/dev/dri", NULL };
   const gchar *kernel_names[] = { "card", "render", NULL };
@@ -109,7 +109,7 @@ display_get_decoder_codecs (GstVaapiDisplay * display)
   return codecs;
 }
 
-#if USE_ENCODERS
+#if GST_VAAPI_USE_ENCODERS
 static GArray *
 display_get_encoder_codecs (GstVaapiDisplay * display)
 {
@@ -135,7 +135,7 @@ struct _GstVaapiEncoderMap
 
 #define DEF_ENC(CODEC,codec)          \
   {GST_VAAPI_CODEC_##CODEC,           \
-   GST_RANK_PRIMARY,                  \
+   GST_RANK_NONE,                     \
    "vaapi" G_STRINGIFY (codec) "enc", \
    gst_vaapiencode_##codec##_register_type}
 
@@ -144,7 +144,7 @@ static const GstVaapiEncoderMap vaapi_encode_map[] = {
   DEF_ENC (MPEG2, mpeg2),
   DEF_ENC (JPEG, jpeg),
   DEF_ENC (VP8, vp8),
-#if USE_VP9_ENCODER
+#if GST_VAAPI_USE_VP9_ENCODER
   DEF_ENC (VP9, vp9),
 #endif
   DEF_ENC (H265, h265),
@@ -194,6 +194,9 @@ plugin_init (GstPlugin * plugin)
   if (!gst_vaapi_driver_is_whitelisted (display))
     goto unsupported_driver;
 
+  gst_plugin_add_status_warning (plugin,
+      "GStreamer VA-API is deprecated in favor of GstVA in gst-plugins-bad");
+
   _gst_vaapi_has_video_processing =
       gst_vaapi_display_has_video_processing (display);
 
@@ -201,7 +204,7 @@ plugin_init (GstPlugin * plugin)
   if (decoders) {
     gst_vaapidecode_register (plugin, decoders);
     gst_element_register (plugin, "vaapidecodebin",
-        GST_RANK_PRIMARY + 2, GST_TYPE_VAAPI_DECODE_BIN);
+        GST_RANK_NONE, GST_TYPE_VAAPI_DECODE_BIN);
     g_array_unref (decoders);
   }
 
@@ -212,12 +215,10 @@ plugin_init (GstPlugin * plugin)
         GST_RANK_NONE, GST_TYPE_VAAPIPOSTPROC);
   }
 
-  rank = GST_RANK_SECONDARY;
-  if (g_getenv ("WAYLAND_DISPLAY"))
-    rank = GST_RANK_MARGINAL;
+  rank = GST_RANK_NONE;
   gst_element_register (plugin, "vaapisink", rank, GST_TYPE_VAAPISINK);
 
-#if USE_ENCODERS
+#if GST_VAAPI_USE_ENCODERS
   gst_vaapiencode_register (plugin, display);
 #endif
 

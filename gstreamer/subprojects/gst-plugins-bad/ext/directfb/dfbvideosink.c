@@ -594,20 +594,18 @@ gst_dfbvideosink_event_thread (GstDfbVideoSink * dfbvideosink)
             "event buffer");
       } else {                  /* Handle event */
         if (event.input.type == DIET_KEYPRESS) {
-          switch (event.input.key_symbol) {
-            case DIKS_ESCAPE:
-            {
-              GST_ELEMENT_ERROR (dfbvideosink, RESOURCE, OPEN_WRITE,
-                  ("Video output device is gone."),
-                  ("We were running fullscreen and user "
-                      "pressed the ESC key, stopping playback."));
-            }
-            default:
-              GST_DEBUG_OBJECT (dfbvideosink, "key press event %c !",
-                  event.input.key_symbol);
-              gst_dfbvideosink_navigation_send_event
-                  (gst_navigation_event_new_key_press ("prout",
-                      GST_NAVIGATION_MODIFIER_NONE));
+          if (event.input.key_symbol == DIKS_ESCAPE) {
+            GST_ELEMENT_ERROR (dfbvideosink, RESOURCE, OPEN_WRITE,
+                ("Video output device is gone."),
+                ("We were running fullscreen and user "
+                    "pressed the ESC key, stopping playback."));
+          } else {
+            GST_DEBUG_OBJECT (dfbvideosink, "key press event %c !",
+                event.input.key_symbol);
+            gst_dfbvideosink_navigation_send_event
+                (GST_NAVIGATION (dfbvideosink),
+                gst_navigation_event_new_key_press ("dfb",
+                    GST_NAVIGATION_MODIFIER_NONE));
           }
         } else if (event.input.type == DIET_BUTTONPRESS) {
           gint x, y;
@@ -618,7 +616,8 @@ gst_dfbvideosink_event_thread (GstDfbVideoSink * dfbvideosink)
               event.input.button, x, y);
 
           gst_dfbvideosink_navigation_send_event
-              (gst_navigation_event_new_mouse_button_press (event.input.button,
+              (GST_NAVIGATION (dfbvideosink),
+              gst_navigation_event_new_mouse_button_press (event.input.button,
                   x, y, GST_NAVIGATION_MODIFIER_NONE));
         } else if (event.input.type == DIET_BUTTONRELEASE) {
           gint x, y;
@@ -629,14 +628,16 @@ gst_dfbvideosink_event_thread (GstDfbVideoSink * dfbvideosink)
               event.input.button, x, y);
 
           gst_dfbvideosink_navigation_send_event
-              (gst_navigation_event_new_mouse_button_release
-              (event.input.button, x, y, GST_NAVIGATION_MODIFIER_NONE));
+              (GST_NAVIGATION (dfbvideosink),
+              gst_navigation_event_new_mouse_button_release (event.input.button,
+                  x, y, GST_NAVIGATION_MODIFIER_NONE));
         } else if (event.input.type == DIET_AXISMOTION) {
           gint x, y;
 
           dfbvideosink->layer->GetCursorPosition (dfbvideosink->layer, &x, &y);
           gst_dfbvideosink_navigation_send_event
-              (gst_navigation_event_new_mouse_move (x, y,
+              (GST_NAVIGATION (dfbvideosink),
+              gst_navigation_event_new_mouse_move (x, y,
                   GST_NAVIGATION_MODIFIER_NONE));
         } else {
           GST_WARNING_OBJECT (dfbvideosink, "unhandled event type %d",
@@ -2007,8 +2008,7 @@ gst_dfbvideosink_navigation_send_event (GstNavigation * navigation,
   /* Our coordinates can be wrong here if we centered the video */
 
   /* Converting pointer coordinates to the non scaled geometry */
-  if gst_navigation_event_get_coordinates
-    (event, &old_x, &old_y) {
+  if (gst_navigation_event_get_coordinates (event, &old_x, &old_y)) {
     x = old_x;
     y = old_y;
 
@@ -2032,7 +2032,7 @@ gst_dfbvideosink_navigation_send_event (GstNavigation * navigation,
     GST_DEBUG_OBJECT (dfbvideosink, "translated navigation event y "
         "coordinate from %fd to %fd", old_y, y);
     gst_navigation_event_set_coordinates (event, x, y);
-    }
+  }
 
   pad = gst_pad_get_peer (GST_VIDEO_SINK_PAD (dfbvideosink));
 

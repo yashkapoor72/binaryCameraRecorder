@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gst-plugins-base 0.10.32.2\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
 "PO-Revision-Date: 2012-05-05 19:13+0100\n"
 "Last-Translator: Savvas Radevic <vicedar@gmail.com>\n"
 "Language-Team: Greek <team@lists.gnome.gr>\n"
@@ -91,10 +91,6 @@ msgstr "Λείπει το στοιχείο '%s' - ελέγξτε την εγκα
 msgid "Could not create \"uridecodebin\" element."
 msgstr "Αδυναμία δημιουργία στοιχείου «decodebin»."
 
-#, fuzzy
-msgid "Could not create \"uridecodebin3\" element."
-msgstr "Αδυναμία δημιουργία στοιχείου «decodebin»."
-
 #, c-format
 msgid "Both autovideosink and %s elements are missing."
 msgstr "Λείπουν και τα δύο στοιχεία autoaudiosink και %s."
@@ -158,7 +154,19 @@ msgstr "Αυτός ο τύπος ροής δεν μπορεί να αναπαρ�
 msgid "No URI handler implemented for \"%s\"."
 msgstr "Δεν έχει υλοποιηθεί χειριστής URI για «%s»."
 
+#, fuzzy
+msgid "Source element can't be prepared"
+msgstr "Το στοιχείο προέλευσης δεν είναι έγκυρο."
+
 msgid "Source element is invalid."
+msgstr "Το στοιχείο προέλευσης δεν είναι έγκυρο."
+
+#, c-format
+msgid "Failed to create download directory '%s'."
+msgstr ""
+
+#, fuzzy
+msgid "Source element has no pads."
 msgstr "Το στοιχείο προέλευσης δεν είναι έγκυρο."
 
 #, c-format
@@ -171,13 +179,13 @@ msgstr "Αδυναμία εγγραφής ήχου αρκετά γρήγορα"
 msgid "This CD has no audio tracks"
 msgstr "Αυτό το CD δεν έχει ηχητικά κομμάτια"
 
-msgid "failed to draw pattern"
+msgid "An OpenGL error occurred"
 msgstr ""
 
-msgid "A GL error occurred"
+msgid "The GL API is not compatible with the current GL context"
 msgstr ""
 
-msgid "format wasn't negotiated before get function"
+msgid "Subclass failed to initialize."
 msgstr ""
 
 msgid "ID3 tag"
@@ -510,6 +518,14 @@ msgstr "ισορροπία λευκού λήψης"
 msgid "The white balance mode set when capturing an image"
 msgstr "Η ισορροπία λευκού που ορίσθηκε κατά τη λήψη μιας εικόνας"
 
+#, fuzzy
+msgid "capturing light source"
+msgstr "πηγή λήψης"
+
+#, fuzzy
+msgid "The light source indicates the kind of light when capturing animage"
+msgstr "Ο τρόπος σύλληψης σκηνής που χρησιμοποιήθηκε για τη λήψη μιας εικόνας"
+
 msgid "capturing contrast"
 msgstr "αντίθεση λήψης"
 
@@ -688,16 +704,14 @@ msgstr ""
 msgid "enable/disable trick modes"
 msgstr ""
 
-#, fuzzy
-msgid "change audio track"
-msgstr "Αυτό το CD δεν έχει ηχητικά κομμάτια"
-
-msgid "change video track"
+msgid "change to previous/next audio track"
 msgstr ""
 
-#, fuzzy
-msgid "change subtitle track"
-msgstr "Μορφή υποτίτλων Kate"
+msgid "change to previous/next video track"
+msgstr ""
+
+msgid "change to previous/next subtitle track"
+msgstr ""
 
 msgid "seek to beginning"
 msgstr ""
@@ -706,6 +720,10 @@ msgid "show keyboard shortcuts"
 msgstr ""
 
 msgid "Interactive mode - keyboard controls:"
+msgstr ""
+
+#, c-format
+msgid "Use Windows high-resolution clock, precision: %u ms\n"
 msgstr ""
 
 msgid "Output status information and property notifications"
@@ -723,6 +741,9 @@ msgstr ""
 msgid "Enable gapless playback"
 msgstr ""
 
+msgid "Enable instantaneous uri changes (only with playbin3)"
+msgstr ""
+
 msgid "Shuffle playlist"
 msgstr ""
 
@@ -735,6 +756,9 @@ msgstr ""
 msgid "Start position in seconds."
 msgstr ""
 
+msgid "Enable accurate seeking"
+msgstr ""
+
 msgid "Playlist file containing input media files"
 msgstr ""
 
@@ -744,15 +768,18 @@ msgstr ""
 msgid "Do not print any output (apart from errors)"
 msgstr ""
 
-msgid "Use playbin3 pipeline"
+msgid "Use playbin3 pipeline (default)"
 msgstr ""
 
-msgid "(default varies depending on 'USE_PLAYBIN' env variable)"
+msgid "Use playbin2 pipeline"
 msgstr ""
 
 msgid ""
 "Keep showing the last frame on EOS until quit or playlist change command "
 "(gapless is ignored)"
+msgstr ""
+
+msgid "Do not print current position of pipeline"
 msgstr ""
 
 #, c-format

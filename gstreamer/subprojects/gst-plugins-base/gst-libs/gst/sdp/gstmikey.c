@@ -37,6 +37,27 @@
 
 #include "gstmikey.h"
 
+#ifndef GST_DISABLE_GST_DEBUG
+#define GST_CAT_DEFAULT ensure_debug_category()
+static GstDebugCategory *
+ensure_debug_category (void)
+{
+  static gsize cat_gonce = 0;
+
+  if (g_once_init_enter (&cat_gonce)) {
+    gsize cat_done;
+
+    cat_done = (gsize) _gst_debug_category_new ("sdpmikey", 0, "SDP mikey");
+
+    g_once_init_leave (&cat_gonce, cat_done);
+  }
+
+  return (GstDebugCategory *) cat_gonce;
+}
+#else
+#define ensure_debug_category() /* NOOP */
+#endif /* GST_DISABLE_GST_DEBUG */
+
 GST_DEFINE_MINI_OBJECT_TYPE (GstMIKEYPayload, gst_mikey_payload);
 GST_DEFINE_MINI_OBJECT_TYPE (GstMIKEYMessage, gst_mikey_message);
 
@@ -136,7 +157,8 @@ static GstMIKEYPayloadKEMAC *
 gst_mikey_payload_kemac_copy (const GstMIKEYPayloadKEMAC * payload)
 {
   guint i, len;
-  GstMIKEYPayloadKEMAC *copy = g_slice_dup (GstMIKEYPayloadKEMAC, payload);
+  GstMIKEYPayloadKEMAC *copy =
+      g_memdup2 (payload, sizeof (GstMIKEYPayloadKEMAC));
   gst_mikey_payload_kemac_set (&copy->pt, payload->enc_alg, payload->mac_alg);
   len = payload->subpayloads->len;
   for (i = 0; i < len; i++) {
@@ -287,7 +309,7 @@ gst_mikey_payload_pke_dispose (GstMIKEYPayloadPKE * payload)
 static GstMIKEYPayloadPKE *
 gst_mikey_payload_pke_copy (const GstMIKEYPayloadPKE * payload)
 {
-  GstMIKEYPayloadPKE *copy = g_slice_dup (GstMIKEYPayloadPKE, payload);
+  GstMIKEYPayloadPKE *copy = g_memdup2 (payload, sizeof (GstMIKEYPayloadPKE));
   gst_mikey_payload_pke_set (&copy->pt, payload->C, payload->data_len,
       payload->data);
   return copy;
@@ -359,7 +381,7 @@ gst_mikey_payload_t_dispose (GstMIKEYPayloadT * payload)
 static GstMIKEYPayloadT *
 gst_mikey_payload_t_copy (const GstMIKEYPayloadT * payload)
 {
-  GstMIKEYPayloadT *copy = g_slice_dup (GstMIKEYPayloadT, payload);
+  GstMIKEYPayloadT *copy = g_memdup2 (payload, sizeof (GstMIKEYPayloadT));
   gst_mikey_payload_t_set (&copy->pt, payload->type, payload->ts_value);
   return copy;
 }
@@ -415,7 +437,7 @@ static GstMIKEYPayloadSP *
 gst_mikey_payload_sp_copy (const GstMIKEYPayloadSP * payload)
 {
   guint i, len;
-  GstMIKEYPayloadSP *copy = g_slice_dup (GstMIKEYPayloadSP, payload);
+  GstMIKEYPayloadSP *copy = g_memdup2 (payload, sizeof (GstMIKEYPayloadSP));
   gst_mikey_payload_sp_set (&copy->pt, payload->policy, payload->proto);
   len = payload->params->len;
   for (i = 0; i < len; i++) {
@@ -574,7 +596,7 @@ gst_mikey_payload_rand_dispose (GstMIKEYPayloadRAND * payload)
 static GstMIKEYPayloadRAND *
 gst_mikey_payload_rand_copy (const GstMIKEYPayloadRAND * payload)
 {
-  GstMIKEYPayloadRAND *copy = g_slice_dup (GstMIKEYPayloadRAND, payload);
+  GstMIKEYPayloadRAND *copy = g_memdup2 (payload, sizeof (GstMIKEYPayloadRAND));
   gst_mikey_payload_rand_set (&copy->pt, payload->len, payload->rand);
   return copy;
 }
@@ -683,7 +705,7 @@ gst_mikey_payload_key_data_set_spi (GstMIKEYPayload * payload,
  * gst_mikey_payload_key_data_set_interval:
  * @payload: a #GstMIKEYPayload
  * @vf_len: the length of @vf_data
- * @vf_data: (array length=vf_data): the Valid From data
+ * @vf_data: (array length=vf_len): the Valid From data
  * @vt_len: the length of @vt_data
  * @vt_data: (array length=vt_len): the Valid To data
  *
@@ -730,7 +752,8 @@ gst_mikey_payload_key_data_dispose (GstMIKEYPayloadKeyData * payload)
 static GstMIKEYPayloadKeyData *
 gst_mikey_payload_key_data_copy (const GstMIKEYPayloadKeyData * payload)
 {
-  GstMIKEYPayloadKeyData *copy = g_slice_dup (GstMIKEYPayloadKeyData, payload);
+  GstMIKEYPayloadKeyData *copy =
+      g_memdup2 (payload, sizeof (GstMIKEYPayloadKeyData));
   gst_mikey_payload_key_data_set_key (&copy->pt, payload->key_type,
       payload->key_len, payload->key_data);
   gst_mikey_payload_key_data_set_salt (&copy->pt, payload->salt_len,
@@ -753,7 +776,7 @@ gst_mikey_payload_key_data_copy (const GstMIKEYPayloadKeyData * payload)
 static void
 mikey_payload_free (GstMIKEYPayload * payload)
 {
-  g_slice_free1 (payload->len, payload);
+  g_free (payload);
 }
 
 
@@ -821,7 +844,7 @@ gst_mikey_payload_new (GstMIKEYPayloadType type)
   if (len == 0)
     return NULL;
 
-  result = g_slice_alloc0 (len);
+  result = g_malloc0 (len);
   gst_mini_object_init (GST_MINI_OBJECT_CAST (result),
       0, GST_TYPE_MIKEY_PAYLOAD, copy, clear,
       (GstMiniObjectFreeFunction) mikey_payload_free);
@@ -862,7 +885,7 @@ mikey_message_free (GstMIKEYMessage * msg)
   FREE_ARRAY (msg->map_info);
   FREE_ARRAY (msg->payloads);
 
-  g_slice_free (GstMIKEYMessage, msg);
+  g_free (msg);
 }
 
 /**
@@ -879,7 +902,7 @@ gst_mikey_message_new (void)
 {
   GstMIKEYMessage *result;
 
-  result = g_slice_new0 (GstMIKEYMessage);
+  result = g_new0 (GstMIKEYMessage, 1);
   gst_mini_object_init (GST_MINI_OBJECT_CAST (result),
       0, GST_TYPE_MIKEY_MESSAGE,
       (GstMiniObjectCopyFunction) mikey_message_copy, NULL,
@@ -2256,7 +2279,7 @@ gst_mikey_message_new_from_caps (GstCaps * caps)
   GstStructure *s;
   GstMapInfo info;
   GstBuffer *srtpkey;
-  const GValue *val;
+  const GValue *val, *mki_val;
   const gchar *cipher, *auth;
   const gchar *srtpcipher, *srtpauth, *srtcpcipher, *srtcpauth;
 
@@ -2278,12 +2301,8 @@ gst_mikey_message_new_from_caps (GstCaps * caps)
   srtcpcipher = gst_structure_get_string (s, "srtcp-cipher");
   srtcpauth = gst_structure_get_string (s, "srtcp-auth");
 
-  /* we need srtp cipher/auth or srtcp cipher/auth */
-  if ((srtpcipher == NULL || srtpauth == NULL)
-      && (srtcpcipher == NULL || srtcpauth == NULL)) {
-    GST_WARNING ("could not find the right SRTP parameters in caps");
-    return NULL;
-  }
+  /* Some mikey messages are intended to only set the SPI/MKI,
+   * in which case cipher or auth can be absent. */
 
   /* prefer srtp cipher over srtcp */
   cipher = srtpcipher;
@@ -2296,10 +2315,12 @@ gst_mikey_message_new_from_caps (GstCaps * caps)
     auth = srtcpauth;
 
   /* get cipher and auth values */
-  if (!enc_alg_from_cipher_name (cipher, &enc_alg) ||
-      !auth_alg_from_cipher_name (cipher, &auth_alg) ||
-      !enc_key_length_from_cipher_name (cipher, &enc_key_length) ||
-      !auth_key_length_from_auth_cipher_name (auth, cipher, &auth_key_length)) {
+  if (cipher && (!enc_alg_from_cipher_name (cipher, &enc_alg) ||
+          !auth_alg_from_cipher_name (cipher, &auth_alg) ||
+          !enc_key_length_from_cipher_name (cipher, &enc_key_length) ||
+          (auth
+              && !auth_key_length_from_auth_cipher_name (auth, cipher,
+                  &auth_key_length)))) {
     return NULL;
   }
 
@@ -2308,37 +2329,47 @@ gst_mikey_message_new_from_caps (GstCaps * caps)
   gst_mikey_message_set_info (msg, GST_MIKEY_VERSION, GST_MIKEY_TYPE_PSK_INIT,
       FALSE, GST_MIKEY_PRF_MIKEY_1, g_random_int (), GST_MIKEY_MAP_TYPE_SRTP);
 
-  /* timestamp is now */
-  gst_mikey_message_add_t_now_ntp_utc (msg);
-  /* add some random data */
-  gst_mikey_message_add_rand_len (msg, 16);
+  if (cipher || auth) {
+    /* timestamp is now */
+    gst_mikey_message_add_t_now_ntp_utc (msg);
+    /* add some random data */
+    gst_mikey_message_add_rand_len (msg, 16);
 
-  /* the policy '0' is SRTP */
-  payload = gst_mikey_payload_new (GST_MIKEY_PT_SP);
-  gst_mikey_payload_sp_set (payload, 0, GST_MIKEY_SEC_PROTO_SRTP);
+    /* the policy '0' is SRTP */
+    payload = gst_mikey_payload_new (GST_MIKEY_PT_SP);
+    gst_mikey_payload_sp_set (payload, 0, GST_MIKEY_SEC_PROTO_SRTP);
 
-  /* AES-CM or AES-GCM is supported */
-  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_ENC_ALG, 1,
-      &enc_alg);
-  /* encryption key length */
-  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_ENC_KEY_LEN, 1,
-      &enc_key_length);
-  /* HMAC-SHA1 or NULL in case of GCM */
-  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_AUTH_ALG, 1,
-      &auth_alg);
-  /* authentication key length */
-  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_AUTH_KEY_LEN, 1,
-      &auth_key_length);
-  /* we enable encryption on RTP and RTCP */
-  byte = 1;
-  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTP_ENC, 1,
-      &byte);
-  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTCP_ENC, 1,
-      &byte);
-  /* we enable authentication on RTP and RTCP */
-  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTP_AUTH, 1,
-      &byte);
-  gst_mikey_message_add_payload (msg, payload);
+    if (cipher) {
+      /* AES-CM or AES-GCM is supported */
+      gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_ENC_ALG, 1,
+          &enc_alg);
+      /* encryption key length */
+      gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_ENC_KEY_LEN, 1,
+          &enc_key_length);
+    }
+    if (auth) {
+      /* HMAC-SHA1 or NULL in case of GCM */
+      gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_AUTH_ALG, 1,
+          &auth_alg);
+      /* authentication key length */
+      gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_AUTH_KEY_LEN,
+          1, &auth_key_length);
+    }
+    /* we enable encryption on RTP and RTCP */
+    byte = 1;
+    if (cipher) {
+      gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTP_ENC, 1,
+          &byte);
+      gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTCP_ENC, 1,
+          &byte);
+    }
+    if (auth) {
+      /* we enable authentication on RTP and RTCP */
+      gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTP_AUTH, 1,
+          &byte);
+    }
+    gst_mikey_message_add_payload (msg, payload);
+  }
 
   /* make unencrypted KEMAC */
   payload = gst_mikey_payload_new (GST_MIKEY_PT_KEMAC);
@@ -2349,6 +2380,22 @@ gst_mikey_message_new_from_caps (GstCaps * caps)
   gst_mikey_payload_key_data_set_key (pkd, GST_MIKEY_KD_TEK, info.size,
       info.data);
   gst_buffer_unmap (srtpkey, &info);
+  /* add optional SPI/MKI
+   * See: https://www.rfc-editor.org/rfc/rfc3830.html#section-6.14
+   */
+  mki_val = gst_structure_get_value (s, "mki");
+  if (mki_val) {
+    GstBuffer *mki = gst_value_get_buffer (mki_val);
+    if (mki && GST_IS_BUFFER (mki) && gst_buffer_get_size (mki) > 0) {
+      gst_buffer_map (mki, &info, GST_MAP_READ);
+      gst_mikey_payload_key_data_set_spi (pkd, info.size, info.data);
+      gst_buffer_unmap (mki, &info);
+    } else {
+      GST_WARNING
+          ("Failed to get 'mki' from caps as a buffer or the buffer is empty");
+    }
+  }
+
   gst_mikey_payload_kemac_add_sub (payload, pkd);
   gst_mikey_message_add_payload (msg, payload);
 
@@ -2377,6 +2424,7 @@ gboolean
 gst_mikey_message_to_caps (const GstMIKEYMessage * msg, GstCaps * caps)
 {
   gboolean res = FALSE;
+  const GstMIKEYMapSRTP *srtp;
   const GstMIKEYPayload *payload;
   const gchar *srtp_cipher;
   const gchar *srtp_auth;
@@ -2384,8 +2432,16 @@ gst_mikey_message_to_caps (const GstMIKEYMessage * msg, GstCaps * caps)
   srtp_cipher = "aes-128-icm";
   srtp_auth = "hmac-sha1-80";
 
-  /* check the Security policy if any */
-  if ((payload = gst_mikey_message_find_payload (msg, GST_MIKEY_PT_SP, 0))) {
+  /* Look for first crypto session */
+  if (!(srtp = gst_mikey_message_get_cs_srtp (msg, 0))) {
+    GST_ERROR ("No crypto session found at index 0");
+    goto done;
+  }
+
+  /* Look for crypto policy corresponding to first crypto session */
+  if ((payload =
+          gst_mikey_message_find_payload (msg, GST_MIKEY_PT_SP,
+              (unsigned int) srtp->policy))) {
     GstMIKEYPayloadSP *p = (GstMIKEYPayloadSP *) payload;
     guint len, i;
     guint enc_alg = GST_MIKEY_ENC_NULL;
@@ -2478,7 +2534,7 @@ gst_mikey_message_to_caps (const GstMIKEYMessage * msg, GstCaps * caps)
     GstMIKEYPayloadKEMAC *p = (GstMIKEYPayloadKEMAC *) payload;
     const GstMIKEYPayload *sub;
     GstMIKEYPayloadKeyData *pkd;
-    GstBuffer *buf;
+    GstBuffer *buf, *saltbuf;
 
     if (p->enc_alg != GST_MIKEY_ENC_NULL || p->mac_alg != GST_MIKEY_MAC_NULL)
       goto done;
@@ -2491,8 +2547,25 @@ gst_mikey_message_to_caps (const GstMIKEYMessage * msg, GstCaps * caps)
 
     pkd = (GstMIKEYPayloadKeyData *) sub;
     buf = gst_buffer_new_memdup (pkd->key_data, pkd->key_len);
+    if (pkd->salt_len) {
+      saltbuf = gst_buffer_new_memdup (pkd->salt_data, pkd->salt_len);
+      gst_buffer_append (buf, saltbuf);
+      gst_buffer_unref (saltbuf);
+    }
     gst_caps_set_simple (caps, "srtp-key", GST_TYPE_BUFFER, buf, NULL);
     gst_buffer_unref (buf);
+
+    gst_caps_set_simple (caps, "roc", G_TYPE_UINT, srtp->roc, NULL);
+
+    /* Get optional SPI/MKI
+     * See: https://www.rfc-editor.org/rfc/rfc3830.html#section-6.13
+     */
+    if (pkd->kv_type == GST_MIKEY_KV_SPI && pkd->kv_len[0] > 0) {
+      GstBuffer *mki =
+          gst_buffer_new_memdup (pkd->kv_data[0], (gsize) pkd->kv_len[0]);
+      gst_caps_set_simple (caps, "mki", GST_TYPE_BUFFER, mki, NULL);
+      gst_buffer_unref (mki);
+    }
   }
 
   gst_caps_set_simple (caps,

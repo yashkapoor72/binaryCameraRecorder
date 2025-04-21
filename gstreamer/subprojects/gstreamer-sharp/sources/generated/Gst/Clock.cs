@@ -324,14 +324,14 @@ namespace Gst {
 		}
 
 		[UnmanagedFunctionPointer (CallingConvention.Cdecl)]
-		delegate int WaitNativeDelegate (IntPtr inst, IntPtr entry, long jitter);
+		delegate int WaitNativeDelegate (IntPtr inst, IntPtr entry, out long jitter);
 
-		static int Wait_cb (IntPtr inst, IntPtr entry, long jitter)
+		static int Wait_cb (IntPtr inst, IntPtr entry, out long jitter)
 		{
 			try {
 				Clock __obj = GLib.Object.GetObject (inst, false) as Clock;
 				Gst.ClockReturn __result;
-				__result = __obj.OnWait (entry == IntPtr.Zero ? null : (Gst.ClockEntry) GLib.Opaque.GetOpaque (entry, typeof (Gst.ClockEntry), false), jitter);
+				__result = __obj.OnWait (entry == IntPtr.Zero ? null : (Gst.ClockEntry) GLib.Opaque.GetOpaque (entry, typeof (Gst.ClockEntry), false), out jitter);
 				return (int) __result;
 			} catch (Exception e) {
 				GLib.ExceptionManager.RaiseUnhandledException (e, true);
@@ -341,21 +341,21 @@ namespace Gst {
 		}
 
 		[GLib.DefaultSignalHandler(Type=typeof(Gst.Clock), ConnectionMethod="OverrideWait")]
-		protected virtual Gst.ClockReturn OnWait (Gst.ClockEntry entry, long jitter)
+		protected virtual Gst.ClockReturn OnWait (Gst.ClockEntry entry, out long jitter)
 		{
-			return InternalWait (entry, jitter);
+			return InternalWait (entry, out jitter);
 		}
 
-		private Gst.ClockReturn InternalWait (Gst.ClockEntry entry, long jitter)
+		private Gst.ClockReturn InternalWait (Gst.ClockEntry entry, out long jitter)
 		{
 			WaitNativeDelegate unmanaged = null;
 			unsafe {
 				IntPtr* raw_ptr = (IntPtr*)(((long) this.LookupGType().GetThresholdType().GetClassPtr()) + (long) class_abi.GetFieldOffset("wait"));
 				unmanaged = (WaitNativeDelegate) Marshal.GetDelegateForFunctionPointer(*raw_ptr, typeof(WaitNativeDelegate));
 			}
-			if (unmanaged == null) return (Gst.ClockReturn) 0;
+			if (unmanaged == null) throw new InvalidOperationException ("No base method to invoke");
 
-			int __result = unmanaged (this.Handle, entry == null ? IntPtr.Zero : entry.Handle, jitter);
+			int __result = unmanaged (this.Handle, entry == null ? IntPtr.Zero : entry.Handle, out jitter);
 			return (Gst.ClockReturn) __result;
 		}
 
@@ -645,19 +645,19 @@ namespace Gst {
 		}
 
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
-		static extern bool gst_clock_add_observation(IntPtr raw, ulong slave, ulong master, out double r_squared);
+		static extern bool gst_clock_add_observation(IntPtr raw, ulong observation_internal, ulong observation_external, out double r_squared);
 
-		public bool AddObservation(ulong slave, ulong master, out double r_squared) {
-			bool raw_ret = gst_clock_add_observation(Handle, slave, master, out r_squared);
+		public bool AddObservation(ulong observation_internal, ulong observation_external, out double r_squared) {
+			bool raw_ret = gst_clock_add_observation(Handle, observation_internal, observation_external, out r_squared);
 			bool ret = raw_ret;
 			return ret;
 		}
 
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
-		static extern bool gst_clock_add_observation_unapplied(IntPtr raw, ulong slave, ulong master, out double r_squared, out ulong _internal, out ulong external, out ulong rate_num, out ulong rate_denom);
+		static extern bool gst_clock_add_observation_unapplied(IntPtr raw, ulong observation_internal, ulong observation_external, out double r_squared, out ulong _internal, out ulong external, out ulong rate_num, out ulong rate_denom);
 
-		public bool AddObservationUnapplied(ulong slave, ulong master, out double r_squared, out ulong _internal, out ulong external, out ulong rate_num, out ulong rate_denom) {
-			bool raw_ret = gst_clock_add_observation_unapplied(Handle, slave, master, out r_squared, out _internal, out external, out rate_num, out rate_denom);
+		public bool AddObservationUnapplied(ulong observation_internal, ulong observation_external, out double r_squared, out ulong _internal, out ulong external, out ulong rate_num, out ulong rate_denom) {
+			bool raw_ret = gst_clock_add_observation_unapplied(Handle, observation_internal, observation_external, out r_squared, out _internal, out external, out rate_num, out rate_denom);
 			bool ret = raw_ret;
 			return ret;
 		}

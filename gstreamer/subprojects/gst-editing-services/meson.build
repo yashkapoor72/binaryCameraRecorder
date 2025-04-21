@@ -1,6 +1,6 @@
 project('gst-editing-services', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
 
@@ -19,7 +19,7 @@ endif
 gst_version_is_stable = gst_version_minor.is_even()
 gst_version_is_dev = gst_version_minor.is_odd() and gst_version_micro < 90
 
-apiversion = '1.0'
+api_version = '1.0'
 soversion = 0
 # maintaining compatibility with the previous libtool versioning
 # current = minor * 100 + micro
@@ -27,7 +27,7 @@ curversion = gst_version_minor * 100 + gst_version_micro
 libversion = '@0@.@1@.0'.format(soversion, curversion)
 osxversion = curversion + 1
 
-glib_req = '>= 2.62.0'
+glib_req = '>= 2.64.0'
 
 if gst_version_is_stable
   gst_req = '>= @0@.@1@.0'.format(gst_version_major, gst_version_minor)
@@ -35,6 +35,7 @@ else
   gst_req = '>= ' + gst_version
 endif
 
+host_system = host_machine.system()
 cc = meson.get_compiler('c')
 mathlib = cc.find_library('m', required : false)
 
@@ -57,8 +58,6 @@ if cc.get_id() == 'msvc'
 
       # Enable some warnings on MSVC to match GCC/Clang behaviour
       '/w14062', # enumerator 'identifier' in switch of enum 'enumeration' is not handled
-      '/w14101', # 'identifier' : unreferenced local variable
-      '/w14189', # 'identifier' : local variable is initialized but not referenced
   ]
   add_project_arguments(msvc_args, language: 'c')
 endif
@@ -74,55 +73,48 @@ if cc.has_link_argument('-Wl,-z,nodelete')
 endif
 
 # Symbol visibility
-if cc.get_id() == 'msvc'
-  export_define = '__declspec(dllexport) extern'
-elif cc.has_argument('-fvisibility=hidden')
+if cc.has_argument('-fvisibility=hidden')
   add_project_arguments('-fvisibility=hidden', language: 'c')
-  export_define = 'extern __attribute__ ((visibility ("default")))'
-else
-  export_define = 'extern'
 endif
-
-# Passing this through the command line would be too messy
-cdata.set('GST_API_EXPORT', export_define)
 
 # Disable strict aliasing
 if cc.has_argument('-fno-strict-aliasing')
   add_project_arguments('-fno-strict-aliasing', language: 'c')
 endif
 
-cdata.set('VERSION', '"@0@"'.format(gst_version))
-cdata.set('PACKAGE', '"gst-editing-services"')
-cdata.set('PACKAGE_VERSION', '"@0@"'.format(gst_version))
-cdata.set('PACKAGE_BUGREPORT', '"https://gitlab.freedesktop.org/gstreamer/gst-editing-services/issues/new"')
-cdata.set('PACKAGE_NAME', '"GStreamer Editing Services"')
-cdata.set('GST_PACKAGE_NAME', '"GStreamer Editing Services"')
-cdata.set('GST_PACKAGE_ORIGIN', '"Unknown package origin"')
-cdata.set('GST_LICENSE', '"LGPL"')
+cdata.set_quoted('VERSION', gst_version)
+cdata.set_quoted('PACKAGE', 'gst-editing-services')
+cdata.set_quoted('PACKAGE_VERSION', gst_version)
+cdata.set_quoted('PACKAGE_BUGREPORT', 'https://gitlab.freedesktop.org/gstreamer/gstreamer/issues/new')
+cdata.set_quoted('PACKAGE_NAME', 'GStreamer Editing Services')
+cdata.set_quoted('GST_PACKAGE_NAME', 'GStreamer Editing Services')
+cdata.set_quoted('GST_PACKAGE_ORIGIN', 'Unknown package origin')
+cdata.set_quoted('GST_LICENSE', 'LGPL')
 
 # Mandatory GST deps
-gst_dep = dependency('gstreamer-' + apiversion, version : gst_req,
+gst_dep = dependency('gstreamer-' + api_version, version : gst_req,
     fallback : ['gstreamer', 'gst_dep'])
-gstpbutils_dep = dependency('gstreamer-pbutils-' + apiversion, version : gst_req,
+gstpbutils_dep = dependency('gstreamer-pbutils-' + api_version, version : gst_req,
     fallback : ['gst-plugins-base', 'pbutils_dep'])
-gstvideo_dep = dependency('gstreamer-video-' + apiversion, version : gst_req,
+gstvideo_dep = dependency('gstreamer-video-' + api_version, version : gst_req,
     fallback : ['gst-plugins-base', 'video_dep'])
-gstaudio_dep = dependency('gstreamer-audio-' + apiversion, version : gst_req,
+gstaudio_dep = dependency('gstreamer-audio-' + api_version, version : gst_req,
     fallback : ['gst-plugins-base', 'audio_dep'])
 gstbase_dep = dependency('gstreamer-base-1.0', version : gst_req,
     fallback : ['gstreamer', 'gst_base_dep'])
-if host_machine.system() != 'windows'
+if host_system != 'windows'
   gstcheck_dep = dependency('gstreamer-check-1.0', version : gst_req,
     required : get_option('tests'),
     fallback : ['gstreamer', 'gst_check_dep'])
 endif
 gstcontroller_dep = dependency('gstreamer-controller-1.0', version : gst_req,
   fallback : ['gstreamer', 'gst_controller_dep'])
-gstvalidate_dep = dependency('gst-validate-1.0', version : gst_req, required : get_option('validate'),
+gstvalidate_dep = dependency('gstreamer-validate-1.0', version : gst_req, required : get_option('validate'),
   fallback : ['gst-devtools', 'validate_dep'])
 
 gio_dep = dependency('gio-2.0', version: glib_req)
 gmodule_dep = dependency('gmodule-no-export-2.0')
+libdl = cc.find_library('dl', required: false)
 libxml_dep = dependency('libxml-2.0', required: get_option('xptv'))
 cdata.set('DISABLE_XPTV', not libxml_dep.found())
 
@@ -149,76 +141,98 @@ gir_init_section = [ '--add-init-section=' + \
     'g_setenv("GST_PLUGIN_PATH_1_0", "", TRUE);' + \
     'g_setenv("GST_PLUGIN_SYSTEM_PATH_1_0", "", TRUE);' + \
     'g_setenv("GST_DEBUG", "0", TRUE);' + \
+    'g_setenv("GST_TRACERS", "", TRUE);' + \
     'gst_init(NULL,NULL);' + \
     'ges_init();', '--quiet']
 
+pymod = import('python')
+python_opt = get_option('python')
+python = pymod.find_installation(get_option('python-exe'), required: python_opt)
 has_python = false
 static_build = get_option('default_library') == 'static'
 if static_build
-  if get_option('python').enabled()
+  if python_opt.enabled()
     error('Want to build python based modules but it is not supported while static building')
   else
     message('Disabling python support as it is not supported on static builds')
   endif
-elif build_gir
-  pymod = import('python')
-  python = pymod.find_installation(required: get_option('python'))
-  if python.found()
-    # Workaround for https://github.com/mesonbuild/meson/issues/5629
-    pythonver = python.language_version()
-    python_dep = dependency('python-@0@-embed'.format(pythonver), version: '>=3', required: false)
-    if not python_dep.found()
-      python_dep = python.dependency(required : get_option('python'))
-    endif
-  else
-    python_dep = dependency('', required: false)
-  endif
+elif build_gir and python.found()
+  python_dep = python.dependency(required : python_opt, embed: true,
+                                 include_type: 'system')
   if python_dep.found()
     python_abi_flags = python.get_variable('ABIFLAGS', '')
+    message(f'python_abi_flags = @python_abi_flags@')
     pylib_loc = get_option('libpython-dir')
 
     error_msg = ''
     if not cc.compiles('#include <Python.h>', dependencies: [python_dep])
       error_msg = 'Could not compile a simple program against python'
-    elif pylib_loc == ''
-      fsmod = import('fs')
-      pylib_loc = python.get_variable('LIBPL', '')
-      if host_machine.system() != 'windows' and host_machine.system() != 'darwin'
-        pylib_ldlibrary = python.get_variable('LDLIBRARY', '')
-        if not fsmod.exists(pylib_loc / pylib_ldlibrary)
-          # Workaround for Fedora
-          pylib_loc = python.get_variable('LIBDIR', '')
-          message('pylib_loc = @0@'.format(pylib_loc))
-        endif
-
-        if not fsmod.exists(pylib_loc / pylib_ldlibrary)
-          error_msg = '@0@ doesn\' exist, can\'t use python'.format(join_paths(pylib_loc, pylib_ldlibrary))
-        endif
-      endif
-      if error_msg == ''
-        pylib_suffix = 'so'
-        if host_machine.system() == 'windows'
-          pylib_suffix = 'dll'
-        elif host_machine.system() == 'darwin'
-          pylib_suffix = 'dylib'
-        endif
-
-        libges_deps = libges_deps + [python_dep, gmodule_dep]
-        has_python = true
-        message('python_abi_flags = @0@'.format(python_abi_flags))
-        message('pylib_loc = @0@'.format(pylib_loc))
-        cdata.set('HAS_PYTHON', true)
-        cdata.set('PY_LIB_LOC', '"@0@"'.format(pylib_loc))
-        cdata.set('PY_ABI_FLAGS', '"@0@"'.format(python_abi_flags))
-        cdata.set('PY_LIB_SUFFIX', '"@0@"'.format(pylib_suffix))
-        cdata.set('PYTHON_VERSION', '"@0@"'.format(python_dep.version()))
+      if python_opt.enabled()
+        error(error_msg)
       else
-          if get_option('python').enabled()
-            error(error_msg)
-          else
-            message(error_msg)
-          endif
+        message(error_msg)
       endif
+    endif
+    fsmod = import('fs')
+    pylib_prefix = 'lib'
+    pylib_suffix = 'so'
+    pylib_ver = python_dep.version()
+    pylib_locs = []
+    if host_system == 'windows'
+      if cc.get_argument_syntax() == 'msvc'
+        pylib_prefix = ''
+      endif
+      pylib_suffix = 'dll'
+      pylib_ver = pylib_ver.replace('.', '')
+    elif host_system == 'darwin'
+      pylib_suffix = 'dylib'
+    endif
+    pylib_fnames = []
+    if host_system != 'darwin' # Ignore system Python (INSTSONAME points to the Python3 executable and not libpython3.9.dylib)
+      # Library name with soversion, non-devel package
+      if python.has_variable('INSTSONAME')
+        pylib_fnames += python.get_variable('INSTSONAME')
+      endif
+      # Library name without soversion, devel package, framework, etc.
+      if python.has_variable('LDLIBRARY')
+        pylib_fnames += python.get_variable('LDLIBRARY')
+      endif
+    endif
+    # Manually construct name as a fallback
+    pylib_fnames += [
+      pylib_prefix + 'python' + pylib_ver + python_abi_flags + '.' + pylib_suffix
+    ]
+    if pylib_loc != ''
+      pylib_locs = [pylib_loc]
+    else
+      if python.has_variable('LIBDIR')
+        pylib_locs += python.get_variable('LIBDIR')
+      endif
+      if python.has_variable('LIBPL')
+        pylib_locs += python.get_variable('LIBPL')
+      endif
+      # On Windows, python312.dll is in the rootdir where Python is installed,
+      # which is configured as the "prefix" in sysconfig.
+      if host_system == 'windows'
+        pylib_locs += python.get_variable('prefix')
+      endif
+    endif
+    foreach loc: pylib_locs
+      foreach fname: pylib_fnames
+        fpath = loc / fname
+        debug(f'Looking for Python library at: @fpath@')
+        if fsmod.exists(fpath)
+          libges_deps = libges_deps + [python_dep, gmodule_dep, libdl]
+          has_python = true
+          cdata.set('HAS_PYTHON', true)
+          cdata.set_quoted('PY_LIB_FNAME', fname)
+          message(f'PY_LIB_FNAME = @fname@ (@loc@)')
+          break
+        endif
+      endforeach
+    endforeach
+    if not has_python
+      message('Could not find python library to load, will try loading at runtime')
     endif
   endif
 endif
@@ -241,24 +255,49 @@ else
   gst_debug_disabled = cc.has_header_symbol('gst/gstconfig.h', 'GST_DISABLE_GST_DEBUG', dependencies: gst_dep)
 endif
 
-if gst_debug_disabled and cc.has_argument('-Wno-unused')
-  add_project_arguments('-Wno-unused', language: 'c')
+if gst_debug_disabled
+  message('GStreamer debug system is disabled')
+  if cc.get_argument_syntax() == 'msvc'
+    msvc_args = cc.get_supported_arguments([
+      '/wd4101', # 'identifier' : unreferenced local variable
+      '/wd4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: 'c')
+  elif cc.has_argument('-Wno-unused')
+    add_project_arguments(['-Wno-unused'], language: 'c')
+  endif
+else
+  if cc.get_argument_syntax() == 'msvc' and gst_version_is_dev
+    msvc_args = cc.get_supported_arguments([
+      '/we4101', # 'identifier' : unreferenced local variable
+      '/we4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: 'c')
+  endif
+  message('GStreamer debug system is enabled')
 endif
 
+# NOTE: Keep entries alphabetically sorted
 warning_flags = [
-  '-Wmissing-declarations',
-  '-Wmissing-prototypes',
-  '-Wredundant-decls',
-  '-Wundef',
-  '-Wwrite-strings',
+  '-Waddress',
+  # '-Waggregate-return',
   '-Wformat',
   '-Wformat-security',
+  '-Wimplicit-fallthrough=3',
   '-Winit-self',
+  '-Wmissing-declarations',
   '-Wmissing-include-dirs',
-  '-Waddress',
+  '-Wmissing-parameter-type',
+  '-Wmissing-prototypes',
   '-Wno-multichar',
-  '-Wvla',
+  '-Wold-style-definition',
   '-Wpointer-arith',
+  '-Wredundant-decls',
+  '-Wshift-negative-value',
+  '-Wtype-limits',
+  '-Wundef',
+  '-Wvla',
+  '-Wwrite-strings',
 ]
 
 foreach extra_arg : warning_flags
@@ -267,32 +306,37 @@ foreach extra_arg : warning_flags
   endif
 endforeach
 
-python3 = import('python').find_installation()
 pkgconfig = import('pkgconfig')
 pkgconfig_subdirs = ['gstreamer-1.0']
 
 configinc = include_directories('.')
 gst_libraries = []
 
+if host_system == 'windows'
+  pathsep = ';'
+else
+  pathsep = ':'
+endif
+
 subdir('ges')
 subdir('plugins')
 subdir('tools')
 
 subdir('tests')
-if not get_option('examples').disabled()
-  subdir('examples')
-endif
+subdir('examples')
 subdir('docs')
 
 pygi_override_dir = get_option('pygi-overrides-dir')
-if pygi_override_dir == ''
-  pygi_override_dir = python3.get_install_dir(
+if pygi_override_dir == '' and python.found()
+  pygi_override_dir = python.get_install_dir(
     subdir : join_paths('gi', 'overrides')
   )
 endif
 
-message('pygobject overrides directory = @0@'.format(pygi_override_dir))
-subdir('bindings/python')
+if python.found()
+  message('pygobject overrides directory = @0@'.format(pygi_override_dir))
+  subdir('bindings/python')
+endif
 
 # Set release date
 if gst_version_nano == 0
@@ -308,6 +352,8 @@ if gio_dep.version().version_compare('< 2.67.4')
 endif
 
 configure_file(output: 'config.h', configuration: cdata)
+
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.24.0', meson.project_version())
 
 plugin_names = []
 gst_plugins = []

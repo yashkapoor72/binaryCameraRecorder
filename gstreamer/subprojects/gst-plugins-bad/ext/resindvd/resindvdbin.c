@@ -38,6 +38,8 @@
 
 #include "gstmpegdemux.h"
 
+#define DEBUG_TIMING 0
+
 #define RSN_TYPE_INPUT_SELECTOR GST_TYPE_INPUT_SELECTOR
 
 GST_DEBUG_CATEGORY_EXTERN (resindvd_debug);
@@ -356,7 +358,7 @@ _pad_block_destroy_notify (RsnDvdBinPadBlockCtx * ctx)
 {
   gst_object_unref (ctx->dvdbin);
   gst_object_unref (ctx->pad);
-  g_slice_free (RsnDvdBinPadBlockCtx, ctx);
+  g_free (ctx);
 }
 
 #if DEBUG_TIMING
@@ -505,7 +507,7 @@ create_elements (RsnDvdBin * dvdbin)
   if (dvdbin->video_pad == NULL)
     goto failed_video_ghost;
   gst_pad_set_active (dvdbin->video_pad, TRUE);
-  bctx = g_slice_new (RsnDvdBinPadBlockCtx);
+  bctx = g_new (RsnDvdBinPadBlockCtx, 1);
   bctx->dvdbin = gst_object_ref (dvdbin);
   bctx->pad = gst_object_ref (dvdbin->video_pad);
   bctx->pad_block_id =
@@ -559,7 +561,7 @@ create_elements (RsnDvdBin * dvdbin)
   if (dvdbin->subpicture_pad == NULL)
     goto failed_spu_ghost;
   gst_pad_set_active (dvdbin->subpicture_pad, TRUE);
-  bctx = g_slice_new (RsnDvdBinPadBlockCtx);
+  bctx = g_new (RsnDvdBinPadBlockCtx, 1);
   bctx->dvdbin = gst_object_ref (dvdbin);
   bctx->pad = gst_object_ref (dvdbin->subpicture_pad);
   bctx->pad_block_id =
@@ -599,7 +601,7 @@ create_elements (RsnDvdBin * dvdbin)
   if (dvdbin->audio_pad == NULL)
     goto failed_aud_ghost;
   gst_pad_set_active (dvdbin->audio_pad, TRUE);
-  bctx = g_slice_new (RsnDvdBinPadBlockCtx);
+  bctx = g_new (RsnDvdBinPadBlockCtx, 1);
   bctx->dvdbin = gst_object_ref (dvdbin);
   bctx->pad = gst_object_ref (dvdbin->audio_pad);
   bctx->pad_block_id =

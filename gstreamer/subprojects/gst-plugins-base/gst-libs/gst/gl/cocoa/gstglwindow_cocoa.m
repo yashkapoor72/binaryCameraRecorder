@@ -54,6 +54,7 @@
     backing: (NSBackingStoreType) bufferingType
     defer: (BOOL) flag screen: (NSScreen *) aScreen
     gstWin: (GstGLWindowCocoa *) window;
+- (void) resize: (int) width height: (int) height;
 - (void) setClosed;
 - (BOOL) isClosed;
 - (BOOL) canBecomeMainWindow;
@@ -210,7 +211,7 @@ gst_gl_window_cocoa_create_window (GstGLWindowCocoa *window_cocoa)
   if (!context)
     return FALSE;
 
-  layer = [[GstGLCAOpenGLLayer alloc] initWithGstGLContext:context];
+  layer = [[GstGLCAOpenGLLayer alloc] initWithGstGLWindow:window];
   layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
   layer.needsDisplayOnBoundsChange = YES;
   glView = [[GstGLNSView alloc] initWithFrameLayer:window_cocoa rect:windowRect layer:layer];
@@ -235,6 +236,8 @@ gst_gl_window_cocoa_create_window (GstGLWindowCocoa *window_cocoa)
   if (priv->external_view)
     gst_gl_window_cocoa_set_window_handle (window,
         (guintptr) priv->external_view);
+
+  [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
   return TRUE;
 }
@@ -283,6 +286,7 @@ gst_gl_window_cocoa_set_window_handle (GstGLWindow * window, guintptr handle)
   priv = window_cocoa->priv;
 
   if (priv->internal_win_id) {
+    GstGLWindowCocoa *window_cocoa2 = gst_object_ref (window_cocoa);
     if (handle) {
       priv->external_view = (gpointer)handle;
       priv->visible = TRUE;
@@ -291,7 +295,6 @@ gst_gl_window_cocoa_set_window_handle (GstGLWindow * window, guintptr handle)
       priv->external_view = 0;
       priv->visible = FALSE;
     }
-
 
     dispatch_async (dispatch_get_main_queue (), ^{
       GstGLNSWindow *internal_win_id =
@@ -307,6 +310,7 @@ gst_gl_window_cocoa_set_window_handle (GstGLWindow * window, guintptr handle)
       [external_view setAutoresizesSubviews: YES];
       [view setFrame: [external_view bounds]];
       [view setAutoresizingMask: NSViewWidthSizable|NSViewHeightSizable];
+      gst_object_unref (window_cocoa2);
     });
   } else {
     /* no internal window yet so delay it to the next drawing */
@@ -323,6 +327,10 @@ _show_window (gpointer data)
   GstGLNSWindow *internal_win_id = (__bridge GstGLNSWindow *)priv->internal_win_id;
 
   GST_DEBUG_OBJECT (window_cocoa, "make the window available\n");
+
+  /* Preferred size might not yet be set when create_window is called,
+   * so we need to resize the window here to be sure. */
+  [internal_win_id resize: priv->preferred_width height: priv->preferred_height];
   [internal_win_id makeMainWindow];
   [internal_win_id orderFrontRegardless];
   [internal_win_id setViewsNeedDisplay:YES];
@@ -628,6 +636,15 @@ gst_gl_window_cocoa_controls_viewport (GstGLWindow * window)
   return self;
 }
 
+- (void) resize: (gint) width height: (gint) height {
+  NSRect frame = [super frame];
+  if (frame.size.width == width && frame.size.height == height)
+    return;
+
+  frame.size = NSMakeSize (width, height);
+  [super setFrame:frame display:YES];
+}
+
 - (void) setClosed {
   m_isClosed = YES;
 }
@@ -727,6 +744,10 @@ close_window_cb (gpointer data)
 
 - (BOOL) isFlipped {
     return NO;
+}
+
+- (void)viewDidChangeBackingProperties {
+    self.layer.contentsScale = [[self window] backingScaleFactor];
 }
 
 @end

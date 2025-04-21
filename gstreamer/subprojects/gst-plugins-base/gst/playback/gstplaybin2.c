@@ -92,11 +92,6 @@
  * using gst_element_factory_make()) and provide them to playbin using the
  * #GstPlayBin:audio-sink or #GstPlayBin:video-sink property.
  *
- * GNOME-based applications, for example, will usually want to create
- * gconfaudiosink and gconfvideosink elements and make playbin use those,
- * so that output happens to whatever the user has configured in the GNOME
- * Multimedia System Selector configuration dialog.
- *
  * The sink elements do not necessarily need to be ready-made sinks. It is
  * possible to create container elements that look like a sink to playbin,
  * but in reality contain a number of custom elements linked together. This
@@ -1261,7 +1256,9 @@ gst_play_bin_class_init (GstPlayBinClass * klass)
    * This pad can be used for notifications of caps changes, stream-specific
    * queries, etc.
    *
-   * Returns: a #GstPad, or NULL when the stream number does not exist.
+   * Returns: (transfer full) (nullable): a #GstPad, or NULL when the
+   * stream number does not exist. The #GstPad must be unreffed after
+   * usage.
    */
   gst_play_bin_signals[SIGNAL_GET_VIDEO_PAD] =
       g_signal_new ("get-video-pad", G_TYPE_FROM_CLASS (klass),
@@ -1278,7 +1275,9 @@ gst_play_bin_class_init (GstPlayBinClass * klass)
    * This pad can be used for notifications of caps changes, stream-specific
    * queries, etc.
    *
-   * Returns: a #GstPad, or NULL when the stream number does not exist.
+   * Returns: (transfer full) (nullable): a #GstPad, or NULL when the
+   * stream number does not exist. The #GstPad must be unreffed after
+   * usage.
    */
   gst_play_bin_signals[SIGNAL_GET_AUDIO_PAD] =
       g_signal_new ("get-audio-pad", G_TYPE_FROM_CLASS (klass),
@@ -1295,7 +1294,9 @@ gst_play_bin_class_init (GstPlayBinClass * klass)
    * This pad can be used for notifications of caps changes, stream-specific
    * queries, etc.
    *
-   * Returns: a #GstPad, or NULL when the stream number does not exist.
+   * Returns: (transfer full) (nullable): a #GstPad, or NULL when the
+   * stream number does not exist. The #GstPad must be unreffed after
+   * usage.
    */
   gst_play_bin_signals[SIGNAL_GET_TEXT_PAD] =
       g_signal_new ("get-text-pad", G_TYPE_FROM_CLASS (klass),
@@ -2463,10 +2464,30 @@ gst_play_bin_set_property (GObject * object, guint prop_id,
           g_value_get_string (value));
       break;
     case PROP_CONNECTION_SPEED:
+    {
+      guint64 connection_speed = 0;
       GST_PLAY_BIN_LOCK (playbin);
       playbin->connection_speed = g_value_get_uint64 (value) * 1000;
+      connection_speed = playbin->connection_speed;
+      if (playbin->curr_group) {
+        GST_SOURCE_GROUP_LOCK (playbin->curr_group);
+        if (playbin->curr_group->uridecodebin) {
+          g_object_set (playbin->curr_group->uridecodebin,
+              "connection-speed", connection_speed / 1000, NULL);
+        }
+        GST_SOURCE_GROUP_UNLOCK (playbin->curr_group);
+      }
+      if (playbin->next_group) {
+        GST_SOURCE_GROUP_LOCK (playbin->next_group);
+        if (playbin->next_group->uridecodebin) {
+          g_object_set (playbin->next_group->uridecodebin,
+              "connection-speed", connection_speed / 1000, NULL);
+        }
+        GST_SOURCE_GROUP_UNLOCK (playbin->next_group);
+      }
       GST_PLAY_BIN_UNLOCK (playbin);
       break;
+    }
     case PROP_BUFFER_SIZE:
       playbin->buffer_size = g_value_get_int (value);
       break;
@@ -3959,7 +3980,7 @@ avelements_free (gpointer avelement)
     gst_object_unref (elm->dec);
   if (elm->sink)
     gst_object_unref (elm->sink);
-  g_slice_free (GstAVElement, elm);
+  g_free (elm);
 }
 
 static gint
@@ -4085,7 +4106,7 @@ avelements_create (GstPlayBin * playbin, gboolean isaudioelement)
       if (n_common_cf < 1)
         continue;
 
-      ave = g_slice_new (GstAVElement);
+      ave = g_new (GstAVElement, 1);
       ave->dec = gst_object_ref (d_factory);
       ave->sink = gst_object_ref (s_factory);
       ave->n_comm_cf = n_common_cf;
@@ -4146,7 +4167,7 @@ create_decoders_list (GList * factory_list, GSequence * avelements,
           g_sequence_lookup (avelements, factory,
           (GCompareDataFunc) avelement_lookup_decoder, NULL);
       if (!seq_iter) {
-        GstAVElement *ave = g_slice_new0 (GstAVElement);
+        GstAVElement *ave = g_new0 (GstAVElement, 1);
 
         ave->dec = factory;
         ave->sink = NULL;
@@ -4196,7 +4217,7 @@ create_decoders_list (GList * factory_list, GSequence * avelements,
   gst_plugin_feature_list_free (factory_list);
 
   for (tmp = ave_free_list; tmp; tmp = tmp->next)
-    g_slice_free (GstAVElement, tmp->data);
+    g_free (tmp->data);
   g_list_free (ave_free_list);
 
   dec_list = g_list_reverse (dec_list);
@@ -5818,6 +5839,7 @@ gst_play_bin_change_state (GstElement * element, GstStateChange transition)
       GST_PLAY_BIN_DYN_UNLOCK (playbin);
       if (!do_save)
         break;
+      /* FALLTHROUGH */
     case GST_STATE_CHANGE_READY_TO_NULL:
       /* we go async to PAUSED, so if that fails, we never make it to PAUSED
        * and no state change PAUSED to READY passes here,

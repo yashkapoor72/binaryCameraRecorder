@@ -12,7 +12,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gst-plugins-base 0.10.30.3\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
 "PO-Revision-Date: 2010-12-31 23:21+0200\n"
 "Last-Translator: Tommi Vainikainen <Tommi.Vainikainen@iki.fi>\n"
 "Language-Team: Finnish <translation-team-fi@lists.sourceforge.net>\n"
@@ -91,10 +91,6 @@ msgstr "Puuttuva elementti \"%s\" - tarkista GStreamer-asennuksesi."
 msgid "Could not create \"uridecodebin\" element."
 msgstr "Elementtiä \"decodebin\" ei voitu luoda."
 
-#, fuzzy
-msgid "Could not create \"uridecodebin3\" element."
-msgstr "Elementtiä \"decodebin\" ei voitu luoda."
-
 #, c-format
 msgid "Both autovideosink and %s elements are missing."
 msgstr "Sekä autovideosink- ja %s-elementit puuttuvat."
@@ -158,7 +154,19 @@ msgstr "Tätä virtatyyppiä ei voi vielä soittaa."
 msgid "No URI handler implemented for \"%s\"."
 msgstr "Protokollalle \"%s\" ei ole määritelty URI-käsittelijää."
 
+#, fuzzy
+msgid "Source element can't be prepared"
+msgstr "Lähde-elementti on virheellinen."
+
 msgid "Source element is invalid."
+msgstr "Lähde-elementti on virheellinen."
+
+#, c-format
+msgid "Failed to create download directory '%s'."
+msgstr ""
+
+#, fuzzy
+msgid "Source element has no pads."
 msgstr "Lähde-elementti on virheellinen."
 
 #, c-format
@@ -171,13 +179,13 @@ msgstr "Ääntä ei voi nauhoittaa tarpeeksi nopeasti"
 msgid "This CD has no audio tracks"
 msgstr "Tällä CD-levyllä ei ole ääniraitoja"
 
-msgid "failed to draw pattern"
+msgid "An OpenGL error occurred"
 msgstr ""
 
-msgid "A GL error occurred"
+msgid "The GL API is not compatible with the current GL context"
 msgstr ""
 
-msgid "format wasn't negotiated before get function"
+msgid "Subclass failed to initialize."
 msgstr ""
 
 msgid "ID3 tag"
@@ -506,6 +514,14 @@ msgstr "kuvaamisen valkotasapaino"
 msgid "The white balance mode set when capturing an image"
 msgstr "Valittu valkotasapainotila kuvattaessa"
 
+#, fuzzy
+msgid "capturing light source"
+msgstr "kuvaamisen lähde"
+
+#, fuzzy
+msgid "The light source indicates the kind of light when capturing animage"
+msgstr "Kuvausmoodi kuvattaessa"
+
 msgid "capturing contrast"
 msgstr "kuvaamisen kontrasti"
 
@@ -673,16 +689,14 @@ msgstr ""
 msgid "enable/disable trick modes"
 msgstr ""
 
-#, fuzzy
-msgid "change audio track"
-msgstr "Tällä CD-levyllä ei ole ääniraitoja"
-
-msgid "change video track"
+msgid "change to previous/next audio track"
 msgstr ""
 
-#, fuzzy
-msgid "change subtitle track"
-msgstr "Kate-tekstitysmuoto"
+msgid "change to previous/next video track"
+msgstr ""
+
+msgid "change to previous/next subtitle track"
+msgstr ""
 
 msgid "seek to beginning"
 msgstr ""
@@ -691,6 +705,10 @@ msgid "show keyboard shortcuts"
 msgstr ""
 
 msgid "Interactive mode - keyboard controls:"
+msgstr ""
+
+#, c-format
+msgid "Use Windows high-resolution clock, precision: %u ms\n"
 msgstr ""
 
 msgid "Output status information and property notifications"
@@ -708,6 +726,9 @@ msgstr ""
 msgid "Enable gapless playback"
 msgstr ""
 
+msgid "Enable instantaneous uri changes (only with playbin3)"
+msgstr ""
+
 msgid "Shuffle playlist"
 msgstr ""
 
@@ -720,6 +741,9 @@ msgstr ""
 msgid "Start position in seconds."
 msgstr ""
 
+msgid "Enable accurate seeking"
+msgstr ""
+
 msgid "Playlist file containing input media files"
 msgstr ""
 
@@ -729,15 +753,18 @@ msgstr ""
 msgid "Do not print any output (apart from errors)"
 msgstr ""
 
-msgid "Use playbin3 pipeline"
+msgid "Use playbin3 pipeline (default)"
 msgstr ""
 
-msgid "(default varies depending on 'USE_PLAYBIN' env variable)"
+msgid "Use playbin2 pipeline"
 msgstr ""
 
 msgid ""
 "Keep showing the last frame on EOS until quit or playlist change command "
 "(gapless is ignored)"
+msgstr ""
+
+msgid "Do not print current position of pipeline"
 msgstr ""
 
 #, c-format

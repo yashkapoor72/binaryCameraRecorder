@@ -84,7 +84,7 @@ GST_DEBUG_CATEGORY (gst_ogg_demux_setup_debug);
 static ogg_packet *
 _ogg_packet_copy (const ogg_packet * packet)
 {
-  ogg_packet *ret = g_slice_new (ogg_packet);
+  ogg_packet *ret = g_new (ogg_packet, 1);
 
   *ret = *packet;
   ret->packet = g_memdup2 (packet->packet, packet->bytes);
@@ -96,13 +96,13 @@ static void
 _ogg_packet_free (ogg_packet * packet)
 {
   g_free (packet->packet);
-  g_slice_free (ogg_packet, packet);
+  g_free (packet);
 }
 
 static ogg_page *
 gst_ogg_page_copy (ogg_page * page)
 {
-  ogg_page *p = g_slice_new (ogg_page);
+  ogg_page *p = g_new (ogg_page, 1);
 
   /* make a copy of the page */
   p->header = g_memdup2 (page->header, page->header_len);
@@ -118,7 +118,7 @@ gst_ogg_page_free (ogg_page * page)
 {
   g_free (page->header);
   g_free (page->body);
-  g_slice_free (ogg_page, page);
+  g_free (page);
 }
 
 static gboolean gst_ogg_demux_collect_chain_info (GstOggDemux * ogg,
@@ -580,6 +580,9 @@ gst_ogg_demux_chain_peer (GstOggPad * pad, ogg_packet * packet,
     if ((packet->bytes >= 7 && memcmp (packet->packet, "OVP80\2 ", 7) == 0) ||
         packet->b_o_s ||
         (packet->bytes >= 5 && memcmp (packet->packet, "OVP80", 5) == 0)) {
+      /* Request the first packet being pushed downstream to have the header
+         flag set, unblocking the keyframe_waiter_probe in decodebin3. */
+      pad->need_header_flag = TRUE;
       /* We don't push header packets for VP8 */
       goto done;
     }
@@ -658,7 +661,7 @@ gst_ogg_demux_chain_peer (GstOggPad * pad, ogg_packet * packet,
               /* use total time to update the total ogg time */
               if (ogg->total_time == -1) {
                 ogg->total_time = ipad->map.total_time;
-              } else if (ipad->map.total_time > 0) {
+              } else if (GST_CLOCK_TIME_IS_VALID (ipad->map.total_time)) {
                 ogg->total_time = MAX (ogg->total_time, ipad->map.total_time);
               }
             }
@@ -818,9 +821,11 @@ gst_ogg_demux_chain_peer (GstOggPad * pad, ogg_packet * packet,
   if (delta_unit)
     GST_BUFFER_FLAG_SET (buf, GST_BUFFER_FLAG_DELTA_UNIT);
 
-  /* set header flag for buffers that are also in the streamheaders */
-  if (is_header)
+  /* set header flag for buffers that are also in the streamheaders or when explicitely requested (VP8). */
+  if (is_header || pad->need_header_flag) {
+    pad->need_header_flag = FALSE;
     GST_BUFFER_FLAG_SET (buf, GST_BUFFER_FLAG_HEADER);
+  }
 
   if (packet->packet != NULL) {
     /* copy packet in buffer */
@@ -2125,7 +2130,7 @@ choked:
 static GstOggChain *
 gst_ogg_chain_new (GstOggDemux * ogg)
 {
-  GstOggChain *chain = g_slice_new0 (GstOggChain);
+  GstOggChain *chain = g_new0 (GstOggChain, 1);
 
   GST_DEBUG_OBJECT (ogg, "creating new chain %p", chain);
   chain->ogg = ogg;
@@ -2152,7 +2157,7 @@ gst_ogg_chain_free (GstOggChain * chain)
     gst_object_unref (pad);
   }
   g_array_free (chain->streams, TRUE);
-  g_slice_free (GstOggChain, chain);
+  g_free (chain);
 }
 
 static void
@@ -2482,7 +2487,7 @@ gst_ogg_demux_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
                  ogg sync object as we already reset the chain */
               GST_DEBUG_OBJECT (ogg, "No chain, just resetting ogg sync");
               ogg_sync_reset (&ogg->sync);
-            } else {
+            } else if (ogg->push_state != PUSH_DURATION) {
               /* reset pad push mode seeking state */
               for (i = 0; i < chain->streams->len; i++) {
                 GstOggPad *pad = g_array_index (chain->streams, GstOggPad *, i);
@@ -4911,7 +4916,7 @@ gst_ogg_demux_loop (GstOggPad * pad)
 {
   GstOggDemux *ogg;
   gboolean res;
-  GstFlowReturn ret;
+  GstFlowReturn ret = GST_FLOW_ERROR;
   GstEvent *seek;
 
   ogg = GST_OGG_DEMUX (GST_OBJECT_PARENT (pad));

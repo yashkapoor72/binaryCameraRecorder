@@ -54,7 +54,6 @@ struct _GstFFMpegVidDec
   GstVideoMultiviewMode picture_multiview_mode;
   GstVideoMultiviewFlags picture_multiview_flags;
   gint stride[AV_NUM_DATA_POINTERS];
-  gboolean opened;
 
   /* current output pictures */
   enum AVPixelFormat pic_pix_fmt;
@@ -94,6 +93,8 @@ struct _GstFFMpegVidDec
   gint pool_height;
   enum AVPixelFormat pool_format;
   GstVideoInfo pool_info;
+
+  gboolean needs_renegotation;
 };
 
 typedef struct _GstFFMpegVidDecClass GstFFMpegVidDecClass;

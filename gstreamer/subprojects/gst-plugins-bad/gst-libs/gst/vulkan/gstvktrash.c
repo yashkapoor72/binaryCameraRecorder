@@ -118,8 +118,8 @@ gst_vulkan_trash_init (GstVulkanTrash * trash, GstVulkanFence * fence,
 /**
  * gst_vulkan_trash_new:
  * @fence: a #GstVulkanFence
- * @notify: (scope async): a #GstVulkanTrashNotify
- * @user_data: (closure notify): user data for @notify
+ * @notify: (scope async) (closure user_data): a #GstVulkanTrashNotify
+ * @user_data: user data for @notify
  *
  * Create and return a new #GstVulkanTrash object that will stores a callback
  * to call when @fence is signalled.
@@ -532,7 +532,12 @@ gst_vulkan_trash_fence_list_init (GstVulkanTrashFenceList * trash_list)
 GstVulkanTrashList *
 gst_vulkan_trash_fence_list_new (void)
 {
-  return g_object_new (gst_vulkan_trash_fence_list_get_type (), NULL);
+  GstVulkanTrashList *ret;
+
+  ret = g_object_new (gst_vulkan_trash_fence_list_get_type (), NULL);
+  gst_object_ref_sink (ret);
+
+  return ret;
 }
 
 GST_DEFINE_MINI_OBJECT_TYPE (GstVulkanTrash, gst_vulkan_trash);

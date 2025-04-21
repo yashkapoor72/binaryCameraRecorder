@@ -555,30 +555,19 @@ mxf_timestamp_to_string (const MXFTimestamp * t, gchar str[32])
 void
 mxf_timestamp_set_now (MXFTimestamp * timestamp)
 {
-  gint64 now;
-  time_t t;
-  struct tm *tm;
+  GDateTime *now;
 
-#ifdef HAVE_GMTIME_R
-  struct tm tm_;
-#endif
+  now = g_date_time_new_now_utc ();
 
-  now = g_get_real_time ();
-  t = now / G_USEC_PER_SEC;
+  timestamp->year = g_date_time_get_year (now);
+  timestamp->month = g_date_time_get_month (now);
+  timestamp->day = g_date_time_get_day_of_month (now);
+  timestamp->hour = g_date_time_get_hour (now);
+  timestamp->minute = g_date_time_get_minute (now);
+  timestamp->second = g_date_time_get_second (now);
+  timestamp->msecond = g_date_time_get_microsecond (now);
 
-#ifdef HAVE_GMTIME_R
-  tm = gmtime_r (&t, &tm_);
-#else
-  tm = gmtime (&t);
-#endif
-
-  timestamp->year = tm->tm_year + 1900;
-  timestamp->month = tm->tm_mon;
-  timestamp->day = tm->tm_mday;
-  timestamp->hour = tm->tm_hour;
-  timestamp->minute = tm->tm_min;
-  timestamp->second = tm->tm_sec;
-  timestamp->msecond = now / 1000;
+  g_date_time_unref (now);
 }
 
 void
@@ -1075,6 +1064,7 @@ mxf_index_table_segment_parse (const MXFUL * ul,
 #endif
   guint16 tag, tag_size;
   const guint8 *tag_data;
+  guint8 found_bitset = 0;
 
   g_return_val_if_fail (ul != NULL, FALSE);
 
@@ -1101,12 +1091,14 @@ mxf_index_table_segment_parse (const MXFUL * ul,
         memcpy (&segment->instance_id, tag_data, 16);
         GST_DEBUG ("  instance id = %s",
             mxf_uuid_to_string (&segment->instance_id, str));
+        found_bitset |= 1;
         break;
       case 0x3f0b:
         if (!mxf_fraction_parse (&segment->index_edit_rate, tag_data, tag_size))
           goto error;
         GST_DEBUG ("  index edit rate = %d/%d", segment->index_edit_rate.n,
             segment->index_edit_rate.d);
+        found_bitset |= 2;
         break;
       case 0x3f0c:
         if (tag_size != 8)
@@ -1114,6 +1106,7 @@ mxf_index_table_segment_parse (const MXFUL * ul,
         segment->index_start_position = GST_READ_UINT64_BE (tag_data);
         GST_DEBUG ("  index start position = %" G_GINT64_FORMAT,
             segment->index_start_position);
+        found_bitset |= 4;
         break;
       case 0x3f0d:
         if (tag_size != 8)
@@ -1121,6 +1114,7 @@ mxf_index_table_segment_parse (const MXFUL * ul,
         segment->index_duration = GST_READ_UINT64_BE (tag_data);
         GST_DEBUG ("  index duration = %" G_GINT64_FORMAT,
             segment->index_duration);
+        found_bitset |= 8;
         break;
       case 0x3f05:
         if (tag_size != 4)
@@ -1140,6 +1134,7 @@ mxf_index_table_segment_parse (const MXFUL * ul,
           goto error;
         segment->body_sid = GST_READ_UINT32_BE (tag_data);
         GST_DEBUG ("  body sid = %u", segment->body_sid);
+        found_bitset |= 16;
         break;
       case 0x3f08:
         if (tag_size != 1)
@@ -1278,12 +1273,52 @@ mxf_index_table_segment_parse (const MXFUL * ul,
         }
         break;
       }
+      case 0x3f0f:
+        if (tag_size != 8)
+          goto error;
+        segment->ext_start_offset = GST_READ_UINT64_BE (tag_data);
+        GST_DEBUG ("  ext start offset = %" G_GUINT64_FORMAT,
+            segment->ext_start_offset);
+        break;
+      case 0x3f10:
+        if (tag_size != 8)
+          goto error;
+        segment->vbe_byte_count = GST_READ_UINT64_BE (tag_data);
+        GST_DEBUG ("  vbe byte count = %" G_GUINT64_FORMAT,
+            segment->vbe_byte_count);
+        break;
+      case 0x3f11:
+        if (tag_size != 1)
+          goto error;
+        segment->single_index_location = (GST_READ_UINT8 (tag_data) != 0);
+        GST_DEBUG ("   single index location = %d",
+            segment->single_index_location);
+        break;
+      case 0x3f12:
+        if (tag_size != 1)
+          goto error;
+        segment->single_essence_location = (GST_READ_UINT8 (tag_data) != 0);
+        GST_DEBUG ("   single essence location = %d",
+            segment->single_essence_location);
+        break;
+      case 0x3f13:
+        if (tag_size != 1)
+          goto error;
+        segment->forward_index_direction = (GST_READ_UINT8 (tag_data) != 0);
+        GST_DEBUG ("   forward index direction = %d",
+            segment->forward_index_direction);
+        break;
       default:
         GST_WARNING
             ("Unknown local tag 0x%04x of size %d in index table segment", tag,
             tag_size);
         break;
     }
+  }
+
+  if (found_bitset != 31) {
+    GST_WARNING ("Not all required fields present");
+    goto error;
   }
 
   /* If edit unit byte count is 0 there *must* be entries */
@@ -1452,7 +1487,7 @@ mxf_index_table_segment_to_buffer (const MXFIndexTableSegment * segment)
 static void
 _mxf_mapping_ul_free (MXFUL * ul)
 {
-  g_slice_free (MXFUL, ul);
+  g_free (ul);
 }
 
 gboolean
@@ -1502,7 +1537,7 @@ mxf_primer_pack_parse (const MXFUL * ul, MXFPrimerPack * pack,
     if (g_hash_table_lookup (pack->mappings, GUINT_TO_POINTER (local_tag)))
       continue;
 
-    uid = g_slice_new (MXFUL);
+    uid = g_new (MXFUL, 1);
     memcpy (uid, data, 16);
     data += 16;
 
@@ -1575,13 +1610,13 @@ mxf_primer_pack_add_mapping (MXFPrimerPack * primer, guint16 local_tag,
 
   g_assert (ltag_tmp != 0);
 
-  uid = g_slice_new (MXFUL);
+  uid = g_new (MXFUL, 1);
   memcpy (uid, ul, 16);
 
   GST_DEBUG ("Adding mapping = 0x%04x -> %s", ltag_tmp,
       mxf_ul_to_string (uid, str));
   g_hash_table_insert (primer->mappings, GUINT_TO_POINTER (ltag_tmp), uid);
-  uid = g_slice_dup (MXFUL, uid);
+  uid = g_memdup2 (uid, sizeof (MXFUL));
   g_hash_table_insert (primer->reverse_mappings, uid,
       GUINT_TO_POINTER (ltag_tmp));
 
@@ -1664,11 +1699,15 @@ mxf_local_tag_parse (const guint8 * data, guint size, guint16 * tag,
 void
 mxf_local_tag_free (MXFLocalTag * tag)
 {
-  if (tag->g_slice)
-    g_slice_free1 (tag->size, tag->data);
-  else
-    g_free (tag->data);
-  g_slice_free (MXFLocalTag, tag);
+  g_free (tag->data);
+  g_free (tag);
+}
+
+MXFUL *
+mxf_primer_tag_to_ul (const MXFPrimerPack * primer, guint16 tag)
+{
+  return (MXFUL *) g_hash_table_lookup (primer->mappings,
+      GUINT_TO_POINTER (((guint) tag)));
 }
 
 gboolean
@@ -1692,8 +1731,7 @@ mxf_local_tag_add_to_hash_table (const MXFPrimerPack * primer,
 
   g_return_val_if_fail (*hash_table != NULL, FALSE);
 
-  ul = (MXFUL *) g_hash_table_lookup (primer->mappings,
-      GUINT_TO_POINTER (((guint) tag)));
+  ul = mxf_primer_tag_to_ul (primer, tag);
 
   if (ul) {
 #ifndef GST_DISABLE_GST_DEBUG
@@ -1703,11 +1741,10 @@ mxf_local_tag_add_to_hash_table (const MXFPrimerPack * primer,
     GST_DEBUG ("Adding local tag 0x%04x with UL %s and size %u", tag,
         mxf_ul_to_string (ul, str), tag_size);
 
-    local_tag = g_slice_new0 (MXFLocalTag);
+    local_tag = g_new0 (MXFLocalTag, 1);
     memcpy (&local_tag->ul, ul, sizeof (MXFUL));
     local_tag->size = tag_size;
     local_tag->data = tag_size == 0 ? NULL : g_memdup2 (tag_data, tag_size);
-    local_tag->g_slice = FALSE;
 
     g_hash_table_insert (*hash_table, &local_tag->ul, local_tag);
   } else {

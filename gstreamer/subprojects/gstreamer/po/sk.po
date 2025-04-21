@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gstreamer 1.7.90\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
 "PO-Revision-Date: 2016-05-20 11:32+0100\n"
 "Last-Translator: Peter Tuhársky <tuharsky@misbb.sk>\n"
 "Language-Team: Slovak <sk-i18n@lists.linux.sk>\n"
@@ -17,8 +17,8 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "X-Bugs: Report translation errors to the Language-Team address.\n"
-"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n"
-"%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 "X-Generator: Poedit 1.6.10\n"
 
 msgid "Print the GStreamer version"
@@ -44,8 +44,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Čiarkami oddelený zoznam dvojíc názov_kategórie:úroveň pre nastavenie "
-"špecifických úrovní pre jednotlivé kategórie. Príklad: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"špecifických úrovní pre jednotlivé kategórie. Príklad: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "ZOZNAM"
@@ -62,9 +62,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Zakázať ladenie"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Povoliť podrobnú diagnostiku načítavania zásuvných modulov"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Dvojbodkou oddelené cesty, ktoré obsahujú zásuvné moduly"
@@ -831,6 +828,12 @@ msgstr "súkromné-dáta"
 msgid "Private data"
 msgstr "Súkromné dáta"
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
@@ -870,13 +873,12 @@ msgstr "odkaz nemá zdroj [sink=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "odkaz nemá sink  [source=%s@%p]"
 
+msgid "No such property."
+msgstr ""
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "neexistuje vlastnosť \"%s\" v prvku \"%s\""
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "nepodarilo sa nastaviť vlastnosť \"%s\" v prvku \"%s\" na \"%s\""
 
 #, fuzzy, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -884,6 +886,18 @@ msgstr "Súbor \"%s\" je zásuvka."
 
 #, fuzzy, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "nepodarilo sa nastaviť vlastnosť \"%s\" v prvku \"%s\" na \"%s\""
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "prvok \"%s\" neexistuje"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "nepodarilo sa nastaviť vlastnosť \"%s\" v prvku \"%s\" na \"%s\""
+
+#, fuzzy, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
 msgstr "nepodarilo sa nastaviť vlastnosť \"%s\" v prvku \"%s\" na \"%s\""
 
 msgid "Delayed linking failed."
@@ -904,10 +918,6 @@ msgstr "nepodarilo sa pripojiť %s ku %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "nepodarilo sa pripojiť %s ku %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "prvok \"%s\" neexistuje"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1056,6 +1066,10 @@ msgstr "Prúd neobsahuje údaje."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "Implementované rozhrania:\n"
 
+#, c-format
+msgid "%sElement Flags%s:\n"
+msgstr ""
+
 msgid "readable"
 msgstr "čitateľné"
 
@@ -1071,6 +1085,9 @@ msgstr "ovládateľné"
 #, fuzzy
 msgid "conditionally available"
 msgstr "ovládateľné"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "meniteľné v stave NULOVÝ, PRIPRAVENÝ, POZASTAVENÝ alebo HRAJÚCI"
@@ -1330,6 +1347,13 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr "Meno vlastníctva"
 
+msgid "Set the name of the program"
+msgstr ""
+
+#, fuzzy
+msgid "PROGRAM-NAME"
+msgstr "Meno vlastníctva"
+
 msgid "Do not install a fault handler"
 msgstr "Neinštalovať obsluhu výnimiek"
 
@@ -1385,6 +1409,9 @@ msgstr "Nastavujem rúru na NULOVÚ ...\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Uvoľňujem rúru ...\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Povoliť podrobnú diagnostiku načítavania zásuvných modulov"
 
 #~ msgid "bin"
 #~ msgstr "zásobník"

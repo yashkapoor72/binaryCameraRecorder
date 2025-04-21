@@ -271,6 +271,7 @@ gst_vulkan_ensure_element_data (GstElement * element,
     if (!gst_vulkan_instance_open (*instance_ptr, &error)) {
       GST_ELEMENT_ERROR (element, RESOURCE, NOT_FOUND,
           ("Failed to create vulkan instance"), ("%s", error->message));
+      gst_clear_context (&context);
       gst_object_unref (*instance_ptr);
       *instance_ptr = NULL;
       g_clear_error (&error);
@@ -306,6 +307,61 @@ gst_vulkan_ensure_element_data (GstElement * element,
   }
 
   return *display_ptr != NULL && *instance_ptr != NULL;
+}
+
+/**
+ * gst_vulkan_ensure_element_device:
+ * @element: a #GstElement
+ * @instance: the #GstVulkanInstance
+ * @device_ptr: (inout) (optional): the resulting #GstVulkanDevice
+ * @device_id: The device number to use, 0 is default.
+ *
+ * Perform the steps necessary for retrieving a #GstVulkanDevice from
+ * the surrounding elements or create a new device according to the device_id.
+ *
+ * If the contents of @device_ptr is not %NULL, then no
+ * #GstContext query is necessary and no #GstVulkanDevice
+ * retrieval is performed.
+ *
+ * Returns: whether a #GstVulkanDevice exists in @device_ptr
+ *
+ * Since: 1.26
+ */
+gboolean
+gst_vulkan_ensure_element_device (GstElement * element,
+    GstVulkanInstance * instance, GstVulkanDevice ** device_ptr,
+    guint device_id)
+{
+  g_return_val_if_fail (instance != NULL, FALSE);
+
+  if (!gst_vulkan_device_run_context_query (element, device_ptr)) {
+    GError *error = NULL;
+    GST_CAT_INFO_OBJECT (GST_CAT_CONTEXT, element,
+        "No device retrieved from peer elements");
+
+    /* If no neighboor, or application not interested, use system default by device id */
+    *device_ptr =
+        gst_vulkan_instance_create_device_with_index (instance, device_id,
+        &error);
+
+    if (!*device_ptr) {
+      GST_ELEMENT_ERROR (element, RESOURCE, NOT_FOUND,
+          ("Failed to create vulkan device"),
+          ("%s", error ? error->message : ""));
+      g_clear_error (&error);
+      return FALSE;
+    }
+    GST_CAT_INFO_OBJECT (GST_CAT_CONTEXT, element,
+        "Created a new device from %s",
+        (*device_ptr)->physical_device->properties.deviceName);
+  } else {
+    if ((*device_ptr)->physical_device->device_index != device_id) {
+      GST_CAT_INFO_OBJECT (GST_CAT_CONTEXT, element,
+          "A device with a different id has been selected from a peer element");
+    }
+  }
+
+  return *device_ptr != NULL;
 }
 
 /**
@@ -379,7 +435,7 @@ gst_vulkan_handle_set_context (GstElement * element, GstContext * context,
  * @query: a #GstQuery of type %GST_QUERY_CONTEXT
  * @display: (transfer none) (nullable): a #GstVulkanDisplay
  * @instance: (transfer none) (nullable): a #GstVulkanInstance
- * @device: (transfer none) (nullable): a #GstVulkanInstance
+ * @device: (transfer none) (nullable): a #GstVulkanDevice
  *
  * Returns: Whether the @query was successfully responded to from the passed
  *          @display, @instance, and @device.
@@ -431,7 +487,8 @@ fill_vulkan_image_view_info (VkImage image, VkFormat format,
 }
 
 static gboolean
-find_compatible_view (GstVulkanImageView * view, VkImageViewCreateInfo * info)
+find_compatible_view (GstVulkanImageView * view,
+    const VkImageViewCreateInfo * info)
 {
   return view->create_info.image == info->image
       && view->create_info.format == info->format
@@ -465,16 +522,43 @@ find_compatible_view (GstVulkanImageView * view, VkImageViewCreateInfo * info)
 GstVulkanImageView *
 gst_vulkan_get_or_create_image_view (GstVulkanImageMemory * image)
 {
-  VkImageViewCreateInfo create_info;
-  GstVulkanImageView *ret = NULL;
+  return gst_vulkan_get_or_create_image_view_with_info (image, NULL);
+}
 
-  fill_vulkan_image_view_info (image->image, image->create_info.format,
-      &create_info);
+/**
+ * gst_vulkan_get_or_create_image_view_with_info
+ * @image: a #GstVulkanImageMemory
+ * @create_info: (nullable): a VkImageViewCreateInfo
+ *
+ * Create a new #GstVulkanImageView with a specific @create_info.
+ *
+ * Returns: (transfer full): a #GstVulkanImageView for @image matching the
+ *                           original layout and format of @image
+ *
+ * Since: 1.24
+ */
+GstVulkanImageView *
+gst_vulkan_get_or_create_image_view_with_info (GstVulkanImageMemory * image,
+    const VkImageViewCreateInfo * create_info)
+{
+  VkImageViewCreateInfo _create_info;
+  GstVulkanImageView *ret;
+
+  if (!create_info) {
+    fill_vulkan_image_view_info (image->image, image->create_info.format,
+        &_create_info);
+    create_info = &_create_info;
+  } else {
+    g_return_val_if_fail (create_info->format == image->create_info.format,
+        NULL);
+    g_return_val_if_fail (create_info->image == image->image, NULL);
+  }
 
   ret = gst_vulkan_image_memory_find_view (image,
-      (GstVulkanImageMemoryFindViewFunc) find_compatible_view, &create_info);
+      (GstVulkanImageMemoryFindViewFunc) find_compatible_view,
+      (gpointer) create_info);
   if (!ret) {
-    ret = gst_vulkan_image_view_new (image, &create_info);
+    ret = gst_vulkan_image_view_new (image, create_info);
     gst_vulkan_image_memory_add_view (image, ret);
   }
 
@@ -489,7 +573,7 @@ gst_vulkan_get_or_create_image_view (GstVulkanImageMemory * image)
  * @device: a #GstVulkanDevice
  * @code: the SPIR-V shader byte code
  * @size: length of @code.  Must be a multiple of 4
- * @error: (optional): a #GError to fill on failure
+ * @error: (out) (optional): a #GError to fill on failure
  *
  * Returns: (transfer full): a #GstVulkanHandle for @image matching the
  *                           original layout and format of @image or %NULL

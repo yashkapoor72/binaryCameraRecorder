@@ -1053,6 +1053,7 @@ find_media (GstRTSPClient * client, GstRTSPContext * ctx, gchar * path,
   } else {
     /* we have seen this path before, used cached media */
     media = priv->media;
+    gst_rtsp_media_lock (media);
     ctx->media = media;
     GST_INFO ("reusing cached media %p for path %s", media, priv->path);
   }
@@ -1104,6 +1105,7 @@ no_thread:
     GST_ERROR ("client %p: can't create thread", client);
     send_generic_error_response (client, GST_RTSP_STS_SERVICE_UNAVAILABLE, ctx);
     gst_rtsp_url_free (url);
+    gst_rtsp_media_unlock (media);
     g_object_unref (media);
     ctx->media = NULL;
     g_object_unref (factory);
@@ -1115,6 +1117,7 @@ no_prepare:
     GST_ERROR ("client %p: can't prepare media", client);
     send_generic_error_response (client, GST_RTSP_STS_SERVICE_UNAVAILABLE, ctx);
     gst_rtsp_url_free (url);
+    gst_rtsp_media_unlock (media);
     g_object_unref (media);
     ctx->media = NULL;
     g_object_unref (factory);
@@ -2852,7 +2855,6 @@ handle_setup_request (GstRTSPClient * client, GstRTSPContext * ctx)
     media = find_media (client, ctx, path, &matched);
     /* need to suspend the media, if the protocol has changed */
     if (media != NULL) {
-      gst_rtsp_media_lock (media);
       gst_rtsp_media_suspend (media);
     }
   } else {
@@ -3198,9 +3200,9 @@ unsupported_mode:
   {
     GST_ERROR ("client %p: unsupported mode (media play: %d, media record: %d, "
         "mode play: %d, mode record: %d)", client,
-        ! !(gst_rtsp_media_get_transport_mode (media) &
+        !!(gst_rtsp_media_get_transport_mode (media) &
             GST_RTSP_TRANSPORT_MODE_PLAY),
-        ! !(gst_rtsp_media_get_transport_mode (media) &
+        !!(gst_rtsp_media_get_transport_mode (media) &
             GST_RTSP_TRANSPORT_MODE_RECORD), ct->mode_play, ct->mode_record);
     send_generic_error_response (client, GST_RTSP_STS_UNSUPPORTED_TRANSPORT,
         ctx);
@@ -3339,8 +3341,6 @@ handle_describe_request (GstRTSPClient * client, GstRTSPContext * ctx)
   /* find the media object for the uri */
   if (!(media = find_media (client, ctx, path, NULL)))
     goto no_media;
-
-  gst_rtsp_media_lock (media);
 
   if (!(gst_rtsp_media_get_transport_mode (media) &
           GST_RTSP_TRANSPORT_MODE_PLAY))
@@ -3525,7 +3525,6 @@ handle_announce_request (GstRTSPClient * client, GstRTSPContext * ctx)
     goto no_media;
 
   ctx->media = media;
-  gst_rtsp_media_lock (media);
 
   g_signal_emit (client, gst_rtsp_client_signals[SIGNAL_PRE_ANNOUNCE_REQUEST],
       0, ctx, &sig_result);
@@ -4729,8 +4728,8 @@ gst_rtsp_client_get_connection (GstRTSPClient * client)
 /**
  * gst_rtsp_client_set_send_func:
  * @client: a #GstRTSPClient
- * @func: (scope notified): a #GstRTSPClientSendFunc
- * @user_data: (closure): user data passed to @func
+ * @func: (scope notified) (closure user_data): a #GstRTSPClientSendFunc
+ * @user_data: user data passed to @func
  * @notify: (allow-none): called when @user_data is no longer in use
  *
  * Set @func as the callback that will be called when a new message needs to be
@@ -4771,8 +4770,8 @@ gst_rtsp_client_set_send_func (GstRTSPClient * client,
 /**
  * gst_rtsp_client_set_send_messages_func:
  * @client: a #GstRTSPClient
- * @func: (scope notified): a #GstRTSPClientSendMessagesFunc
- * @user_data: (closure): user data passed to @func
+ * @func: (scope notified) (closure user_data): a #GstRTSPClientSendMessagesFunc
+ * @user_data: user data passed to @func
  * @notify: (allow-none): called when @user_data is no longer in use
  *
  * Set @func as the callback that will be called when new messages needs to be

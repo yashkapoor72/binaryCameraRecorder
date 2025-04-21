@@ -149,6 +149,7 @@ struct _GstVideoTestSrc {
   GstVideoInfo info; /* protected by the object or stream lock */
   GstVideoChromaResample *subsample;
   gboolean bayer;
+  gint bpp;
   gint x_invert;
   gint y_invert;
 
@@ -209,6 +210,7 @@ struct _GstVideoTestSrc {
 
   /* cached buffer used for static patterns that don't change */
   GstBuffer *cached;
+  GMutex cache_lock;
   gboolean have_static_pattern;
 };
 

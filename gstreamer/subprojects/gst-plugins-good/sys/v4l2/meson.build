@@ -36,6 +36,51 @@ v4l2_sources = [
   'tunernorm.c'
 ]
 
+v4l2_headers = [
+  'tunernorm.h',
+  'gstv4l2vp8enc.h',
+  'gstv4l2colorbalance.h',
+  'gstv4l2transform.h',
+  'gstv4l2videodec.h',
+  'gstv4l2mpeg2codec.h',
+  'gstv4l2vp8codec.h',
+  'gstv4l2vp9codec.h',
+  'gstv4l2h264enc.h',
+  'gstv4l2codec.h',
+  'gstv4l2vp9enc.h',
+  'gstv4l2fwhtenc.h',
+  'gstv4l2vidorient.h',
+  'gstv4l2h263enc.h',
+  'gstv4l2deviceprovider.h',
+  'gstv4l2bufferpool.h',
+  'gstv4l2tuner.h',
+  'gstv4l2elements.h',
+  'gstv4l2radio.h',
+  'gstv4l2h265codec.h',
+  'gstv4l2sink.h',
+  'gstv4l2h265enc.h',
+  'v4l2-utils.h',
+  'gstv4l2mpeg4enc.h',
+  'tunerchannel.h',
+  'gstv4l2videoenc.h',
+  'gstv4l2h264codec.h',
+  'gstv4l2src.h',
+  'tuner.h',
+  'gstv4l2mpeg4codec.h',
+  'gstv4l2object.h',
+  'gstv4l2jpegenc.h',
+  'gstv4l2allocator.h',
+]
+
+doc_sources = []
+foreach s: v4l2_sources + v4l2_headers
+  doc_sources += meson.current_source_dir() / s
+endforeach
+
+plugin_sources += {
+  'video4linux2': pathsep.join(doc_sources)
+}
+
 v4l2 = get_option('v4l2')
 if v4l2.disabled()
   have_v4l2 = false
@@ -52,7 +97,7 @@ cdata.set('GST_V4L2_ENABLE_PROBE', get_option('v4l2-probe'))
 if have_v4l2
   message('building v4l2 plugin')
   cdata.set('HAVE_GST_V4L2', true)
-  gudev_dep = dependency('gudev-1.0', version : '>=147', required : get_option('v4l2-gudev'))
+  gudev_dep = dependency('gudev-1.0', version : '>=147', required : get_option('v4l2-gudev'), allow_fallback: true)
   cdata.set('HAVE_GUDEV', gudev_dep.found())
 
   # libv4l2 is only needed for converting some obscure formats

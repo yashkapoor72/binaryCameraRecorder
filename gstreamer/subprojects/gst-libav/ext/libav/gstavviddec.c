@@ -35,6 +35,10 @@
 
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_PERFORMANCE);
 
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58,132,100)
+#define AV_CODEC_CAP_OTHER_THREADS AV_CODEC_CAP_AUTO_THREADS
+#endif
+
 #define GST_FFMPEG_VIDEO_CODEC_FRAME_FLAG_ALLOCATED (1<<15)
 
 #define MAX_TS_MASK 0xff
@@ -127,6 +131,49 @@ gst_ffmpegviddec_lowres_get_type (void)
   return ffmpegdec_lowres_type;
 }
 
+/**
+ * GstLibAVVidDecSkipFrame:
+ *
+ * Types of frames to skip during decoding.
+ *
+ * Since: 1.26
+ */
+
+/**
+ * GstLibAVVidDecSkipFrame::default
+ *
+ * Since: 1.26
+ */
+
+/**
+ * GstLibAVVidDecSkipFrame::non-ref
+ *
+ * Since: 1.26
+ */
+
+/**
+ * GstLibAVVidDecSkipFrame::bidir
+ *
+ * Since: 1.26
+ */
+
+/**
+ * GstLibAVVidDecSkipFrame::non-intra
+ *
+ * Since: 1.26
+ */
+
+/**
+ * GstLibAVVidDecSkipFrame::non-key
+ *
+ * Since: 1.26
+ */
+
+/**
+ * GstLibAVVidDecSkipFrame::all
+ *
+ * Since: 1.26
+ */
 #define GST_FFMPEGVIDDEC_TYPE_SKIPFRAME (gst_ffmpegviddec_skipframe_get_type())
 static GType
 gst_ffmpegviddec_skipframe_get_type (void)
@@ -135,10 +182,14 @@ gst_ffmpegviddec_skipframe_get_type (void)
 
   if (!ffmpegdec_skipframe_type) {
     static const GEnumValue ffmpegdec_skipframe[] = {
-      {0, "0", "Skip nothing"},
-      {1, "1", "Skip B-frames"},
-      {2, "2", "Skip IDCT/Dequantization"},
-      {5, "5", "Skip everything"},
+      // taken from https://ffmpeg.org/doxygen/trunk/group__lavc__decoding.html
+      {AVDISCARD_DEFAULT, "Discard useless packets like 0 size packets in avi",
+          "default"},
+      {AVDISCARD_NONREF, "Discard all non reference", "non-ref"},
+      {AVDISCARD_BIDIR, "Discard all bidirectional frames", "bidir"},
+      {AVDISCARD_NONINTRA, "Discard all non intra frames", "non-intra"},
+      {AVDISCARD_NONKEY, "Discard all frames except keyframes", "non-key"},
+      {AVDISCARD_ALL, "Discard all", "all"},
       {0, NULL, NULL},
     };
 
@@ -177,7 +228,9 @@ dup_caps_with_alternate (GstCaps * caps)
   GstCapsFeatures *features;
 
   with_alternate = gst_caps_copy (caps);
-  features = gst_caps_features_new (GST_CAPS_FEATURE_FORMAT_INTERLACED, NULL);
+  features =
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_FORMAT_INTERLACED,
+      NULL);
   gst_caps_set_features_simple (with_alternate, features);
 
   gst_caps_set_simple (with_alternate, "interlace-mode", G_TYPE_STRING,
@@ -333,14 +386,7 @@ gst_ffmpegviddec_init (GstFFMpegVidDec * ffmpegdec)
 static void
 gst_ffmpegviddec_subinit (GstFFMpegVidDec * ffmpegdec)
 {
-  GstFFMpegVidDecClass *klass =
-      (GstFFMpegVidDecClass *) G_OBJECT_GET_CLASS (ffmpegdec);
-
   /* some ffmpeg data */
-  ffmpegdec->context = avcodec_alloc_context3 (klass->in_plugin);
-  ffmpegdec->context->opaque = ffmpegdec;
-  ffmpegdec->picture = av_frame_alloc ();
-  ffmpegdec->opened = FALSE;
   ffmpegdec->skip_frame = ffmpegdec->lowres = 0;
   ffmpegdec->direct_rendering = DEFAULT_DIRECT_RENDERING;
   ffmpegdec->max_threads = DEFAULT_MAX_THREADS;
@@ -361,6 +407,8 @@ gst_ffmpegviddec_finalize (GObject * object)
   GstFFMpegVidDec *ffmpegdec = GST_FFMPEGVIDDEC (object);
 
   av_frame_free (&ffmpegdec->picture);
+  if (ffmpegdec->context)
+    av_freep (&ffmpegdec->context->extradata);
   avcodec_free_context (&ffmpegdec->context);
 
   G_OBJECT_CLASS (parent_class)->finalize (object);
@@ -391,37 +439,23 @@ gst_ffmpegviddec_context_set_flags2 (AVCodecContext * context, guint flags,
 }
 
 /* with LOCK */
-static gboolean
-gst_ffmpegviddec_close (GstFFMpegVidDec * ffmpegdec, gboolean reset)
+static void
+gst_ffmpegviddec_close (GstFFMpegVidDec * ffmpegdec)
 {
-  GstFFMpegVidDecClass *oclass;
   guint i;
-
-  oclass = GST_FFMPEGVIDDEC_GET_CLASS (ffmpegdec);
 
   GST_LOG_OBJECT (ffmpegdec, "closing ffmpeg codec");
 
   gst_caps_replace (&ffmpegdec->last_caps, NULL);
 
-  gst_ffmpeg_avcodec_close (ffmpegdec->context);
-  ffmpegdec->opened = FALSE;
+  if (ffmpegdec->context)
+    av_freep (&ffmpegdec->context->extradata);
+  avcodec_free_context (&ffmpegdec->context);
 
   for (i = 0; i < G_N_ELEMENTS (ffmpegdec->stride); i++)
     ffmpegdec->stride[i] = -1;
 
   gst_buffer_replace (&ffmpegdec->palette, NULL);
-
-  av_freep (&ffmpegdec->context->extradata);
-  if (reset) {
-    avcodec_free_context (&ffmpegdec->context);
-    ffmpegdec->context = avcodec_alloc_context3 (oclass->in_plugin);
-    if (ffmpegdec->context == NULL) {
-      GST_DEBUG_OBJECT (ffmpegdec, "Failed to set context defaults");
-      return FALSE;
-    }
-    ffmpegdec->context->opaque = ffmpegdec;
-  }
-  return TRUE;
 }
 
 /* with LOCK */
@@ -439,20 +473,22 @@ gst_ffmpegviddec_open (GstFFMpegVidDec * ffmpegdec)
   for (i = 0; i < G_N_ELEMENTS (ffmpegdec->stride); i++)
     ffmpegdec->stride[i] = -1;
 
-  ffmpegdec->opened = TRUE;
-
   GST_LOG_OBJECT (ffmpegdec, "Opened libav codec %s, id %d",
       oclass->in_plugin->name, oclass->in_plugin->id);
 
   gst_ffmpegviddec_context_set_flags (ffmpegdec->context,
       AV_CODEC_FLAG_OUTPUT_CORRUPT, ffmpegdec->output_corrupt);
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT (60, 31, 100)
+  gst_ffmpegviddec_context_set_flags (ffmpegdec->context,
+      AV_CODEC_FLAG_COPY_OPAQUE, TRUE);
+#endif
 
   return TRUE;
 
   /* ERRORS */
 could_not_open:
   {
-    gst_ffmpegviddec_close (ffmpegdec, TRUE);
+    gst_ffmpegviddec_close (ffmpegdec);
     GST_DEBUG_OBJECT (ffmpegdec, "avdec_%s: Failed to open libav codec",
         oclass->in_plugin->name);
     return FALSE;
@@ -524,19 +560,29 @@ gst_ffmpegviddec_set_format (GstVideoDecoder * decoder,
   GST_OBJECT_LOCK (ffmpegdec);
 
   if (!gst_ffmpegviddec_needs_reset (ffmpegdec, state)) {
+    if (ffmpegdec->last_caps) {
+      gint last_fps_n, last_fps_d, fps_n, fps_d;
+
+      if (gst_structure_get (gst_caps_get_structure (ffmpegdec->last_caps, 0),
+              "framerate", GST_TYPE_FRACTION, &last_fps_n, &last_fps_d, NULL) &&
+          gst_structure_get (gst_caps_get_structure (state->caps, 0),
+              "framerate", GST_TYPE_FRACTION, &fps_n, &fps_d, NULL)) {
+
+        ffmpegdec->needs_renegotation = (last_fps_d != fps_d
+            || last_fps_n != fps_n);
+      }
+
+    }
     gst_caps_replace (&ffmpegdec->last_caps, state->caps);
     goto update_state;
   }
 
   /* close old session */
-  if (ffmpegdec->opened) {
+  if (ffmpegdec->context) {
     GST_OBJECT_UNLOCK (ffmpegdec);
     gst_ffmpegviddec_finish (decoder);
     GST_OBJECT_LOCK (ffmpegdec);
-    if (!gst_ffmpegviddec_close (ffmpegdec, TRUE)) {
-      GST_OBJECT_UNLOCK (ffmpegdec);
-      return FALSE;
-    }
+    gst_ffmpegviddec_close (ffmpegdec);
     ffmpegdec->pic_pix_fmt = 0;
     ffmpegdec->pic_width = 0;
     ffmpegdec->pic_height = 0;
@@ -551,6 +597,14 @@ gst_ffmpegviddec_set_format (GstVideoDecoder * decoder,
     ffmpegdec->cur_multiview_mode = GST_VIDEO_MULTIVIEW_MODE_NONE;
     ffmpegdec->cur_multiview_flags = GST_VIDEO_MULTIVIEW_FLAGS_NONE;
   }
+
+  ffmpegdec->context = avcodec_alloc_context3 (oclass->in_plugin);
+  if (ffmpegdec->context == NULL) {
+    GST_DEBUG_OBJECT (ffmpegdec, "Failed to allocate context");
+    GST_OBJECT_UNLOCK (ffmpegdec);
+    return FALSE;
+  }
+  ffmpegdec->context->opaque = ffmpegdec;
 
   gst_caps_replace (&ffmpegdec->last_caps, state->caps);
 
@@ -615,7 +669,7 @@ gst_ffmpegviddec_set_format (GstVideoDecoder * decoder,
   if (ffmpegdec->max_threads == 0) {
     /* When thread type is FF_THREAD_FRAME, extra latency is introduced equal
      * to one frame per thread. We thus need to calculate the thread count ourselves */
-    if ((!(oclass->in_plugin->capabilities & AV_CODEC_CAP_AUTO_THREADS)) ||
+    if ((!(oclass->in_plugin->capabilities & AV_CODEC_CAP_OTHER_THREADS)) ||
         (ffmpegdec->context->thread_type & FF_THREAD_FRAME))
       ffmpegdec->context->thread_count =
           MIN (gst_ffmpeg_auto_max_threads (), 16);
@@ -669,17 +723,32 @@ update_state:
   /* Use the framerate values stored in the decoder for calculating latency. The
    * upstream framerate might not be set but we still want to report a latency
    * if needed. */
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+  if (ffmpegdec->context->time_base.den && ffmpegdec->context->codec_descriptor
+      && ffmpegdec->context->codec_descriptor->props) {
+#else
   if (ffmpegdec->context->time_base.den && ffmpegdec->context->ticks_per_frame) {
-    gint fps_n =
-        ffmpegdec->context->time_base.den / ffmpegdec->context->ticks_per_frame;
-    gint fps_d = ffmpegdec->context->time_base.num;
-    latency = gst_util_uint64_scale_ceil (
-        (ffmpegdec->context->has_b_frames) * GST_SECOND, fps_d, fps_n);
+#endif
+    const gint fps_n = ffmpegdec->context->time_base.den;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+    const gint ticks_per_frame =
+        (GST_VIDEO_INFO_IS_INTERLACED (&ffmpegdec->input_state->info)
+        && ffmpegdec->context->codec_descriptor
+        && ffmpegdec->context->
+        codec_descriptor->props & AV_CODEC_PROP_FIELDS) ? 2 : 1;
+#else
+    const gint ticks_per_frame = ffmpegdec->context->ticks_per_frame;
+#endif
+    const gint fps_d = ffmpegdec->context->time_base.num * ticks_per_frame;
+    if (fps_n) {
+      latency = gst_util_uint64_scale_ceil (
+          (ffmpegdec->context->has_b_frames) * GST_SECOND, fps_d, fps_n);
 
-    if (ffmpegdec->context->thread_type & FF_THREAD_FRAME) {
-      latency +=
-          gst_util_uint64_scale_ceil (ffmpegdec->context->thread_count *
-          GST_SECOND, fps_d, fps_n);
+      if (ffmpegdec->context->thread_type & FF_THREAD_FRAME) {
+        latency +=
+            gst_util_uint64_scale_ceil (ffmpegdec->context->thread_count *
+            GST_SECOND, fps_d, fps_n);
+      }
     }
   }
 
@@ -697,12 +766,18 @@ done:
 open_failed:
   {
     GST_DEBUG_OBJECT (ffmpegdec, "Failed to open");
+    if (ffmpegdec->context)
+      av_freep (&ffmpegdec->context->extradata);
+    avcodec_free_context (&ffmpegdec->context);
     goto done;
   }
 nal_only_slice:
   {
     GST_ERROR_OBJECT (ffmpegdec,
         "Can't do NAL aligned H.264 with frame threading.");
+    if (ffmpegdec->context)
+      av_freep (&ffmpegdec->context->extradata);
+    avcodec_free_context (&ffmpegdec->context);
     goto done;
   }
 }
@@ -723,11 +798,12 @@ gst_ffmpegviddec_video_frame_new (GstFFMpegVidDec * ffmpegdec,
 {
   GstFFMpegVidDecVideoFrame *dframe;
 
-  dframe = g_slice_new0 (GstFFMpegVidDecVideoFrame);
+  dframe = g_new0 (GstFFMpegVidDecVideoFrame, 1);
   dframe->ffmpegdec = ffmpegdec;
   dframe->frame = frame;
 
-  GST_DEBUG_OBJECT (ffmpegdec, "new video frame %p", dframe);
+  GST_DEBUG_OBJECT (ffmpegdec, "new video frame %p for sfn # %d", dframe,
+      frame->system_frame_number);
 
   return dframe;
 }
@@ -736,7 +812,8 @@ static void
 gst_ffmpegviddec_video_frame_free (GstFFMpegVidDec * ffmpegdec,
     GstFFMpegVidDecVideoFrame * frame)
 {
-  GST_DEBUG_OBJECT (ffmpegdec, "free video frame %p", frame);
+  GST_DEBUG_OBJECT (ffmpegdec, "free video frame %p for sfn # %d", frame,
+      frame->frame->system_frame_number);
 
   if (frame->mapped)
     gst_video_frame_unmap (&frame->vframe);
@@ -747,7 +824,7 @@ gst_ffmpegviddec_video_frame_free (GstFFMpegVidDec * ffmpegdec,
   if (frame->avbuffer) {
     av_buffer_unref (&frame->avbuffer);
   }
-  g_slice_free (GstFFMpegVidDecVideoFrame, frame);
+  g_free (frame);
 }
 
 static void
@@ -838,8 +915,9 @@ gst_ffmpegviddec_ensure_internal_pool (GstFFMpegVidDec * ffmpegdec,
       ffmpegdec->pool_format == picture->format)
     return;
 
-  GST_DEBUG_OBJECT (ffmpegdec, "Updating internal pool (%i, %i)",
-      picture->width, picture->height);
+  GST_DEBUG_OBJECT (ffmpegdec, "Updating internal pool (%i, %i) -> (%i, %i)",
+      ffmpegdec->pool_width, ffmpegdec->pool_height, picture->width,
+      picture->height);
 
   /* if we are negotiating from get_buffer, then renegotiate later in order
    * to potentially use a downstream pool */
@@ -868,6 +946,12 @@ gst_ffmpegviddec_ensure_internal_pool (GstFFMpegVidDec * ffmpegdec,
     gst_object_unref (ffmpegdec->internal_pool);
 
   ffmpegdec->internal_pool = gst_video_buffer_pool_new ();
+  {
+    gchar *name =
+        g_strdup_printf ("%s-internal-pool", GST_OBJECT_NAME (ffmpegdec));
+    g_object_set (ffmpegdec->internal_pool, "name", name, NULL);
+    g_free (name);
+  }
   config = gst_buffer_pool_get_config (ffmpegdec->internal_pool);
 
   caps = gst_video_info_to_caps (&info);
@@ -904,6 +988,18 @@ gst_ffmpegviddec_can_direct_render (GstFFMpegVidDec * ffmpegdec)
       AV_CODEC_CAP_DR1);
 }
 
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT (60, 31, 100)
+static void
+gst_ffmpeg_opaque_free (void *opaque, guint8 * data)
+{
+  GstVideoCodecFrame *frame = (GstVideoCodecFrame *) opaque;
+
+  GST_DEBUG ("Releasing frame %p", frame);
+
+  gst_video_codec_frame_unref (frame);
+}
+#endif
+
 /* called when ffmpeg wants us to allocate a buffer to write the decoded frame
  * into. We try to give it memory from our pool */
 static int
@@ -916,20 +1012,36 @@ gst_ffmpegviddec_get_buffer2 (AVCodecContext * context, AVFrame * picture,
   guint c;
   GstFlowReturn ret;
   int create_buffer_flags = 0;
+  gint system_frame_number = 0;
 
   ffmpegdec = GST_FFMPEGVIDDEC (context->opaque);
 
+  GST_DEBUG_OBJECT (ffmpegdec, "flags %d", flags);
   GST_DEBUG_OBJECT (ffmpegdec, "getting buffer picture %p", picture);
 
   /* apply the last info we have seen to this picture, when we get the
    * picture back from ffmpeg we can use this to correctly timestamp the output
    * buffer */
-  GST_DEBUG_OBJECT (ffmpegdec, "opaque value SN %d",
-      (gint32) picture->reordered_opaque);
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT (60, 31, 100)
+  {
+    GstVideoCodecFrame *input_frame =
+        av_buffer_get_opaque (picture->opaque_ref);
+    g_assert (input_frame != NULL);
+
+    GST_DEBUG_OBJECT (ffmpegdec, "input_frame %p", input_frame);
+    /* ******************************* */
+    /* Test if the stored frame in the opaque matches the one video decoder has for that ref ! */
+    system_frame_number = input_frame->system_frame_number;
+  }
+#else
+  system_frame_number = (gint) picture->reordered_opaque;
+#endif
+  GST_DEBUG_OBJECT (ffmpegdec, "opaque value SN %d", system_frame_number);
 
   frame =
       gst_video_decoder_get_frame (GST_VIDEO_DECODER (ffmpegdec),
-      picture->reordered_opaque);
+      system_frame_number);
+
   if (G_UNLIKELY (frame == NULL))
     goto no_frame;
 
@@ -945,14 +1057,14 @@ gst_ffmpegviddec_get_buffer2 (AVCodecContext * context, AVFrame * picture,
 
   /* GstFFMpegVidDecVideoFrame receives the frame ref */
   if (picture->opaque) {
+    GST_DEBUG_OBJECT (ffmpegdec, "Re-using opaque %p", picture->opaque);
     dframe = picture->opaque;
     dframe->frame = frame;
   } else {
     picture->opaque = dframe =
         gst_ffmpegviddec_video_frame_new (ffmpegdec, frame);
+    GST_DEBUG_OBJECT (ffmpegdec, "storing opaque %p", dframe);
   }
-
-  GST_DEBUG_OBJECT (ffmpegdec, "storing opaque %p", dframe);
 
   if (!gst_ffmpegviddec_can_direct_render (ffmpegdec))
     goto no_dr;
@@ -1055,7 +1167,7 @@ map_failed:
     GST_ELEMENT_ERROR (ffmpegdec, RESOURCE, OPEN_READ_WRITE,
         ("Cannot access memory for read and write operation."),
         ("The video memory allocated from downstream pool could not mapped for"
-            "read and write."));
+            " read and write."));
     return -1;
   }
 duplicate_frame:
@@ -1079,10 +1191,18 @@ picture_changed (GstFFMpegVidDec * ffmpegdec, AVFrame * picture,
 
   if (one_field) {
     pic_field_order = ffmpegdec->pic_field_order;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+  } else if (picture->flags & AV_FRAME_FLAG_INTERLACED) {
+#else
   } else if (picture->interlaced_frame) {
+#endif
     if (picture->repeat_pict)
       pic_field_order |= GST_VIDEO_BUFFER_FLAG_RFF;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+    if (picture->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST)
+#else
     if (picture->top_field_first)
+#endif
       pic_field_order |= GST_VIDEO_BUFFER_FLAG_TFF;
   }
 
@@ -1091,7 +1211,12 @@ picture_changed (GstFFMpegVidDec * ffmpegdec, AVFrame * picture,
       && ffmpegdec->pic_pix_fmt == picture->format
       && ffmpegdec->pic_par_n == picture->sample_aspect_ratio.num
       && ffmpegdec->pic_par_d == picture->sample_aspect_ratio.den
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+      && ffmpegdec->pic_interlaced ==
+      (picture->flags & AV_FRAME_FLAG_INTERLACED)
+#else
       && ffmpegdec->pic_interlaced == picture->interlaced_frame
+#endif
       && ffmpegdec->pic_field_order == pic_field_order
       && ffmpegdec->cur_multiview_mode == ffmpegdec->picture_multiview_mode
       && ffmpegdec->cur_multiview_flags == ffmpegdec->picture_multiview_flags);
@@ -1100,7 +1225,16 @@ picture_changed (GstFFMpegVidDec * ffmpegdec, AVFrame * picture,
 static gboolean
 context_changed (GstFFMpegVidDec * ffmpegdec, AVCodecContext * context)
 {
-  return !(ffmpegdec->ctx_ticks == context->ticks_per_frame
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+  const gint ticks_per_frame =
+      (GST_VIDEO_INFO_IS_INTERLACED (&ffmpegdec->input_state->info)
+      && ffmpegdec->context->codec_descriptor
+      && ffmpegdec->context->
+      codec_descriptor->props & AV_CODEC_PROP_FIELDS) ? 2 : 1;
+#else
+  const gint ticks_per_frame = context->ticks_per_frame;
+#endif
+  return !(ffmpegdec->ctx_ticks == ticks_per_frame
       && ffmpegdec->ctx_time_n == context->time_base.num
       && ffmpegdec->ctx_time_d == context->time_base.den);
 }
@@ -1111,10 +1245,18 @@ update_video_context (GstFFMpegVidDec * ffmpegdec, AVCodecContext * context,
 {
   gint pic_field_order = 0;
 
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+  if (picture->flags & AV_FRAME_FLAG_INTERLACED) {
+#else
   if (picture->interlaced_frame) {
+#endif
     if (picture->repeat_pict)
       pic_field_order |= GST_VIDEO_BUFFER_FLAG_RFF;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+    if (picture->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST)
+#else
     if (picture->top_field_first)
+#endif
       pic_field_order |= GST_VIDEO_BUFFER_FLAG_TFF;
   }
 
@@ -1150,12 +1292,25 @@ update_video_context (GstFFMpegVidDec * ffmpegdec, AVCodecContext * context,
     ffmpegdec->pic_field_order_changed = TRUE;
 
   ffmpegdec->pic_field_order = pic_field_order;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+  ffmpegdec->pic_interlaced = picture->flags & AV_FRAME_FLAG_INTERLACED;
+#else
   ffmpegdec->pic_interlaced = picture->interlaced_frame;
+#endif
 
   if (!ffmpegdec->pic_interlaced)
     ffmpegdec->pic_field_order_changed = FALSE;
 
-  ffmpegdec->ctx_ticks = context->ticks_per_frame;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+  const gint ticks_per_frame =
+      (GST_VIDEO_INFO_IS_INTERLACED (&ffmpegdec->input_state->info)
+      && ffmpegdec->context->codec_descriptor
+      && ffmpegdec->context->
+      codec_descriptor->props & AV_CODEC_PROP_FIELDS) ? 2 : 1;
+#else
+  const gint ticks_per_frame = context->ticks_per_frame;
+#endif
+  ffmpegdec->ctx_ticks = ticks_per_frame;
   ffmpegdec->ctx_time_n = context->time_base.num;
   ffmpegdec->ctx_time_d = context->time_base.den;
 
@@ -1344,11 +1499,14 @@ gst_ffmpegviddec_negotiate (GstFFMpegVidDec * ffmpegdec,
   GstStructure *in_s;
   GstVideoInterlaceMode interlace_mode;
   gint caps_height;
-  gboolean one_field = ! !(flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD);
+  gboolean one_field = !!(flags & GST_VIDEO_BUFFER_FLAG_ONEFIELD);
 
-  if (!update_video_context (ffmpegdec, context, picture, one_field))
+  if (!update_video_context (ffmpegdec, context, picture, one_field)
+      && !ffmpegdec->needs_renegotation) {
     return TRUE;
+  }
 
+  ffmpegdec->needs_renegotation = FALSE;
   caps_height = ffmpegdec->pic_height;
 
   fmt = gst_ffmpeg_pixfmt_to_videoformat (ffmpegdec->pic_pix_fmt);
@@ -1462,8 +1620,8 @@ gst_ffmpegviddec_negotiate (GstFFMpegVidDec * ffmpegdec,
     fps_n = in_info->fps_n;
     fps_d = in_info->fps_d;
   } else {
-    fps_n = ffmpegdec->ctx_time_d / ffmpegdec->ctx_ticks;
-    fps_d = ffmpegdec->ctx_time_n;
+    fps_n = ffmpegdec->ctx_time_d;
+    fps_d = ffmpegdec->ctx_time_n * ffmpegdec->ctx_ticks;
 
     if (!fps_d) {
       GST_LOG_OBJECT (ffmpegdec, "invalid framerate: %d/0, -> %d/1", fps_n,
@@ -1622,6 +1780,11 @@ gst_ffmpegviddec_do_qos (GstFFMpegVidDec * ffmpegdec,
   if (frame == NULL)
     return;
 
+  if (ffmpegdec->skip_frame != AVDISCARD_DEFAULT) {
+    /* A special skip frame mode is configured, ignore QOS. */
+    return;
+  }
+
   if (skip_flags & GST_SEGMENT_FLAG_TRICKMODE_KEY_UNITS) {
     ffmpegdec->context->skip_frame = AVDISCARD_NONKEY;
     *mode_switch = TRUE;
@@ -1717,7 +1880,9 @@ get_output_buffer (GstFFMpegVidDec * ffmpegdec, GstVideoCodecFrame * frame)
 
   gst_video_frame_unmap (&vframe);
 
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT (60, 31, 100)
   ffmpegdec->picture->reordered_opaque = -1;
+#endif
 
   return ret;
 
@@ -1734,7 +1899,7 @@ map_failed:
     GST_ELEMENT_ERROR (ffmpegdec, RESOURCE, OPEN_READ_WRITE,
         ("Cannot access memory for read and write operation."),
         ("The video memory allocated from downstream pool could not mapped for"
-            "read and write."));
+            " read and write."));
     return ret;
   }
 not_negotiated:
@@ -1744,27 +1909,28 @@ not_negotiated:
   }
 }
 
-static void
-gst_avpacket_init (AVPacket * packet, guint8 * data, guint size)
-{
-  memset (packet, 0, sizeof (AVPacket));
-  packet->data = data;
-  packet->size = size;
-}
-
 /*
  * Returns: whether a frame was decoded
  */
 static gboolean
 gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
-    GstVideoCodecFrame * frame, GstFlowReturn * ret)
+    GstVideoCodecFrame * input_frame, GstFlowReturn * ret)
 {
   gint res;
   gboolean got_frame = FALSE;
   gboolean mode_switch;
-  GstVideoCodecFrame *out_frame;
+  GstVideoCodecFrame *output_frame;
   GstFFMpegVidDecVideoFrame *out_dframe;
   GstBufferPool *pool;
+
+  if (G_UNLIKELY (!ffmpegdec->context))
+    goto no_codec;
+
+#if LIBAVCODEC_VERSION_MAJOR >= 60
+  ffmpegdec->context->frame_num++;
+#else
+  ffmpegdec->context->frame_number++;
+#endif
 
   *ret = GST_FLOW_OK;
 
@@ -1773,20 +1939,25 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
 
   /* run QoS code, we don't stop decoding the frame when we are late because
    * else we might skip a reference frame */
-  gst_ffmpegviddec_do_qos (ffmpegdec, frame, &mode_switch);
+  gst_ffmpegviddec_do_qos (ffmpegdec, input_frame, &mode_switch);
 
+  /* FFmpeg might request new buffer from other threads.
+   * Release lock here */
+  GST_VIDEO_DECODER_STREAM_UNLOCK (ffmpegdec);
   res = avcodec_receive_frame (ffmpegdec->context, ffmpegdec->picture);
+  GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
 
   /* No frames available at this time */
-  if (res == AVERROR (EAGAIN))
+  if (res == AVERROR (EAGAIN)) {
+    GST_DEBUG_OBJECT (ffmpegdec, "Need more data");
     goto beach;
-  else if (res == AVERROR_EOF) {
+  } else if (res == AVERROR_EOF) {
     *ret = GST_FLOW_EOS;
     GST_DEBUG_OBJECT (ffmpegdec, "Context was entirely flushed");
     goto beach;
   } else if (res < 0) {
-    *ret = GST_FLOW_OK;
-    GST_WARNING_OBJECT (ffmpegdec, "Legitimate decoding error");
+    GST_VIDEO_DECODER_ERROR (ffmpegdec, 1, STREAM, DECODE, (NULL),
+        ("Video decoding error"), *ret);
     goto beach;
   }
 
@@ -1794,11 +1965,20 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
 
   /* get the output picture timing info again */
   out_dframe = ffmpegdec->picture->opaque;
-  out_frame = gst_video_codec_frame_ref (out_dframe->frame);
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT (60, 31, 100)
+  output_frame =
+      gst_video_codec_frame_ref (av_buffer_get_opaque (ffmpegdec->
+          picture->opaque_ref));
+#else
+  g_assert (out_dframe);
+  output_frame = gst_video_codec_frame_ref (out_dframe->frame);
+#endif
 
   /* also give back a buffer allocated by the frame, if any */
-  gst_buffer_replace (&out_frame->output_buffer, out_dframe->buffer);
-  gst_buffer_replace (&out_dframe->buffer, NULL);
+  if (out_dframe) {
+    gst_buffer_replace (&output_frame->output_buffer, out_dframe->buffer);
+    gst_buffer_replace (&out_dframe->buffer, NULL);
+  }
 
   /* Extract auxilliary info not stored in the main AVframe */
   {
@@ -1827,42 +2007,54 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
 
   GST_DEBUG_OBJECT (ffmpegdec,
       "pts %" G_GUINT64_FORMAT " duration %" G_GUINT64_FORMAT,
-      out_frame->pts, out_frame->duration);
+      output_frame->pts, output_frame->duration);
   GST_DEBUG_OBJECT (ffmpegdec, "picture: pts %" G_GUINT64_FORMAT,
       (guint64) ffmpegdec->picture->pts);
+#if LIBAVUTIL_VERSION_MAJOR < 58
   GST_DEBUG_OBJECT (ffmpegdec, "picture: num %d",
       ffmpegdec->picture->coded_picture_number);
   GST_DEBUG_OBJECT (ffmpegdec, "picture: display %d",
       ffmpegdec->picture->display_picture_number);
-  GST_DEBUG_OBJECT (ffmpegdec, "picture: opaque %p",
-      ffmpegdec->picture->opaque);
+#endif
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT (60, 31, 100)
+  GST_DEBUG_OBJECT (ffmpegdec, "picture: opaque_ref %p",
+      ffmpegdec->picture->opaque_ref);
+#else
   GST_DEBUG_OBJECT (ffmpegdec, "picture: reordered opaque %" G_GUINT64_FORMAT,
       (guint64) ffmpegdec->picture->reordered_opaque);
+#endif
+  GST_DEBUG_OBJECT (ffmpegdec, "picture: opaque %p",
+      ffmpegdec->picture->opaque);
   GST_DEBUG_OBJECT (ffmpegdec, "repeat_pict:%d",
       ffmpegdec->picture->repeat_pict);
   GST_DEBUG_OBJECT (ffmpegdec, "corrupted frame: %d",
-      ! !(ffmpegdec->picture->flags & AV_FRAME_FLAG_CORRUPT));
+      !!(ffmpegdec->picture->flags & AV_FRAME_FLAG_CORRUPT));
 
   if (!gst_ffmpegviddec_negotiate (ffmpegdec, ffmpegdec->context,
-          ffmpegdec->picture, GST_BUFFER_FLAGS (out_frame->input_buffer)))
+          ffmpegdec->picture, GST_BUFFER_FLAGS (output_frame->input_buffer)))
     goto negotiation_error;
 
   pool = gst_video_decoder_get_buffer_pool (GST_VIDEO_DECODER (ffmpegdec));
-  if (G_UNLIKELY (out_frame->output_buffer == NULL)) {
-    *ret = get_output_buffer (ffmpegdec, out_frame);
-  } else if (G_UNLIKELY (out_frame->output_buffer->pool != pool)) {
-    GstBuffer *tmp = out_frame->output_buffer;
-    out_frame->output_buffer = NULL;
-    *ret = get_output_buffer (ffmpegdec, out_frame);
+  if (G_UNLIKELY (output_frame->output_buffer == NULL)) {
+    *ret = get_output_buffer (ffmpegdec, output_frame);
+  } else if (G_UNLIKELY (output_frame->output_buffer->pool != pool)) {
+    GstBuffer *tmp = output_frame->output_buffer;
+    output_frame->output_buffer = NULL;
+    *ret = get_output_buffer (ffmpegdec, output_frame);
     gst_buffer_unref (tmp);
   }
 #ifndef G_DISABLE_ASSERT
   else {
-    GstVideoMeta *vmeta = gst_buffer_get_video_meta (out_frame->output_buffer);
+    GstVideoMeta *vmeta =
+        gst_buffer_get_video_meta (output_frame->output_buffer);
     if (vmeta) {
       GstVideoInfo *info = &ffmpegdec->output_state->info;
-      g_assert ((gint) vmeta->width == GST_VIDEO_INFO_WIDTH (info));
-      g_assert ((gint) vmeta->height == GST_VIDEO_INFO_HEIGHT (info));
+      if (vmeta->width != GST_VIDEO_INFO_WIDTH (info) ||
+          vmeta->height != GST_VIDEO_INFO_HEIGHT (info)) {
+        g_error ("video meta uses %dx%d instead of %dx%d",
+            vmeta->width, vmeta->height, GST_VIDEO_INFO_WIDTH (info),
+            GST_VIDEO_INFO_HEIGHT (info));
+      }
     }
   }
 #endif
@@ -1873,16 +2065,27 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
 
   /* Mark corrupted frames as corrupted */
   if (ffmpegdec->picture->flags & AV_FRAME_FLAG_CORRUPT)
-    GST_BUFFER_FLAG_SET (out_frame->output_buffer, GST_BUFFER_FLAG_CORRUPTED);
+    GST_BUFFER_FLAG_SET (output_frame->output_buffer,
+        GST_BUFFER_FLAG_CORRUPTED);
 
   if (ffmpegdec->pic_interlaced) {
     /* set interlaced flags */
     if (ffmpegdec->picture->repeat_pict)
-      GST_BUFFER_FLAG_SET (out_frame->output_buffer, GST_VIDEO_BUFFER_FLAG_RFF);
+      GST_BUFFER_FLAG_SET (output_frame->output_buffer,
+          GST_VIDEO_BUFFER_FLAG_RFF);
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+    if (ffmpegdec->picture->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST)
+#else
     if (ffmpegdec->picture->top_field_first)
-      GST_BUFFER_FLAG_SET (out_frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+#endif
+      GST_BUFFER_FLAG_SET (output_frame->output_buffer,
+          GST_VIDEO_BUFFER_FLAG_TFF);
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+    if (ffmpegdec->picture->flags & AV_FRAME_FLAG_INTERLACED)
+#else
     if (ffmpegdec->picture->interlaced_frame)
-      GST_BUFFER_FLAG_SET (out_frame->output_buffer,
+#endif
+      GST_BUFFER_FLAG_SET (output_frame->output_buffer,
           GST_VIDEO_BUFFER_FLAG_INTERLACED);
   }
 
@@ -1896,11 +2099,11 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
       GST_MEMDUMP ("A53 CC", side_data->data, side_data->size);
 
       /* do not add closed caption meta if it already exists */
-      if (!gst_buffer_get_meta (out_frame->input_buffer,
+      if (!gst_buffer_get_meta (output_frame->input_buffer,
               GST_VIDEO_CAPTION_META_API_TYPE)) {
-        out_frame->output_buffer =
-            gst_buffer_make_writable (out_frame->output_buffer);
-        gst_buffer_add_video_caption_meta (out_frame->output_buffer,
+        output_frame->output_buffer =
+            gst_buffer_make_writable (output_frame->output_buffer);
+        gst_buffer_add_video_caption_meta (output_frame->output_buffer,
             GST_VIDEO_CAPTION_TYPE_CEA708_RAW, side_data->data,
             side_data->size);
       } else {
@@ -1926,7 +2129,7 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
     while (l) {
       GstVideoCodecFrame *tmp = l->data;
 
-      if (tmp == frame)
+      if (tmp == output_frame)
         old = FALSE;
 
       if (old && GST_VIDEO_CODEC_FRAME_IS_DECODE_ONLY (tmp)) {
@@ -1949,28 +2152,37 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
 
   av_frame_unref (ffmpegdec->picture);
 
-  if (frame)
-    GST_VIDEO_CODEC_FRAME_FLAG_UNSET (frame,
+  if (input_frame)
+    GST_VIDEO_CODEC_FRAME_FLAG_UNSET (input_frame,
         GST_FFMPEG_VIDEO_CODEC_FRAME_FLAG_ALLOCATED);
 
   if (gst_video_decoder_get_subframe_mode (GST_VIDEO_DECODER (ffmpegdec)))
     gst_video_decoder_have_last_subframe (GST_VIDEO_DECODER (ffmpegdec),
-        out_frame);
+        output_frame);
 
   /* FIXME: Ideally we would remap the buffer read-only now before pushing but
    * libav might still have a reference to it!
    */
-  if (GST_BUFFER_FLAG_IS_SET (out_frame->input_buffer,
+  if (GST_BUFFER_FLAG_IS_SET (output_frame->input_buffer,
           GST_VIDEO_BUFFER_FLAG_ONEFIELD)) {
-    GST_BUFFER_FLAG_SET (out_frame->output_buffer,
+    GST_BUFFER_FLAG_SET (output_frame->output_buffer,
         GST_VIDEO_BUFFER_FLAG_ONEFIELD);
-    if (GST_BUFFER_FLAG_IS_SET (out_frame->input_buffer,
+    if (GST_BUFFER_FLAG_IS_SET (output_frame->input_buffer,
             GST_VIDEO_BUFFER_FLAG_TFF)) {
-      GST_BUFFER_FLAG_SET (out_frame->output_buffer, GST_VIDEO_BUFFER_FLAG_TFF);
+      GST_BUFFER_FLAG_SET (output_frame->output_buffer,
+          GST_VIDEO_BUFFER_FLAG_TFF);
     }
   }
+
+  /* Temporarily release the video decoder stream lock so that other
+   * threads can continue decoding (e.g. call get_frame()) while data
+   * is being pushed downstream.
+   */
+  GST_VIDEO_DECODER_STREAM_UNLOCK (ffmpegdec);
   *ret =
-      gst_video_decoder_finish_frame (GST_VIDEO_DECODER (ffmpegdec), out_frame);
+      gst_video_decoder_finish_frame (GST_VIDEO_DECODER (ffmpegdec),
+      output_frame);
+  GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
 
 beach:
   GST_DEBUG_OBJECT (ffmpegdec, "return flow %s, got frame: %d",
@@ -1981,15 +2193,15 @@ beach:
 no_output:
   {
     GST_DEBUG_OBJECT (ffmpegdec, "no output buffer");
-    GST_VIDEO_CODEC_FRAME_FLAG_UNSET (frame,
+    GST_VIDEO_CODEC_FRAME_FLAG_UNSET (input_frame,
         GST_FFMPEG_VIDEO_CODEC_FRAME_FLAG_ALLOCATED);
-    gst_video_decoder_drop_frame (GST_VIDEO_DECODER (ffmpegdec), out_frame);
+    gst_video_decoder_drop_frame (GST_VIDEO_DECODER (ffmpegdec), output_frame);
     goto beach;
   }
 
 negotiation_error:
   {
-    gst_video_decoder_drop_frame (GST_VIDEO_DECODER (ffmpegdec), out_frame);
+    gst_video_decoder_drop_frame (GST_VIDEO_DECODER (ffmpegdec), output_frame);
     if (GST_PAD_IS_FLUSHING (GST_VIDEO_DECODER_SRC_PAD (ffmpegdec))) {
       *ret = GST_FLOW_FLUSHING;
       goto beach;
@@ -1998,34 +2210,15 @@ negotiation_error:
     *ret = GST_FLOW_NOT_NEGOTIATED;
     goto beach;
   }
-}
 
-
- /* Returns: Whether a frame was decoded */
-static gboolean
-gst_ffmpegviddec_frame (GstFFMpegVidDec * ffmpegdec, GstVideoCodecFrame * frame,
-    GstFlowReturn * ret)
-{
-  gboolean got_frame = FALSE;
-
-  if (G_UNLIKELY (ffmpegdec->context->codec == NULL))
-    goto no_codec;
-
-  *ret = GST_FLOW_OK;
-  ffmpegdec->context->frame_number++;
-
-  got_frame = gst_ffmpegviddec_video_frame (ffmpegdec, frame, ret);
-
-  return got_frame;
-
-  /* ERRORS */
 no_codec:
   {
     GST_ERROR_OBJECT (ffmpegdec, "no codec context");
     *ret = GST_FLOW_NOT_NEGOTIATED;
-    return -1;
+    goto beach;
   }
 }
+
 
 static GstFlowReturn
 gst_ffmpegviddec_drain (GstVideoDecoder * decoder)
@@ -2034,16 +2227,23 @@ gst_ffmpegviddec_drain (GstVideoDecoder * decoder)
   GstFlowReturn ret = GST_FLOW_OK;
   gboolean got_frame = FALSE;
 
-  if (!ffmpegdec->opened)
+  if (!ffmpegdec->context)
     return GST_FLOW_OK;
 
-  if (avcodec_send_packet (ffmpegdec->context, NULL))
+  GST_VIDEO_DECODER_STREAM_UNLOCK (ffmpegdec);
+  if (avcodec_send_packet (ffmpegdec->context, NULL)) {
+    GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
     goto send_packet_failed;
+  }
+  GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
 
   do {
-    got_frame = gst_ffmpegviddec_frame (ffmpegdec, NULL, &ret);
+    got_frame = gst_ffmpegviddec_video_frame (ffmpegdec, NULL, &ret);
   } while (got_frame && ret == GST_FLOW_OK);
+
+  GST_VIDEO_DECODER_STREAM_UNLOCK (ffmpegdec);
   avcodec_flush_buffers (ffmpegdec->context);
+  GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
 
   /* FFMpeg will return AVERROR_EOF if it's internal was fully drained
    * then we are translating it to GST_FLOW_EOS. However, because this behavior
@@ -2071,7 +2271,13 @@ gst_ffmpegviddec_handle_frame (GstVideoDecoder * decoder,
   gboolean got_frame;
   GstMapInfo minfo;
   GstFlowReturn ret = GST_FLOW_OK;
-  AVPacket packet;
+  AVPacket *packet;
+
+  if (G_UNLIKELY (!ffmpegdec->context)) {
+    gst_video_codec_frame_unref (frame);
+    GST_ERROR_OBJECT (ffmpegdec, "no codec context");
+    return GST_FLOW_NOT_NEGOTIATED;
+  }
 
   GST_LOG_OBJECT (ffmpegdec,
       "Received new data of size %" G_GSIZE_FORMAT ", dts %" GST_TIME_FORMAT
@@ -2082,8 +2288,12 @@ gst_ffmpegviddec_handle_frame (GstVideoDecoder * decoder,
   if (!gst_buffer_map (frame->input_buffer, &minfo, GST_MAP_READ)) {
     GST_ELEMENT_ERROR (ffmpegdec, STREAM, DECODE, ("Decoding problem"),
         ("Failed to map buffer for reading"));
+    gst_video_codec_frame_unref (frame);
     return GST_FLOW_ERROR;
   }
+
+  if (minfo.size == 0)
+    goto done;
 
   /* treat frame as void until a buffer is requested for it */
   if (!GST_VIDEO_CODEC_FRAME_FLAG_IS_SET (frame,
@@ -2111,27 +2321,38 @@ gst_ffmpegviddec_handle_frame (GstVideoDecoder * decoder,
     data = ffmpegdec->padded;
   }
 
-  /* now decode the frame */
-  gst_avpacket_init (&packet, data, size);
+  /* Note: We use `av_packet_alloc()` so that it is properly initialized by
+   * FFmpeg and it can be properly cleaned-up (via `av_packet_unref()`) by
+   * FFmpeg also. */
+  packet = av_packet_alloc ();
+  packet->data = data;
+  packet->size = size;
+
+  /* Store a reference to the input frame. This will be carried along by FFmpeg
+   * to the resulting AVPicture */
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT (60, 31, 100)
+  {
+    packet->opaque_ref =
+        av_buffer_create (NULL, 0, gst_ffmpeg_opaque_free,
+        gst_video_codec_frame_ref (frame), 0);
+    GST_DEBUG_OBJECT (ffmpegdec,
+        "Store incoming frame # %u (%p) on AVPacket opaque",
+        frame->system_frame_number, frame);
+  }
+#else
+  ffmpegdec->context->reordered_opaque = (gint64) frame->system_frame_number;
+  ffmpegdec->picture->reordered_opaque = (gint64) frame->system_frame_number;
+  GST_DEBUG_OBJECT (ffmpegdec, "stored opaque values idx %u",
+      frame->system_frame_number);
+#endif
 
   if (ffmpegdec->palette) {
     guint8 *pal;
 
-    pal = av_packet_new_side_data (&packet, AV_PKT_DATA_PALETTE,
-        AVPALETTE_SIZE);
+    pal = av_packet_new_side_data (packet, AV_PKT_DATA_PALETTE, AVPALETTE_SIZE);
     gst_buffer_extract (ffmpegdec->palette, 0, pal, AVPALETTE_SIZE);
     GST_DEBUG_OBJECT (ffmpegdec, "copy pal %p %p", &packet, pal);
   }
-
-  if (!packet.size)
-    goto done;
-
-  /* save reference to the timing info */
-  ffmpegdec->context->reordered_opaque = (gint64) frame->system_frame_number;
-  ffmpegdec->picture->reordered_opaque = (gint64) frame->system_frame_number;
-
-  GST_DEBUG_OBJECT (ffmpegdec, "stored opaque values idx %d",
-      frame->system_frame_number);
 
   /* This might call into get_buffer() from another thread,
    * which would cause a deadlock. Release the lock here
@@ -2139,15 +2360,17 @@ gst_ffmpegviddec_handle_frame (GstVideoDecoder * decoder,
    * See https://bugzilla.gnome.org/show_bug.cgi?id=726020
    */
   GST_VIDEO_DECODER_STREAM_UNLOCK (ffmpegdec);
-  if (avcodec_send_packet (ffmpegdec->context, &packet) < 0) {
+  if (avcodec_send_packet (ffmpegdec->context, packet) < 0) {
     GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
+    av_packet_free (&packet);
     goto send_packet_failed;
   }
+  av_packet_free (&packet);
   GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
 
   do {
     /* decode a frame of audio/video now */
-    got_frame = gst_ffmpegviddec_frame (ffmpegdec, frame, &ret);
+    got_frame = gst_ffmpegviddec_video_frame (ffmpegdec, frame, &ret);
 
     if (ret != GST_FLOW_OK) {
       GST_LOG_OBJECT (ffmpegdec, "breaking because of flow ret %s",
@@ -2164,7 +2387,8 @@ done:
 
 send_packet_failed:
   {
-    GST_WARNING_OBJECT (ffmpegdec, "Failed to send data for decoding");
+    GST_VIDEO_DECODER_ERROR (decoder, 1, STREAM, DECODE,
+        ("Failed to send data for decoding"), ("Invalid input packet"), ret);
     goto done;
   }
 }
@@ -2173,19 +2397,13 @@ static gboolean
 gst_ffmpegviddec_start (GstVideoDecoder * decoder)
 {
   GstFFMpegVidDec *ffmpegdec = GST_FFMPEGVIDDEC (decoder);
-  GstFFMpegVidDecClass *oclass;
-
-  oclass = GST_FFMPEGVIDDEC_GET_CLASS (ffmpegdec);
 
   GST_OBJECT_LOCK (ffmpegdec);
+  av_frame_free (&ffmpegdec->picture);
+  if (ffmpegdec->context)
+    av_freep (&ffmpegdec->context->extradata);
   avcodec_free_context (&ffmpegdec->context);
-  ffmpegdec->context = avcodec_alloc_context3 (oclass->in_plugin);
-  if (ffmpegdec->context == NULL) {
-    GST_DEBUG_OBJECT (ffmpegdec, "Failed to set context defaults");
-    GST_OBJECT_UNLOCK (ffmpegdec);
-    return FALSE;
-  }
-  ffmpegdec->context->opaque = ffmpegdec;
+  ffmpegdec->picture = av_frame_alloc ();
   GST_OBJECT_UNLOCK (ffmpegdec);
 
   return TRUE;
@@ -2197,7 +2415,8 @@ gst_ffmpegviddec_stop (GstVideoDecoder * decoder)
   GstFFMpegVidDec *ffmpegdec = GST_FFMPEGVIDDEC (decoder);
 
   GST_OBJECT_LOCK (ffmpegdec);
-  gst_ffmpegviddec_close (ffmpegdec, FALSE);
+  av_frame_free (&ffmpegdec->picture);
+  gst_ffmpegviddec_close (ffmpegdec);
   GST_OBJECT_UNLOCK (ffmpegdec);
   g_free (ffmpegdec->padded);
   ffmpegdec->padded = NULL;
@@ -2228,6 +2447,7 @@ gst_ffmpegviddec_stop (GstVideoDecoder * decoder)
   ffmpegdec->pool_width = 0;
   ffmpegdec->pool_height = 0;
   ffmpegdec->pool_format = 0;
+  ffmpegdec->needs_renegotation = FALSE;
 
   return TRUE;
 }
@@ -2251,9 +2471,11 @@ gst_ffmpegviddec_flush (GstVideoDecoder * decoder)
 {
   GstFFMpegVidDec *ffmpegdec = GST_FFMPEGVIDDEC (decoder);
 
-  if (ffmpegdec->opened) {
+  if (ffmpegdec->context) {
     GST_LOG_OBJECT (decoder, "flushing buffers");
+    GST_VIDEO_DECODER_STREAM_UNLOCK (ffmpegdec);
     avcodec_flush_buffers (ffmpegdec->context);
+    GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
   }
 
   return TRUE;
@@ -2293,6 +2515,12 @@ gst_ffmpegviddec_decide_allocation (GstVideoDecoder * decoder, GstQuery * query)
   if (max != 0 && max < REQUIRED_POOL_MAX_BUFFERS) {
     gst_object_unref (pool);
     pool = gst_video_buffer_pool_new ();
+    {
+      gchar *name =
+          g_strdup_printf ("%s-decide-pool", GST_OBJECT_NAME (ffmpegdec));
+      g_object_set (pool, "name", name, NULL);
+      g_free (name);
+    }
     max = 0;
     update_pool = TRUE;
     have_pool = FALSE;
@@ -2391,6 +2619,12 @@ gst_ffmpegviddec_decide_allocation (GstVideoDecoder * decoder, GstQuery * query)
     if (!working_pool) {
       gst_object_unref (pool);
       pool = gst_video_buffer_pool_new ();
+      {
+        gchar *name =
+            g_strdup_printf ("%s-fallback-pool", GST_OBJECT_NAME (ffmpegdec));
+        g_object_set (pool, "name", name, NULL);
+        g_free (name);
+      }
       config = gst_buffer_pool_get_config (pool);
       gst_buffer_pool_config_set_params (config, state->caps, size, min, max);
       gst_buffer_pool_config_set_allocator (config, NULL, &params);
@@ -2438,11 +2672,10 @@ gst_ffmpegviddec_set_property (GObject * object,
 
   switch (prop_id) {
     case PROP_LOWRES:
-      ffmpegdec->lowres = ffmpegdec->context->lowres = g_value_get_enum (value);
+      ffmpegdec->lowres = g_value_get_enum (value);
       break;
     case PROP_SKIPFRAME:
-      ffmpegdec->skip_frame = ffmpegdec->context->skip_frame =
-          g_value_get_enum (value);
+      ffmpegdec->skip_frame = g_value_get_enum (value);
       break;
     case PROP_DIRECT_RENDERING:
       ffmpegdec->direct_rendering = g_value_get_boolean (value);
@@ -2539,15 +2772,21 @@ gst_ffmpegviddec_register (GstPlugin * plugin)
         || in_plugin->type != AVMEDIA_TYPE_VIDEO)
       continue;
 
+    /* Skip formats we don't handle */
+    if (!gst_ffmpeg_codecid_is_known (in_plugin->id)) {
+      continue;
+    }
+
     /* no quasi codecs, please */
     if (in_plugin->id == AV_CODEC_ID_RAWVIDEO ||
         in_plugin->id == AV_CODEC_ID_V210 ||
         in_plugin->id == AV_CODEC_ID_V210X ||
         in_plugin->id == AV_CODEC_ID_V308 ||
         in_plugin->id == AV_CODEC_ID_V408 ||
-        in_plugin->id == AV_CODEC_ID_V410 ||
-        in_plugin->id == AV_CODEC_ID_R210
+        in_plugin->id == AV_CODEC_ID_V410 || in_plugin->id == AV_CODEC_ID_R210
+#if LIBAVCODEC_VERSION_MAJOR < 61
         || in_plugin->id == AV_CODEC_ID_AYUV
+#endif
         || in_plugin->id == AV_CODEC_ID_Y41P
         || in_plugin->id == AV_CODEC_ID_012V
         || in_plugin->id == AV_CODEC_ID_YUV4
@@ -2623,6 +2862,9 @@ gst_ffmpegviddec_register (GstPlugin * plugin)
     /* MP2 : Use MP3 for decoding */
     /* Theora: Use libtheora based theoradec */
     /* CDG: use cdgdec */
+    /* AV1: Use av1dec, dav1ddec or any of the hardware decoders.
+     *      Also ffmpeg's decoder only works with hardware support!
+     */
     if (!strcmp (in_plugin->name, "theora") ||
         !strcmp (in_plugin->name, "mpeg1video") ||
         strstr (in_plugin->name, "crystalhd") != NULL ||
@@ -2631,7 +2873,8 @@ gst_ffmpegviddec_register (GstPlugin * plugin)
         !strcmp (in_plugin->name, "pgssub") ||
         !strcmp (in_plugin->name, "dvdsub") ||
         !strcmp (in_plugin->name, "dvbsub") ||
-        !strcmp (in_plugin->name, "cdgraphics")) {
+        !strcmp (in_plugin->name, "cdgraphics") ||
+        !strcmp (in_plugin->name, "av1")) {
       GST_LOG ("Ignoring decoder %s", in_plugin->name);
       continue;
     }
@@ -2639,6 +2882,8 @@ gst_ffmpegviddec_register (GstPlugin * plugin)
     /* construct the type */
     if (!strcmp (in_plugin->name, "hevc")) {
       plugin_name = g_strdup ("h265");
+    } else if (!strcmp (in_plugin->name, "vvc")) {
+      plugin_name = g_strdup ("h266");
     } else {
       plugin_name = g_strdup ((gchar *) in_plugin->name);
     }
@@ -2666,6 +2911,7 @@ gst_ffmpegviddec_register (GstPlugin * plugin)
       case AV_CODEC_ID_MSMPEG4V3:
       case AV_CODEC_ID_H264:
       case AV_CODEC_ID_HEVC:
+      case AV_CODEC_ID_VVC:
       case AV_CODEC_ID_RV10:
       case AV_CODEC_ID_RV20:
       case AV_CODEC_ID_RV30:

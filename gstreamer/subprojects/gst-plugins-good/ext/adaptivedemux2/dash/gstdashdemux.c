@@ -310,6 +310,7 @@ enum
   PROP_MAX_VIDEO_HEIGHT,
   PROP_MAX_VIDEO_FRAMERATE,
   PROP_PRESENTATION_DELAY,
+  PROP_START_BITRATE,
   PROP_LAST
 };
 
@@ -319,6 +320,7 @@ enum
 #define DEFAULT_MAX_VIDEO_FRAMERATE_N     0
 #define DEFAULT_MAX_VIDEO_FRAMERATE_D     1
 #define DEFAULT_PRESENTATION_DELAY     "10s"    /* 10s */
+#define DEFAULT_START_BITRATE             0
 
 /* Clock drift compensation for live streams */
 #define SLOW_CLOCK_UPDATE_INTERVAL  (1000000 * 30 * 60) /* 30 minutes */
@@ -354,6 +356,8 @@ static void gst_dash_demux_dispose (GObject * obj);
 /* GstAdaptiveDemuxStream */
 static GstFlowReturn
 gst_dash_demux_stream_update_fragment_info (GstAdaptiveDemux2Stream * stream);
+static void
+gst_dash_demux_stream_create_tracks (GstAdaptiveDemux2Stream * stream);
 static GstClockTime
 gst_dash_demux_stream_get_presentation_offset (GstAdaptiveDemux2Stream *
     stream);
@@ -495,6 +499,8 @@ gst_dash_demux_stream_class_init (GstDashDemux2StreamClass * klass)
       gst_dash_demux_stream_data_received;
   adaptivedemux2stream_class->need_another_chunk =
       gst_dash_demux_stream_need_another_chunk;
+  adaptivedemux2stream_class->create_tracks =
+      gst_dash_demux_stream_create_tracks;
 }
 
 
@@ -633,13 +639,24 @@ gst_dash_demux2_class_init (GstDashDemux2Class * klass)
           DEFAULT_PRESENTATION_DELAY,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  /**
+   * dashdemux2:start-bitrate:
+   *
+   * Since: 1.24
+   */
+  g_object_class_install_property (gobject_class, PROP_START_BITRATE,
+      g_param_spec_uint ("start-bitrate", "Starting Bitrate",
+          "Initial bitrate to use to choose first alternate (0 = automatic) (bits/s)",
+          0, G_MAXUINT, DEFAULT_START_BITRATE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gst_element_class_add_static_pad_template (gstelement_class, &sinktemplate);
 
   gst_element_class_set_static_metadata (gstelement_class,
       "DASH Demuxer",
       "Codec/Demuxer/Adaptive",
       "Dynamic Adaptive Streaming over HTTP demuxer",
-      "Edward Hervey <edward@centricular.com>\n"
+      "Edward Hervey <edward@centricular.com>, "
       "Jan Schmidt <jan@centricular.com>");
 
 
@@ -697,6 +714,9 @@ gst_dash_demux_set_property (GObject * object, guint prop_id,
       g_free (demux->default_presentation_delay);
       demux->default_presentation_delay = g_value_dup_string (value);
       break;
+    case PROP_START_BITRATE:
+      demux->start_bitrate = g_value_get_uint (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -726,6 +746,9 @@ gst_dash_demux_get_property (GObject * object, guint prop_id, GValue * value,
       else
         g_value_set_string (value, demux->default_presentation_delay);
       break;
+    case PROP_START_BITRATE:
+      g_value_set_uint (value, demux->start_bitrate);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -738,13 +761,20 @@ gst_dash_demux_setup_mpdparser_streams (GstDashDemux2 * demux,
 {
   gboolean has_streams = FALSE;
   GList *adapt_sets, *iter;
+  guint start_bitrate = demux->start_bitrate;
+
+  if (start_bitrate == 0) {
+    /* Using g_object_get so it goes through mutex locking in adaptivedemux2 */
+    g_object_get (demux, "connection-bitrate", &start_bitrate, NULL);
+  }
 
   adapt_sets = gst_mpd_client2_get_adaptation_sets (client);
   for (iter = adapt_sets; iter; iter = g_list_next (iter)) {
     GstMPDAdaptationSetNode *adapt_set_node = iter->data;
 
-    if (gst_mpd_client2_setup_streaming (client, adapt_set_node))
-      has_streams = TRUE;
+    has_streams |= gst_mpd_client2_setup_streaming (client, adapt_set_node,
+        start_bitrate, demux->max_video_width, demux->max_video_height,
+        demux->max_video_framerate_n, demux->max_video_framerate_d);
   }
 
   if (!has_streams) {
@@ -808,7 +838,7 @@ gst_dash_demux_setup_all_streams (GstDashDemux2 * demux)
   GST_DEBUG_OBJECT (demux, "Creating stream objects");
   for (i = 0; i < gst_mpd_client2_get_nb_active_stream (demux->client); i++) {
     GstDashDemux2Stream *stream;
-    GstAdaptiveDemuxTrack *track;
+    GstAdaptiveDemuxTrack *track = NULL;
     GstStreamType streamtype;
     GstActiveStream *active_stream;
     GstCaps *caps, *codec_caps;
@@ -816,6 +846,7 @@ gst_dash_demux_setup_all_streams (GstDashDemux2 * demux)
     GstStructure *s;
     gchar *lang = NULL;
     GstTagList *tags = NULL;
+    gchar *track_id = NULL;
 
     active_stream =
         gst_mpd_client2_get_active_stream_by_index (demux->client, i);
@@ -835,6 +866,42 @@ gst_dash_demux_setup_all_streams (GstDashDemux2 * demux)
     streamtype = gst_dash_demux_get_stream_type (demux, active_stream);
     if (streamtype == GST_STREAM_TYPE_UNKNOWN)
       continue;
+
+    /* Fill container-specific track-id string */
+    if (active_stream->cur_adapt_set) {
+      /* FIXME: For CEA 608 and CEA 708 tracks we should check the Accessibility descriptor:
+       * https://dev.w3.org/html5/html-sourcing-inband-tracks/#mpegdash
+       * * An ISOBMFF CEA 608 caption service: the string "cc" concatenated with
+       * the value of the 'channel-number' field in the Accessibility descriptor
+       * in the ContentComponent or AdaptationSet.
+       * * An ISOBMFF CEA 708 caption service: the string "sn" concatenated with
+       * the value of the 'service-number' field in the Accessibility descriptor
+       * in the ContentComponent or AdaptationSet.
+       * * Otherwise:
+       */
+
+      /* Content of the id attribute in the ContentComponent or AdaptationSet
+       * element. */
+      if (active_stream->cur_adapt_set->id) {
+        track_id = g_strdup_printf ("%d", active_stream->cur_adapt_set->id);
+      } else {
+        GList *it;
+
+        for (it = active_stream->cur_adapt_set->ContentComponents; it;
+            it = it->next) {
+          GstMPDContentComponentNode *cc_node = it->data;
+          if (cc_node->id) {
+            track_id = g_strdup_printf ("%u", cc_node->id);
+            break;
+          }
+        }
+      }
+    }
+    if (track_id) {
+      tags = gst_tag_list_new (GST_TAG_CONTAINER_SPECIFIC_TRACK_ID, track_id,
+          NULL);
+      g_free (track_id);
+    }
 
     stream_id =
         g_strdup_printf ("%s-%d", gst_stream_type_get_name (streamtype), i);
@@ -864,26 +931,42 @@ gst_dash_demux_setup_all_streams (GstDashDemux2 * demux)
     }
 
     if (lang) {
-      if (gst_tag_check_language_code (lang))
-        tags = gst_tag_list_new (GST_TAG_LANGUAGE_CODE, lang, NULL);
-      else
-        tags = gst_tag_list_new (GST_TAG_LANGUAGE_NAME, lang, NULL);
-    }
+      if (!tags)
+        tags = gst_tag_list_new_empty ();
 
-    /* Create the track this stream provides */
-    track = gst_adaptive_demux_track_new (GST_ADAPTIVE_DEMUX_CAST (demux),
-        streamtype, GST_STREAM_FLAG_NONE, stream_id, codec_caps, tags);
+      if (gst_tag_check_language_code (lang))
+        gst_tag_list_add (tags, GST_TAG_MERGE_REPLACE, GST_TAG_LANGUAGE_CODE,
+            lang, NULL);
+      else
+        gst_tag_list_add (tags, GST_TAG_MERGE_REPLACE, GST_TAG_LANGUAGE_NAME,
+            lang, NULL);
+    }
 
     stream = gst_dash_demux_stream_new (demux->client->period_idx, stream_id);
     GST_ADAPTIVE_DEMUX2_STREAM_CAST (stream)->stream_type = streamtype;
 
+    /* Maybe there are multiple tracks in one stream such as some mpeg-ts
+     * streams, need create track by stream->stream_collection lately */
+    if (!codec_caps) {
+      GST_ADAPTIVE_DEMUX2_STREAM_CAST (stream)->pending_tracks = TRUE;
+    } else {
+      /* Create the track this stream provides */
+      track = gst_adaptive_demux_track_new (GST_ADAPTIVE_DEMUX_CAST (demux),
+          streamtype, GST_STREAM_FLAG_NONE, stream_id, codec_caps, tags);
+    }
+
     g_free (stream_id);
+    if (tags)
+      gst_adaptive_demux2_stream_set_tags (GST_ADAPTIVE_DEMUX2_STREAM_CAST
+          (stream), gst_tag_list_ref (tags));
 
     gst_adaptive_demux2_add_stream (GST_ADAPTIVE_DEMUX_CAST (demux),
         GST_ADAPTIVE_DEMUX2_STREAM_CAST (stream));
-    gst_adaptive_demux2_stream_add_track (GST_ADAPTIVE_DEMUX2_STREAM_CAST
-        (stream), track);
-    stream->track = track;
+    if (track) {
+      gst_adaptive_demux2_stream_add_track (GST_ADAPTIVE_DEMUX2_STREAM_CAST
+          (stream), track);
+      stream->track = track;
+    }
     stream->active_stream = active_stream;
 
     if (active_stream->cur_representation) {
@@ -900,9 +983,6 @@ gst_dash_demux_setup_all_streams (GstDashDemux2 * demux)
         || gst_structure_has_name (s, "audio/x-m4a");
     gst_adaptive_demux2_stream_set_caps (GST_ADAPTIVE_DEMUX2_STREAM_CAST
         (stream), caps);
-    if (tags)
-      gst_adaptive_demux2_stream_set_tags (GST_ADAPTIVE_DEMUX2_STREAM_CAST
-          (stream), tags);
     stream->index = i;
 
     if (active_stream->cur_adapt_set &&
@@ -916,6 +996,46 @@ gst_dash_demux_setup_all_streams (GstDashDemux2 * demux)
   }
 
   return TRUE;
+}
+
+static void
+gst_dash_demux_stream_create_tracks (GstAdaptiveDemux2Stream * stream)
+{
+  guint i;
+  gchar *stream_id;
+
+  /* Use the stream->stream_collection to check and
+   * create the track which has not yet been created */
+  for (i = 0; i < gst_stream_collection_get_size (stream->stream_collection);
+      i++) {
+    GstStream *gst_stream =
+        gst_stream_collection_get_stream (stream->stream_collection, i);
+    GstStreamType stream_type = gst_stream_get_stream_type (gst_stream);
+    GstAdaptiveDemuxTrack *track;
+    GstTagList *tags;
+    GstCaps *caps;
+
+    if (stream_type == GST_STREAM_TYPE_UNKNOWN)
+      continue;
+
+    caps = gst_stream_get_caps (gst_stream);
+    tags = gst_stream_get_tags (gst_stream);
+
+    GST_DEBUG_OBJECT (stream, "create track type %d of the stream",
+        stream_type);
+    stream->stream_type |= stream_type;
+    stream_id =
+        g_strdup_printf ("%s-%d", gst_stream_type_get_name (stream_type), i);
+    /* Create the track this stream provides */
+    track = gst_adaptive_demux_track_new (stream->demux,
+        stream_type, GST_STREAM_FLAG_NONE, stream_id, caps, tags);
+    g_free (stream_id);
+
+    track->upstream_stream_id =
+        g_strdup (gst_stream_get_stream_id (gst_stream));
+    gst_adaptive_demux2_stream_add_track (stream, track);
+    gst_adaptive_demux_track_unref (track);
+  }
 }
 
 static void
@@ -2282,6 +2402,10 @@ gst_dash_demux_stream_select_bitrate (GstAdaptiveDemux2Stream * stream,
   if (!rep_list) {
     goto end;
   }
+
+  /* If not calculated yet, continue using start bitrate */
+  if (bitrate == 0)
+    bitrate = demux->start_bitrate;
 
   GST_DEBUG_OBJECT (stream,
       "Trying to change to bitrate: %" G_GUINT64_FORMAT, bitrate);
@@ -3661,7 +3785,7 @@ gst_dash_demux_clock_drift_new (GstDashDemux2 * demux)
 {
   GstDashDemux2ClockDrift *clock_drift;
 
-  clock_drift = g_slice_new0 (GstDashDemux2ClockDrift);
+  clock_drift = g_new0 (GstDashDemux2ClockDrift, 1);
   g_mutex_init (&clock_drift->clock_lock);
   clock_drift->next_update =
       GST_TIME_AS_USECONDS (gst_adaptive_demux2_get_monotonic_time
@@ -3678,7 +3802,7 @@ gst_dash_demux_clock_drift_free (GstDashDemux2ClockDrift * clock_drift)
       g_object_unref (clock_drift->ntp_clock);
     g_mutex_unlock (&clock_drift->clock_lock);
     g_mutex_clear (&clock_drift->clock_lock);
-    g_slice_free (GstDashDemux2ClockDrift, clock_drift);
+    g_free (clock_drift);
   }
 }
 

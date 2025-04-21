@@ -7,19 +7,19 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gstreamer 1.19.2\n"
+"Project-Id-Version: gstreamer 1.24.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-09-23 01:32+0100\n"
-"PO-Revision-Date: 2021-11-06 22:51+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
+"PO-Revision-Date: 2024-03-16 23:40+0100\n"
 "Last-Translator: Christian Kirbach <christian.kirbach@gmail.com>\n"
 "Language-Team: German <translation-team-de@lists.sourceforge.net>\n"
 "Language: de\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"X-Bugs: Report translation errors to the Language-Team address.\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: Poedit 3.0\n"
+"X-Bugs: Report translation errors to the Language-Team address.\n"
+"X-Generator: Poedit 3.4.2\n"
 "X-Poedit-SourceCharset: UTF-8\n"
 
 msgid "Print the GStreamer version"
@@ -45,8 +45,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Durch Kommata getrennte Liste von Paaren »Kategorie_Name:Level«, um "
-"bestimmten Kategorien eigene Stufen  zuzuordnen. Beispiel: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"bestimmten Kategorien eigene Stufen  zuzuordnen. Beispiel: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "LISTE"
@@ -63,9 +63,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Fehlerdiagnose deaktivieren"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Ausführliche Meldungen beim Laden von Plugins aktivieren"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Durch Doppelpunkte getrennte Pfade zu den Plugins"
@@ -858,6 +855,12 @@ msgstr "Private-Daten"
 msgid "Private data"
 msgstr "Private Daten"
 
+msgid "container-specific-track-id"
+msgstr "container-specific-track-id"
+
+msgid "Container-specific Track ID"
+msgstr "Container-spezifische Verfolgungs-KENNUNG"
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
@@ -897,14 +900,12 @@ msgstr "Verknüpfung hat keine Quelle [sink=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "Verknüpfung hat kein Ziel [sink=%s@%p]"
 
+msgid "No such property."
+msgstr "Keine derartige Eigenschaft."
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "Keine Eigenschaft »%s« im Element »%s«"
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr ""
-"Die Eigenschaft »%s« im Element »%s« konnte nicht auf »%s« gesetzt werden"
 
 #, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -913,6 +914,21 @@ msgstr "Element »%s« ist kein GstPreset"
 #, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
 msgstr "Die Voreinstellung »%s« konnte nicht im Element »%s« gesetzt werden"
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "Kein Element »%s«"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr ""
+"Die Eigenschaft »%s« im Element »%s« konnte nicht auf »%s« gesetzt werden"
+
+#, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
+msgstr ""
+"Die Eigenschaft »%s« im Unterknoten von Element »%s« konnte nicht auf »%s« "
+"gesetzt werden"
 
 msgid "Delayed linking failed."
 msgstr "Verzögertes Verknüpfen ist fehlgeschlagen."
@@ -936,10 +952,6 @@ msgstr "%s konnte nicht mit %s mittels Fähigkeit %s verknüpft werden."
 #, c-format
 msgid "could not link %s to %s"
 msgstr "%s konnte nicht mit %s verknüpft werden"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "Kein Element »%s«"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1091,6 +1103,10 @@ msgstr "Der Datenstrom enthält keine Daten."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "%sImplementierte Schnittstellen%s:\n"
 
+#, fuzzy, c-format
+msgid "%sElement Flags%s:\n"
+msgstr "%sImplementierte Schnittstellen%s:\n"
+
 msgid "readable"
 msgstr "lesbar"
 
@@ -1105,6 +1121,9 @@ msgstr "regelbar"
 
 msgid "conditionally available"
 msgstr "unter Vorbehalt verfügbar"
+
+msgid "can be set only at object construction time"
+msgstr "kann nur zum Zeitpunkt der Objekterstellung festgelegt werden"
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "änderbar in den Status NULL, BEREIT, PAUSIERT oder ABSPIELEN"
@@ -1367,6 +1386,12 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr "EIGENSCHAFT-NAME"
 
+msgid "Set the name of the program"
+msgstr "Den Namen des Programms festlegen"
+
+msgid "PROGRAM-NAME"
+msgstr "PROGRAMM-NAME"
+
 msgid "Do not install a fault handler"
 msgstr "Keine Routine zum Abfangen von Fehlern installieren"
 
@@ -1426,6 +1451,9 @@ msgstr "Leitung wird auf NULL gesetzt ...\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Leitung wird geleert ...\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Ausführliche Meldungen beim Laden von Plugins aktivieren"
 
 #~ msgid "ERROR: Pipeline doesn't want to pause.\n"
 #~ msgstr "FEHLER: Leitung möchte nicht pausiert werden.\n"

@@ -177,7 +177,7 @@ _serialize_enum (GString * json, GType gtype, GstPluginAPIFlags api_flags)
       "\"kind\": \"enum\"", json->len ? "," : "", g_type_name (gtype));
 
   if (api_flags & GST_PLUGIN_API_FLAG_IGNORE_ENUM_MEMBERS) {
-    g_string_append (json, ",\"ignore-enum-members\": true}");
+    g_string_append (json, ",\"ignore-enum-members\": true, \"values\": []}");
   } else {
     g_string_append (json, ",\"values\": [");
 
@@ -349,7 +349,7 @@ _add_properties (GString * json, GString * other_types,
       continue;
 
     g_value_init (&value, spec->value_type);
-    if (object && ! !(spec->flags & G_PARAM_READABLE) &&
+    if (object && !!(spec->flags & G_PARAM_READABLE) &&
         !(spec->flags & GST_PARAM_DOC_SHOW_DEFAULT)) {
       g_object_get_property (G_OBJECT (object), spec->name, &value);
     } else {
@@ -593,12 +593,12 @@ _add_properties (GString * json, GString * other_types,
 }
 
 static gboolean
-print_field (GQuark field, const GValue * value, GString * jcaps)
+print_field (const GstIdStr * fieldname, const GValue * value, GString * jcaps)
 {
   gchar *tmp, *str = gst_value_serialize (value);
 
-  if (!g_strcmp0 (g_quark_to_string (field), "format") ||
-      !g_strcmp0 (g_quark_to_string (field), "rate")) {
+  if (!g_strcmp0 (gst_id_str_as_str (fieldname), "format") ||
+      !g_strcmp0 (gst_id_str_as_str (fieldname), "rate")) {
     if (!cleanup_caps_field)
       cleanup_caps_field = g_regex_new ("\\(string\\)|\\(rate\\)", 0, 0, NULL);
 
@@ -607,7 +607,8 @@ print_field (GQuark field, const GValue * value, GString * jcaps)
     g_free (tmp);
   }
 
-  g_string_append_printf (jcaps, "%15s: %s\n", g_quark_to_string (field), str);
+  g_string_append_printf (jcaps, "%15s: %s\n", gst_id_str_as_str (fieldname),
+      str);
   g_free (str);
   return TRUE;
 }
@@ -645,8 +646,8 @@ _build_caps (const GstCaps * caps)
       g_string_append_printf (jcaps, "%s:\n",
           gst_structure_get_name (structure));
     }
-    gst_structure_foreach (structure, (GstStructureForeachFunc) print_field,
-        jcaps);
+    gst_structure_foreach_id_str (structure,
+        (GstStructureForeachIdStrFunc) print_field, jcaps);
   }
 
   res = json_strescape (jcaps->str);
@@ -953,7 +954,14 @@ main (int argc, char *argv[])
       if (GST_IS_TRACER_FACTORY (feature)) {
         if (!f)
           g_string_append_printf (json, ",");
-        g_string_append_printf (json, "\"%s\": {}", GST_OBJECT_NAME (feature));
+
+        GstTracer *tracer =
+            g_object_new (gst_tracer_factory_get_tracer_type (GST_TRACER_FACTORY
+                (feature)), NULL);;
+        g_string_append_printf (json, "\"%s\": {", GST_OBJECT_NAME (feature));
+        _add_object_details (json, other_types, seen_other_types,
+            G_OBJECT (tracer), G_OBJECT_TYPE (tracer), G_OBJECT_TYPE (tracer));
+        g_string_append (json, "}");
         f = FALSE;
       }
     }

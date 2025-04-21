@@ -284,6 +284,8 @@ gst_d3d11_window_core_window_constructed (GObject * object)
   ComPtr<Core::ICoreWindow> core_window;
   Size size;
 
+  G_OBJECT_CLASS (parent_class)->constructed (object);
+
   if (!window->external_handle) {
     GST_ERROR_OBJECT (self, "No external window handle");
     return;
@@ -549,7 +551,7 @@ gst_d3d11_window_core_window_new (GstD3D11Device * device, guintptr handle)
     return NULL;
   }
 
-  g_object_ref_sink (window);
+  gst_object_ref_sink (window);
 
   return window;
 }

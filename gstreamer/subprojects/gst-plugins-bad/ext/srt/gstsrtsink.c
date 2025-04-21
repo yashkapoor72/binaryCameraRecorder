@@ -130,7 +130,6 @@ gst_srt_sink_finalize (GObject * object)
 {
   GstSRTSink *self = GST_SRT_SINK (object);
 
-  g_clear_object (&self->cancellable);
   gst_srt_object_destroy (self->srtobject);
 
   G_OBJECT_CLASS (parent_class)->finalize (object);
@@ -139,9 +138,8 @@ gst_srt_sink_finalize (GObject * object)
 static void
 gst_srt_sink_init (GstSRTSink * self)
 {
+  self->streamconfig_sent = FALSE;
   self->srtobject = gst_srt_object_new (GST_ELEMENT (self));
-  self->cancellable = g_cancellable_new ();
-
   gst_srt_object_set_uri (self->srtobject, GST_SRT_DEFAULT_URI, NULL);
 }
 
@@ -153,12 +151,12 @@ gst_srt_sink_start (GstBaseSink * bsink)
   GError *error = NULL;
   gboolean ret = FALSE;
 
-  ret = gst_srt_object_open (self->srtobject, self->cancellable, &error);
+  ret = gst_srt_object_open (self->srtobject, &error);
 
   if (!ret) {
     /* ensure error is posted since state change will fail */
     GST_ELEMENT_ERROR (self, RESOURCE, OPEN_WRITE, (NULL),
-        ("Failed to open SRT: %s", error->message));
+        ("Failed to open SRT: %s", error ? error->message : "Unknown error"));
     g_clear_error (&error);
   }
 
@@ -176,6 +174,36 @@ gst_srt_sink_stop (GstBaseSink * bsink)
   return TRUE;
 }
 
+typedef struct
+{
+  GstBuffer *buf;
+  GstMapInfo *map_info;
+} StreamheaderCheckContext;
+
+static gboolean
+is_buffer_different (GstBuffer ** buffer, guint idx, gpointer data)
+{
+  StreamheaderCheckContext *ctx = (StreamheaderCheckContext *) data;
+  gboolean retval = FALSE;
+  g_return_val_if_fail (buffer != NULL, FALSE);
+  g_return_val_if_fail (GST_IS_BUFFER (*buffer), FALSE);
+  g_return_val_if_fail (ctx != NULL, FALSE);
+  g_return_val_if_fail (GST_IS_BUFFER (ctx->buf), FALSE);
+  g_return_val_if_fail (ctx->map_info != NULL, FALSE);
+
+  if (*buffer == ctx->buf)
+    return FALSE;
+
+  if (gst_buffer_get_size (*buffer) != gst_buffer_get_size (ctx->buf))
+    return TRUE;
+
+  if (gst_buffer_memcmp (*buffer, 0, ctx->map_info->data, ctx->map_info->size)
+      != 0)
+    retval = TRUE;
+
+  return retval;
+}
+
 static GstFlowReturn
 gst_srt_sink_render (GstBaseSink * sink, GstBuffer * buffer)
 {
@@ -183,25 +211,41 @@ gst_srt_sink_render (GstBaseSink * sink, GstBuffer * buffer)
   GstFlowReturn ret = GST_FLOW_OK;
   GstMapInfo info;
   GError *error = NULL;
+  StreamheaderCheckContext ctx = { 0 };
 
-  if (g_cancellable_is_cancelled (self->cancellable)) {
+  if (g_cancellable_is_cancelled (self->srtobject->cancellable)) {
     ret = GST_FLOW_FLUSHING;
   }
 
-  if (self->headers && GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_HEADER)) {
-    GST_DEBUG_OBJECT (self, "Have streamheaders,"
-        " ignoring header %" GST_PTR_FORMAT, buffer);
-    return GST_FLOW_OK;
+  if (!self->streamconfig_sent && GST_BUFFER_FLAG_IS_SET (buffer,
+          GST_BUFFER_FLAG_HEADER)) {
+
+    if (!gst_buffer_map (buffer, &info, GST_MAP_READ)) {
+      GST_ELEMENT_ERROR (self, RESOURCE, READ,
+          ("Could not map the input stream"), (NULL));
+      return GST_FLOW_ERROR;
+    }
+    ctx.map_info = &info;
+    ctx.buf = buffer;
+
+    if (!gst_buffer_list_foreach (self->headers, is_buffer_different, &ctx)) {
+      GST_DEBUG_OBJECT (self, "Have streamheaders,"
+          " ignoring header %" GST_PTR_FORMAT, buffer);
+      return GST_FLOW_OK;
+    }
   }
 
-  if (!gst_buffer_map (buffer, &info, GST_MAP_READ)) {
-    GST_ELEMENT_ERROR (self, RESOURCE, READ,
-        ("Could not map the input stream"), (NULL));
-    return GST_FLOW_ERROR;
+  self->streamconfig_sent = TRUE;
+
+  if (ctx.map_info != &info) {
+    if (!gst_buffer_map (buffer, &info, GST_MAP_READ)) {
+      GST_ELEMENT_ERROR (self, RESOURCE, READ,
+          ("Could not map the input stream"), (NULL));
+      return GST_FLOW_ERROR;
+    }
   }
 
-  if (gst_srt_object_write (self->srtobject, self->headers, &info,
-          self->cancellable, &error) < 0) {
+  if (gst_srt_object_write (self->srtobject, self->headers, &info, &error) < 0) {
     GST_ELEMENT_ERROR (self, RESOURCE, WRITE,
         ("Failed to write to SRT socket: %s",
             error ? error->message : "Unknown error"), (NULL));
@@ -229,7 +273,7 @@ gst_srt_sink_unlock (GstBaseSink * bsink)
 {
   GstSRTSink *self = GST_SRT_SINK (bsink);
 
-  gst_srt_object_wakeup (self->srtobject, self->cancellable);
+  gst_srt_object_unlock (self->srtobject);
 
   return TRUE;
 }
@@ -239,7 +283,7 @@ gst_srt_sink_unlock_stop (GstBaseSink * bsink)
 {
   GstSRTSink *self = GST_SRT_SINK (bsink);
 
-  g_cancellable_reset (self->cancellable);
+  gst_srt_object_unlock_stop (self->srtobject);
 
   return TRUE;
 }
@@ -254,6 +298,7 @@ gst_srt_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
   GST_DEBUG_OBJECT (self, "setcaps %" GST_PTR_FORMAT, caps);
 
   g_clear_pointer (&self->headers, gst_buffer_list_unref);
+  self->streamconfig_sent = FALSE;
 
   s = gst_caps_get_structure (caps, 0);
   streamheader = gst_structure_get_value (s, "streamheader");
@@ -311,7 +356,7 @@ gst_srt_sink_class_init (GstSRTSinkClass * klass)
    * @gstsrtsink: the srtsink element that emitted this signal
    * @unused: always zero (for ABI compatibility with previous versions)
    * @addr: the #GSocketAddress of the new caller
-   * 
+   *
    * A new caller has connected to @gstsrtsink.
    */
   signals[SIG_CALLER_ADDED] =
@@ -383,6 +428,7 @@ gst_srt_sink_class_init (GstSRTSinkClass * klass)
   gstbasesink_class->unlock_stop = GST_DEBUG_FUNCPTR (gst_srt_sink_unlock_stop);
   gstbasesink_class->set_caps = GST_DEBUG_FUNCPTR (gst_srt_sink_set_caps);
 
+  gst_type_mark_as_plugin_api (GST_TYPE_SRT_SINK, 0);
 }
 
 static GstURIType

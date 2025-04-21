@@ -35,10 +35,14 @@ Certain GStreamer core function (such as `gst_pad_push()` or
 `gst_element_add_pad()`) will call into the tracer subsystem to dispatch
 into active tracing modules. Developers will be able to select a list of
 plugins by setting an environment variable, such as
-`GST_TRACERS="meminfo;dbus"`. One can also pass parameters to plugins:
-`GST_TRACERS="log(events,buffers);stats(all)"`. When then plugins are
-loaded, we’ll add them to certain hooks according to which they are
-interested in.
+`GST_TRACERS="meminfo;dbus"`. One can also pass parameters to plugins, e.g:
+
+```
+GST_TRACERS='leaks(filters="GstEvent,GstMessage",stack-traces-flags=none);latency(flags=pipeline+element+reported)'
+```
+
+When then plugins are loaded, we’ll add them to certain hooks according to
+which they are interested in.
 
 Right now tracing info is logged as `GstStructures` to the TRACE level.
 Idea: Another env var `GST_TRACE_CHANNEL` could be used to send the
@@ -109,10 +113,10 @@ Hooks (\* already implemented)
 
 Tracers are plugin features. They have a simple api:
 
-class init Here the tracers describe the data the will emit.
+class init Here the tracers describe the data they will emit.
 
 instance init Tracers attach handlers to one or more hooks using
-`gst_tracing_register_hook()`. In case the are configurable, they can
+`gst_tracing_register_hook()`. In case they are configurable, they can
 read the options from the *params* property. This is the extra detail
 from the environment var.
 
@@ -142,7 +146,7 @@ to describe their format:
 ``` c
 fmt = gst_tracer_record_new ("thread-rusage.class",
     // value in the log record (order does not matter)
-    // *thread-id* is a *key* to related the record to something as indicated
+    // *thread-id* is a *key* to relate the record to something as indicated
     // by *scope* substructure
     "thread-id", GST_TYPE_STRUCTURE, gst_structure_new ("scope",
         "type", G_TYPE_GTYPE, G_TYPE_GUINT64,
@@ -173,7 +177,7 @@ Later tracers can use the `GstTracerRecord` instance to log values efficiently:
 gst_tracer_record_log (fmt, (guint64) (guintptr) thread_id, avg_cpuload);
 ```
 
-Below a few more example for parts of tracer classes:
+Below a few more examples for parts of tracer classes:
 
 An optional value. Since the PTS can be GST_CLOCK_TIME_NONE and that is (-1),
 we don't want to log this.
@@ -307,7 +311,7 @@ extensions)
     - filters: (string): A comma separated list of object types to trace (make sure to enclose in
       quotation marks)
 
-**Run the leaks tracer on all `GstProxyPad` objects logging the references with a full backtraces**
+**Run the leaks tracer on all `GstProxyPad` objects logging the references with full backtraces**
 
 ```
 GST_TRACERS=leaks(stack-traces-flags=full,filters=”GstProxyPad”,check-refs=true) COMMAND
@@ -418,22 +422,22 @@ little driver * <https://github.com/dkogan/feedgnuplot>
 ### Traces for buffer flow, events and messages in TRACE level:
 
 ```
-GST_DEBUG="GST_TRACER:7,GST_BUFFER*:7,GST_EVENT:7,GST_MESSAGE:7"
-GST_TRACERS=log gst-launch-1.0 fakesrc num-buffers=10 ! fakesink -
+GST_DEBUG="GST_TRACER:7,GST_BUFFER*:7,GST_EVENT:7,GST_MESSAGE:7" \
+GST_TRACERS=log gst-launch-1.0 fakesrc num-buffers=10 ! fakesink
 ```
 
 ### Print some pipeline stats on exit:
 
 ```
-GST_DEBUG="GST_TRACER:7" GST_TRACERS="stats;rusage"
-GST_DEBUG_FILE=trace.log gst-launch-1.0 fakesrc num-buffers=10
+GST_DEBUG="GST_TRACER:7" GST_TRACERS="stats;rusage" \
+GST_DEBUG_FILE=trace.log gst-launch-1.0 fakesrc num-buffers=10 \
 sizetype=fixed ! queue ! fakesink && gst-stats-1.0 trace.log
 ```
 
 ### get ts, average-cpuload, current-cpuload, time and plot
 
 ```
-GST_DEBUG="GST_TRACER:7" GST_TRACERS="stats;rusage"
+GST_DEBUG="GST_TRACER:7" GST_TRACERS="stats;rusage" \
 GST_DEBUG_FILE=trace.log /usr/bin/gst-play-1.0 $HOME/Videos/movie.mp4 &&
 ./scripts/gst-plot-traces.sh --format=png | gnuplot eog trace.log.*.png
 ```
@@ -449,7 +453,7 @@ autoaudiosink
 ### print processing latencies for each element
 
 ```
-GST_DEBUG="GST_TRACER:7" GST_TRACERS=latency(flags=element) gst-launch-1.0 \
+GST_DEBUG="GST_TRACER:7" GST_TRACERS="latency(flags=element)" gst-launch-1.0 \
 audiotestsrc num-buffers=10 ! audioconvert ! volume volume=0.7 ! \
 autoaudiosink
 ```
@@ -457,7 +461,7 @@ autoaudiosink
 ### print reported latencies for each element
 
 ```
-GST_DEBUG="GST_TRACER:7" GST_TRACERS=latency(flags=reported) gst-launch-1.0 \
+GST_DEBUG="GST_TRACER:7" GST_TRACERS="latency(flags=reported)" gst-launch-1.0 \
 audiotestsrc num-buffers=10 ! audioconvert ! volume volume=0.7 ! \
 autoaudiosink
 ```
@@ -466,7 +470,7 @@ autoaudiosink
 
 ```
 GST_DEBUG="GST_TRACER:7" \
-GST_TRACERS=latency(flags=pipeline+element+reported) gst-launch-1.0 \
+GST_TRACERS="latency(flags=pipeline+element+reported)" gst-launch-1.0 \
 alsasrc num-buffers=20 ! flacenc ! identity ! \
 fakesink
 ```
@@ -474,14 +478,14 @@ fakesink
 ### Raise a warning if a leak is detected
 
 ```
-GST_TRACERS="leaks" gst-launch-1.0 videotestsrc num-buffers=10 !
+GST_TRACERS="leaks" gst-launch-1.0 videotestsrc num-buffers=10 ! \
 fakesink
 ```
 
 ### check if any GstEvent or GstMessage is leaked and raise a warning
 
 ```
-GST_DEBUG="GST_TRACER:7" GST_TRACERS="leaks(GstEvent,GstMessage)"
+GST_DEBUG="GST_TRACER:7" GST_TRACERS="leaks(GstEvent,GstMessage)" \
 gst-launch-1.0 videotestsrc num-buffers=10 ! fakesink
 ```
 

@@ -130,6 +130,7 @@ static void gst_audio_rate_get_property (GObject * object,
 
 static GstStateChangeReturn gst_audio_rate_change_state (GstElement * element,
     GstStateChange transition);
+static gboolean gst_audio_rate_convert_segments (GstAudioRate * audiorate);
 
 /*static guint gst_audio_rate_signals[LAST_SIGNAL] = { 0 }; */
 
@@ -227,7 +228,7 @@ gst_audio_rate_setcaps (GstAudioRate * audiorate, GstCaps * caps)
   prev_rate = audiorate->info.rate;
   audiorate->info = info;
 
-  if (audiorate->next_offset >= 0 && prev_rate > 0 && prev_rate != info.rate) {
+  if (audiorate->next_offset != -1 && prev_rate > 0 && prev_rate != info.rate) {
     GST_DEBUG_OBJECT (audiorate,
         "rate changed from %d to %d", prev_rate, info.rate);
 
@@ -284,11 +285,35 @@ gst_audio_rate_fill_to_time (GstAudioRate * audiorate, GstClockTime time)
       !GST_CLOCK_TIME_IS_VALID (audiorate->next_ts))
     return;
 
+  if (ABS (GST_CLOCK_DIFF (time, audiorate->next_ts)) <= audiorate->tolerance) {
+    GST_DEBUG_OBJECT (audiorate,
+        "Not filling gap as its duration < tolerance ( %" GST_TIMEP_FORMAT " )",
+        &audiorate->tolerance);
+  }
+
   /* feed an empty buffer to chain with the given timestamp,
    * it will take care of filling */
   buf = gst_buffer_new ();
   GST_BUFFER_TIMESTAMP (buf) = time;
   gst_audio_rate_chain (audiorate->sinkpad, GST_OBJECT_CAST (audiorate), buf);
+}
+
+/* FIXME: videorate has a copy, should it be public API? */
+static guint64
+convert_position (GstSegment * old_segment, GstSegment * new_segment,
+    guint64 position)
+{
+  g_return_val_if_fail (old_segment->format == new_segment->format, -1);
+  if (position == -1)
+    return -1;
+  position += old_segment->base;
+  if (position < new_segment->base)
+    return -1;
+  position -= new_segment->base;
+  if (position < new_segment->start || (new_segment->stop != -1
+          && position > new_segment->stop))
+    return -1;
+  return position;
 }
 
 static gboolean
@@ -320,37 +345,33 @@ gst_audio_rate_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
     case GST_EVENT_SEGMENT:
     {
       gst_event_copy_segment (event, &audiorate->sink_segment);
-
-      GST_DEBUG_OBJECT (audiorate, "handle NEWSEGMENT");
-#if 0
-      /* FIXME: bad things will likely happen if rate < 0 ... */
-      if (!update) {
-        /* a new segment starts. We need to figure out what will be the next
-         * sample offset. We mark the offsets as invalid so that the _chain
-         * function will perform this calculation. */
-        gst_audio_rate_fill_to_time (audiorate, audiorate->src_segment.stop);
-#endif
-        audiorate->next_offset = -1;
-        audiorate->next_ts = -1;
-#if 0
-      } else {
-        gst_audio_rate_fill_to_time (audiorate, audiorate->src_segment.start);
-      }
-#endif
-
       GST_DEBUG_OBJECT (audiorate, "updated segment: %" GST_SEGMENT_FORMAT,
           &audiorate->sink_segment);
 
-      if (audiorate->sink_segment.format == GST_FORMAT_TIME) {
-        /* TIME formats can be copied to src and forwarded */
-        res = gst_pad_push_event (audiorate->srcpad, event);
-        gst_segment_copy_into (&audiorate->sink_segment,
-            &audiorate->src_segment);
+      GstSegment old_segment;
+      gst_segment_copy_into (&audiorate->src_segment, &old_segment);
+
+      /* Copy sink_segment into src_segment and convert to TIME format. */
+      gst_audio_rate_convert_segments (audiorate);
+
+      /* Convert next_ts to new segment. */
+      audiorate->next_ts =
+          convert_position (&old_segment, &audiorate->src_segment,
+          audiorate->next_ts);
+      if (audiorate->next_ts != -1) {
+        audiorate->next_offset =
+            gst_util_uint64_scale_int_round (audiorate->next_ts,
+            GST_AUDIO_INFO_RATE (&audiorate->info), GST_SECOND);
       } else {
-        /* other formats will be handled in the _chain function */
-        gst_event_unref (event);
-        res = TRUE;
+        /* Current position is outside the new segment, _chain will resync. */
+        audiorate->next_offset = -1;
       }
+
+      /* Push updated segment */
+      guint32 seqnum = gst_event_get_seqnum (event);
+      gst_event_take (&event, gst_event_new_segment (&audiorate->src_segment));
+      gst_event_set_seqnum (event, seqnum);
+      res = gst_pad_push_event (audiorate->srcpad, event);
       break;
     }
     case GST_EVENT_EOS:
@@ -414,14 +435,17 @@ gst_audio_rate_convert_segments (GstAudioRate * audiorate)
 
   src_fmt = audiorate->sink_segment.format;
   dst_fmt = audiorate->src_segment.format;
-
+  if (src_fmt == dst_fmt) {
+    gst_segment_copy_into (&audiorate->sink_segment, &audiorate->src_segment);
+    return TRUE;
+  }
 #define CONVERT_VAL(field) gst_audio_rate_convert (audiorate, \
-		src_fmt, audiorate->sink_segment.field,       \
-		dst_fmt, &audiorate->src_segment.field);
+    src_fmt, audiorate->sink_segment.field,                   \
+    dst_fmt, &audiorate->src_segment.field);
 
-  audiorate->sink_segment.rate = audiorate->src_segment.rate;
-  audiorate->sink_segment.flags = audiorate->src_segment.flags;
-  audiorate->sink_segment.applied_rate = audiorate->src_segment.applied_rate;
+  audiorate->src_segment.rate = audiorate->sink_segment.rate;
+  audiorate->src_segment.flags = audiorate->sink_segment.flags;
+  audiorate->src_segment.applied_rate = audiorate->sink_segment.applied_rate;
   CONVERT_VAL (start);
   CONVERT_VAL (stop);
   CONVERT_VAL (time);
@@ -465,17 +489,14 @@ gst_audio_rate_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   if (bpf == 0)
     goto not_negotiated;
 
-  /* we have a new pending segment */
   if (audiorate->next_offset == -1) {
     gint64 pos;
 
-    /* update the TIME segment */
-    gst_audio_rate_convert_segments (audiorate);
-
-    /* first buffer, we are negotiated and we have a segment, calculate the
-     * current expected offsets based on the segment.start, which is the first
-     * media time of the segment and should match the media time of the first
-     * buffer in that segment, which is the offset expressed in DEFAULT units.
+    /* first buffer, or previous buffer's position was outside of new segment,
+     * calculate the current expected offsets based on the segment.start, which
+     * is the first media time of the segment and should match the media time of
+     * the first buffer in that segment, which is the offset expressed in
+     * DEFAULT units.
      */
     /* convert first timestamp of segment to sample position */
     pos = gst_util_uint64_scale_int_round (audiorate->src_segment.start,
@@ -608,6 +629,7 @@ gst_audio_rate_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       if (!audiorate->silent)
         gst_audio_rate_notify_add (audiorate);
     }
+    audiorate->out += in_samples;
 
   } else if (in_offset < audiorate->next_offset) {
     /* need to remove samples */

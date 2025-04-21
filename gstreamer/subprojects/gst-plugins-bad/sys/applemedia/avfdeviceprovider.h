@@ -77,6 +77,7 @@ struct _GstAvfDevice {
 
   GstAvfDeviceType  type;
   int               device_index;
+  gchar            *device_uid;
   const gchar      *element;
 };
 

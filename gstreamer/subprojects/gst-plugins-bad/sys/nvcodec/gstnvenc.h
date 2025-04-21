@@ -22,29 +22,11 @@
 
 #include <gst/gst.h>
 #include <gst/video/video.h>
-#include <gst/cuda/gstcudaloader.h>
+#include <gst/cuda/gstcuda.h>
 
 #include "nvEncodeAPI.h"
 
 G_BEGIN_DECLS
-
-gboolean                gst_nvenc_cmp_guid (GUID g1, GUID g2);
-
-NV_ENC_BUFFER_FORMAT    gst_nvenc_get_nv_buffer_format (GstVideoFormat fmt);
-
-gboolean                gst_nvenc_get_supported_input_formats (gpointer encoder,
-                                                               GUID codec_id,
-                                                               GValue ** formats);
-
-GValue *                gst_nvenc_get_interlace_modes (gpointer enc,
-                                                       GUID codec_id);
-
-GValue *                gst_nvenc_get_supported_codec_profiles (gpointer enc,
-                                                                GUID codec_id);
-
-void                    gst_nvenc_plugin_init (GstPlugin * plugin,
-                                               guint device_index,
-                                               CUcontext cuda_ctx);
 
 guint32                 gst_nvenc_get_api_version (void);
 
@@ -87,6 +69,8 @@ guint32                 gst_nvenc_get_sequence_param_payload_version (void);
 guint32                 gst_nvenc_get_event_params_version (void);
 
 guint32                 gst_nvenc_get_open_encode_session_ex_params_version (void);
+
+gboolean                gst_nvenc_have_set_io_cuda_streams (void);
 
 gboolean                gst_nvenc_load_library (guint * api_major_ver,
                                                 guint * api_minor_ver);

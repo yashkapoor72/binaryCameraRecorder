@@ -74,13 +74,13 @@ static GPrivate thread_stats_key = G_PRIVATE_INIT (free_thread_stats);
 static void
 free_trace_value (gpointer data)
 {
-  g_slice_free (GstTraceValue, data);
+  g_free (data);
 }
 
 static GstTraceValues *
 make_trace_values (GstClockTime window)
 {
-  GstTraceValues *self = g_slice_new0 (GstTraceValues);
+  GstTraceValues *self = g_new0 (GstTraceValues, 1);
   self->window = window;
   g_queue_init (&self->values);
   return self;
@@ -91,7 +91,7 @@ free_trace_values (GstTraceValues * self)
 {
   g_queue_foreach (&self->values, (GFunc) free_trace_value, NULL);
   g_queue_clear (&self->values);
-  g_slice_free (GstTraceValues, self);
+  g_free (self);
 }
 
 static gboolean
@@ -136,7 +136,7 @@ update_trace_value (GstTraceValues * self, GstClockTime nts,
   lv = q->head ? q->head->data : NULL;
   if (!lv || (GST_CLOCK_DIFF (lv->ts, nts) > (window / WINDOW_SUBDIV))) {
     /* push the new measurement */
-    lv = g_slice_new0 (GstTraceValue);
+    lv = g_new0 (GstTraceValue, 1);
     lv->ts = nts;
     lv->val = nval;
     g_queue_push_head (q, lv);
@@ -262,33 +262,6 @@ do_stats (GstTracer * obj, guint64 ts)
 /* tracer class */
 
 static void
-gst_rusage_tracer_constructed (GObject * object)
-{
-  GstRUsageTracer *self = GST_RUSAGE_TRACER (object);
-  gchar *params, *tmp;
-  const gchar *name;
-  GstStructure *params_struct = NULL;
-
-  g_object_get (self, "params", &params, NULL);
-
-  if (!params)
-    return;
-
-  tmp = g_strdup_printf ("rusage,%s", params);
-  g_free (params);
-  params_struct = gst_structure_from_string (tmp, NULL);
-  g_free (tmp);
-  if (!params_struct)
-    return;
-
-  /* Set the name if assigned */
-  name = gst_structure_get_string (params_struct, "name");
-  if (name)
-    gst_object_set_name (GST_OBJECT (self), name);
-  gst_structure_free (params_struct);
-}
-
-static void
 gst_rusage_tracer_finalize (GObject * obj)
 {
   GstRUsageTracer *self = GST_RUSAGE_TRACER (obj);
@@ -303,7 +276,8 @@ gst_rusage_tracer_class_init (GstRUsageTracerClass * klass)
 {
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
 
-  gobject_class->constructed = gst_rusage_tracer_constructed;
+  gst_tracer_class_set_use_structure_params (GST_TRACER_CLASS (klass), TRUE);
+
   gobject_class->finalize = gst_rusage_tracer_finalize;
 
   if ((num_cpus = sysconf (_SC_NPROCESSORS_ONLN)) == -1) {

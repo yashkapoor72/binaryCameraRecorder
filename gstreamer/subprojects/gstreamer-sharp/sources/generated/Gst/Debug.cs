@@ -178,6 +178,74 @@ namespace Gst {
 		}
 
 		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_debug_log_id_literal(IntPtr category, int level, IntPtr file, IntPtr function, int line, IntPtr id, IntPtr message_string);
+
+		public static void LogIdLiteral(Gst.DebugCategory category, Gst.DebugLevel level, string file, string function, int line, string id, string message_string) {
+			IntPtr native_category = GLib.Marshaller.StructureToPtrAlloc (category);
+			IntPtr native_file = GLib.Marshaller.StringToPtrGStrdup (file);
+			IntPtr native_function = GLib.Marshaller.StringToPtrGStrdup (function);
+			IntPtr native_id = GLib.Marshaller.StringToPtrGStrdup (id);
+			IntPtr native_message_string = GLib.Marshaller.StringToPtrGStrdup (message_string);
+			gst_debug_log_id_literal(native_category, (int) level, native_file, native_function, line, native_id, native_message_string);
+			Marshal.FreeHGlobal (native_category);
+			GLib.Marshaller.Free (native_file);
+			GLib.Marshaller.Free (native_function);
+			GLib.Marshaller.Free (native_id);
+			GLib.Marshaller.Free (native_message_string);
+		}
+
+		public static void LogIdLiteral(Gst.DebugCategory category, Gst.DebugLevel level, string file, string function, int line, string message_string) {
+			LogIdLiteral (category, level, file, function, line, null, message_string);
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_debug_log_literal(IntPtr category, int level, IntPtr file, IntPtr function, int line, IntPtr _object, IntPtr message_string);
+
+		public static void LogLiteral(Gst.DebugCategory category, Gst.DebugLevel level, string file, string function, int line, GLib.Object _object, string message_string) {
+			IntPtr native_category = GLib.Marshaller.StructureToPtrAlloc (category);
+			IntPtr native_file = GLib.Marshaller.StringToPtrGStrdup (file);
+			IntPtr native_function = GLib.Marshaller.StringToPtrGStrdup (function);
+			IntPtr native_message_string = GLib.Marshaller.StringToPtrGStrdup (message_string);
+			gst_debug_log_literal(native_category, (int) level, native_file, native_function, line, _object == null ? IntPtr.Zero : _object.Handle, native_message_string);
+			Marshal.FreeHGlobal (native_category);
+			GLib.Marshaller.Free (native_file);
+			GLib.Marshaller.Free (native_function);
+			GLib.Marshaller.Free (native_message_string);
+		}
+
+		public static void LogLiteral(Gst.DebugCategory category, Gst.DebugLevel level, string file, string function, int line, string message_string) {
+			LogLiteral (category, level, file, function, line, null, message_string);
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr gst_debug_print_object(IntPtr ptr);
+
+		public static string PrintObject(IntPtr ptr) {
+			IntPtr raw_ret = gst_debug_print_object(ptr);
+			string ret = GLib.Marshaller.PtrToStringGFree(raw_ret);
+			return ret;
+		}
+
+		public static string PrintObject() {
+			return PrintObject (IntPtr.Zero);
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern IntPtr gst_debug_print_segment(IntPtr segment);
+
+		public static string PrintSegment(Gst.Segment segment) {
+			IntPtr native_segment = GLib.Marshaller.StructureToPtrAlloc (segment);
+			IntPtr raw_ret = gst_debug_print_segment(native_segment);
+			string ret = GLib.Marshaller.PtrToStringGFree(raw_ret);
+			Marshal.FreeHGlobal (native_segment);
+			return ret;
+		}
+
+		public static string PrintSegment() {
+			return PrintSegment (Gst.Segment.Zero);
+		}
+
+		[DllImport("gstreamer-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern void gst_debug_print_stack_trace();
 
 		public static void PrintStackTrace() {

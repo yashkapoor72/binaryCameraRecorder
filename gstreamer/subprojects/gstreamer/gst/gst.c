@@ -119,6 +119,10 @@
 #endif
 #endif
 
+#ifdef GST_FULL_STATIC_COMPILATION
+void gst_init_static_plugins ();
+#endif
+
 #include <glib/gi18n-lib.h>
 #include <locale.h>             /* for LC_ALL */
 
@@ -180,7 +184,6 @@ enum
   ARG_DEBUG_COLOR_MODE,
   ARG_DEBUG_HELP,
 #endif
-  ARG_PLUGIN_SPEW,
   ARG_PLUGIN_PATH,
   ARG_PLUGIN_LOAD,
   ARG_SEGTRAP_DISABLE,
@@ -194,24 +197,21 @@ enum
  * val ::= [0-5]
  */
 
-#ifdef G_OS_WIN32
+#if defined(G_OS_WIN32) && !defined(GST_STATIC_COMPILATION)
 /* Note: DllMain is only called when DLLs are loaded or unloaded, so this will
  * never be called if libgstreamer-1.0 is linked statically. Do not add any code
  * here to, say, initialize variables or set things up since that will only
  * happen for dynamically-built GStreamer.
- *
- * Also, ideally this should not be defined when GStreamer is built statically.
- * i.e., it should be conditional on #ifdef DLL_EXPORT. It will be ignored, but
- * if other libraries make the same mistake of defining it when building
- * statically, there will be a symbol collision during linking. Fixing this
- * requires one to build two object files: one for static linking and another
- * for dynamic linking. */
+ */
 BOOL WINAPI DllMain (HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);
 BOOL WINAPI
 DllMain (HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
-  if (fdwReason == DLL_PROCESS_ATTACH)
+  if (fdwReason == DLL_PROCESS_ATTACH) {
     _priv_gst_dll_handle = (HMODULE) hinstDLL;
+    priv_gst_clock_init ();
+  }
+
   return TRUE;
 }
 
@@ -271,10 +271,6 @@ gst_init_get_option_group (void)
     {"gst-debug-disable", 0, G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK,
         (gpointer) parse_goption_arg, N_("Disable debugging"), NULL},
 #endif
-    {"gst-plugin-spew", 0, G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK,
-          (gpointer) parse_goption_arg,
-          N_("Enable verbose plugin loading diagnostics"),
-        NULL},
     {"gst-plugin-path", 0, 0, G_OPTION_ARG_CALLBACK,
           (gpointer) parse_goption_arg,
         N_("Colon-separated paths containing plugins"), N_("PATHS")},
@@ -450,11 +446,6 @@ gst_init_check (int *argc, char **argv[], GError ** error)
  * WARNING: This function will terminate your program if it was unable to
  * initialize GStreamer for some reason. If you want your program to fall back,
  * use gst_init_check() instead.
- *
- * WARNING: This function does not work in the same way as corresponding
- * functions in other glib-style libraries, such as gtk_init\(\). In
- * particular, unknown command line options cause this function to
- * abort program execution.
  */
 void
 gst_init (int *argc, char **argv[])
@@ -544,6 +535,8 @@ init_pre (GOptionContext * context, GOptionGroup * group, gpointer data,
     return TRUE;
   }
 
+  priv_gst_clock_init ();
+
   find_executable_path ();
 
   _priv_gst_start_time = gst_util_get_timestamp ();
@@ -629,6 +622,9 @@ gst_register_core_elements (GstPlugin * plugin)
 static void
 init_static_plugins (void)
 {
+#ifdef GST_FULL_STATIC_COMPILATION
+  gst_init_static_plugins ();
+#else
   GModule *module;
 
   /* Call gst_init_static_plugins() defined in libgstreamer-full-1.0 in the case
@@ -642,6 +638,7 @@ init_static_plugins (void)
     }
     g_module_close (module);
   }
+#endif
 }
 
 /*
@@ -665,7 +662,6 @@ init_post (GOptionContext * context, GOptionGroup * group, gpointer data,
   }
 
   _priv_gst_mini_object_initialize ();
-  _priv_gst_quarks_initialize ();
   _priv_gst_allocator_initialize ();
   _priv_gst_memory_initialize ();
   _priv_gst_format_initialize ();
@@ -817,8 +813,14 @@ init_post (GOptionContext * context, GOptionGroup * group, gpointer data,
    * environment variable */
   _priv_gst_plugin_feature_rank_initialize ();
 
-#ifndef GST_DISABLE_GST_DEBUG
+#ifndef GST_DISABLE_GST_TRACER_HOOKS
   _priv_gst_tracing_init ();
+  /* Allow the `dots` tracer to set the `GST_DEBUG_DUMP_DOT_DIR` variable if it
+   * was not set before */
+#ifndef GST_DISABLE_GST_DEBUG
+  if (!priv_gst_dump_dot_dir)
+    priv_gst_dump_dot_dir = g_getenv ("GST_DEBUG_DUMP_DOT_DIR");
+#endif
 #endif
 
   return TRUE;
@@ -992,8 +994,6 @@ parse_one_option (gint opt, const gchar * arg, GError ** err)
       gst_debug_help ();
       exit (0);
 #endif
-    case ARG_PLUGIN_SPEW:
-      break;
     case ARG_PLUGIN_PATH:
 #ifndef GST_DISABLE_REGISTRY
       if (!_priv_gst_disable_registry)
@@ -1047,7 +1047,6 @@ parse_goption_arg (const gchar * opt,
     "--gst-debug-help", ARG_DEBUG_HELP},
 #endif
     {
-    "--gst-plugin-spew", ARG_PLUGIN_SPEW}, {
     "--gst-plugin-path", ARG_PLUGIN_PATH}, {
     "--gst-plugin-load", ARG_PLUGIN_LOAD}, {
     "--gst-disable-segtrap", ARG_SEGTRAP_DISABLE}, {

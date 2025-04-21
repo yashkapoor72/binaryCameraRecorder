@@ -56,8 +56,9 @@ struct _GstKMSMemory
   GstMemory parent;
 
   guint32 fb_id;
-  guint32 gem_handle[GST_VIDEO_MAX_PLANES];
-  struct kms_bo *bo;
+  GstMemory *bo;
+  GstMapInfo bo_map;
+  gint bo_map_refs;
 };
 
 struct _GstKMSAllocator
@@ -81,10 +82,11 @@ GstMemory*    gst_kms_allocator_bo_alloc (GstAllocator *allocator,
 					  GstVideoInfo *vinfo);
 
 GstKMSMemory* gst_kms_allocator_dmabuf_import (GstAllocator *allocator,
-					       gint *prime_fds,
-					       gint n_planes,
-					       gsize offsets[GST_VIDEO_MAX_PLANES],
-					       GstVideoInfo *vinfo);
+                                               gint *prime_fds,
+                                               gint n_planes,
+                                               gsize offsets[GST_VIDEO_MAX_PLANES],
+                                               GstVideoInfo *vinfo,
+                                               guint64 modifier);
 
 GstMemory*    gst_kms_allocator_dmabuf_export (GstAllocator *allocator,
                                                GstMemory *kmsmem);

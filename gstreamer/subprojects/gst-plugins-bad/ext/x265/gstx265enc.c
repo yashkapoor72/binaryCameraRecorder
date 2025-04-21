@@ -422,9 +422,9 @@ gst_x265_enc_sink_getcaps (GstVideoEncoder * enc, GstCaps * filter)
     if (max_bit_minus_8 >= 2)
       has_10bit = TRUE;
 
-    has_8bit &= ! !vtable_8bit;
-    has_10bit &= ! !vtable_10bit;
-    has_12bit &= ! !vtable_12bit;
+    has_8bit &= !!vtable_8bit;
+    has_10bit &= !!vtable_10bit;
+    has_12bit &= !!vtable_12bit;
 
     /* 4:4:4 profiles can handle 4:2:2 and 4:2:0 */
     if (max_chroma_index >= 2)
@@ -534,8 +534,8 @@ gst_x265_enc_class_init (GstX265EncClass * klass)
       "height", GST_TYPE_INT_RANGE, 16, G_MAXINT, NULL);
 
   gst_x265_enc_add_x265_chroma_format (gst_caps_get_structure
-      (supported_sinkcaps, 0), TRUE, TRUE, TRUE, ! !vtable_8bit,
-      ! !vtable_10bit, ! !vtable_12bit);
+      (supported_sinkcaps, 0), TRUE, TRUE, TRUE, !!vtable_8bit,
+      !!vtable_10bit, !!vtable_12bit);
 
   sink_templ = gst_pad_template_new ("sink",
       GST_PAD_SINK, GST_PAD_ALWAYS, supported_sinkcaps);
@@ -591,7 +591,7 @@ gst_x265_enc_queue_frame (GstX265Enc * enc, GstVideoCodecFrame * frame,
   if (!gst_video_frame_map (&vframe, info, frame->input_buffer, GST_MAP_READ))
     return NULL;
 
-  fdata = g_slice_new (FrameData);
+  fdata = g_new (FrameData, 1);
   fdata->frame = gst_video_codec_frame_ref (frame);
   fdata->vframe = vframe;
 
@@ -613,7 +613,7 @@ gst_x265_enc_dequeue_frame (GstX265Enc * enc, GstVideoCodecFrame * frame)
 
     gst_video_frame_unmap (&fdata->vframe);
     gst_video_codec_frame_unref (fdata->frame);
-    g_slice_free (FrameData, fdata);
+    g_free (fdata);
 
     enc->pending_frames = g_list_delete_link (enc->pending_frames, l);
     return;
@@ -630,7 +630,7 @@ gst_x265_enc_dequeue_all_frames (GstX265Enc * enc)
 
     gst_video_frame_unmap (&fdata->vframe);
     gst_video_codec_frame_unref (fdata->frame);
-    g_slice_free (FrameData, fdata);
+    g_free (fdata);
   }
   g_list_free (enc->pending_frames);
   enc->pending_frames = NULL;
@@ -948,8 +948,13 @@ gst_x265_enc_init_encoder_locked (GstX265Enc * encoder)
        * HEVC uses gbr order
        * See spec D.3.28 display_primaries_x and display_primaries_y
        */
-      encoder->x265param.masteringDisplayColorVolume =
-          g_strdup_printf ("G(%hu,%hu)B(%hu,%hu)R(%hu,%hu)WP(%hu,%hu)L(%u,%u)",
+#if X265_BUILD < 214
+      encoder->x265param.masteringDisplayColorVolume = g_strdup_printf (
+#else
+      snprintf (encoder->x265param.masteringDisplayColorVolume,
+          X265_MAX_STRING_SIZE,
+#endif
+          "G(%hu,%hu)B(%hu,%hu)R(%hu,%hu)WP(%hu,%hu)L(%u,%u)",
           minfo.display_primaries[1].x, minfo.display_primaries[1].y,
           minfo.display_primaries[2].x, minfo.display_primaries[2].y,
           minfo.display_primaries[0].x, minfo.display_primaries[0].y,

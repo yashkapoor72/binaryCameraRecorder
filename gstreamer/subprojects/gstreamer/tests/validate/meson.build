@@ -1,4 +1,4 @@
-gst_tester = executable('gst-tester-' + apiversion,
+gst_tester = executable('gst-tester-' + api_version,
     'gst-tester.c',
     c_args : gst_c_args,
     include_directories : [configinc],
@@ -7,7 +7,7 @@ gst_tester = executable('gst-tester-' + apiversion,
     dependencies : [gio_dep],
 )
 
-meson.override_find_program('gst-tester-' + apiversion, gst_tester)
+meson.override_find_program('gst-tester-' + api_version, gst_tester)
 
 tests = [
     'simplest',
@@ -18,7 +18,7 @@ env.set('GST_PLUGIN_PATH_1_0', meson.global_build_root())
 env.set('GST_PLUGIN_SYSTEM_PATH_1_0', '')
 env.set('GST_REGISTRY', '@0@/@1@.registry'.format(meson.current_build_dir(), 'validate'))
 env.set('GST_PLUGIN_SCANNER_1_0', gst_scanner_dir + '/gst-plugin-scanner')
-env.set('GST_PLUGIN_LOADING_WHITELIST', 'gstreamer', 'gst-validate')
+env.set('GST_PLUGIN_LOADING_WHITELIST', 'gstreamer', 'gst-validate', 'debugutilsbad')
 
 foreach t: tests
     test_dir_name = t.split('/')

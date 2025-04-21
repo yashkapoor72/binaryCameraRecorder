@@ -52,8 +52,6 @@
 
 #include <math.h>
 
-#define _gst_log2(x) (log(x)/log(2))
-
 /*
  * tsdemux
  *
@@ -62,6 +60,9 @@
 
 #define CONTINUITY_UNSET 255
 #define MAX_CONTINUITY 15
+
+/* Length of metadata_AU_cell header, see ISO/IEC 13818-1:2018 Section 2.12.4 */
+#define PES_PACKET_METADATA_AU_HEADER_LEN 5
 
 /* Seeking/Scanning related variables */
 
@@ -86,14 +87,6 @@ GST_DEBUG_CATEGORY_STATIC (ts_demux_debug);
 #define GST_CAT_DEFAULT ts_demux_debug
 
 #define ABSDIFF(a,b) (((a) > (b)) ? ((a) - (b)) : ((b) - (a)))
-
-static GQuark QUARK_TSDEMUX;
-static GQuark QUARK_PID;
-static GQuark QUARK_PCR;
-static GQuark QUARK_OPCR;
-static GQuark QUARK_PTS;
-static GQuark QUARK_DTS;
-static GQuark QUARK_OFFSET;
 
 typedef enum
 {
@@ -236,12 +229,16 @@ struct _TSDemuxStream
       "systemstream = (boolean) FALSE; " \
     "video/x-h264,stream-format=(string)byte-stream;" \
     "video/x-h265,stream-format=(string)byte-stream;" \
+    "video/x-h266,stream-format=(string)byte-stream;" \
+    "video/x-vp9;" \
+    "video/x-av1,stream-format=(string)obu-stream,alignment=(string)frame;" \
     "video/x-dirac;" \
     "video/x-cavs;" \
     "video/x-wmv," \
       "wmvversion = (int) 3, " \
       "format = (string) WVC1;" \
       "image/x-jpc;" \
+      "image/x-jxsc;" \
 )
 
 #define AUDIO_CAPS \
@@ -347,21 +344,8 @@ static void gst_ts_demux_check_and_sync_streams (GstTSDemux * demux,
     GstClockTime time);
 static void handle_psi (MpegTSBase * base, GstMpegtsSection * section);
 
-static void
-_extra_init (void)
-{
-  QUARK_TSDEMUX = g_quark_from_string ("tsdemux");
-  QUARK_PID = g_quark_from_string ("pid");
-  QUARK_PCR = g_quark_from_string ("pcr");
-  QUARK_OPCR = g_quark_from_string ("opcr");
-  QUARK_PTS = g_quark_from_string ("pts");
-  QUARK_DTS = g_quark_from_string ("dts");
-  QUARK_OFFSET = g_quark_from_string ("offset");
-}
-
 #define gst_ts_demux_parent_class parent_class
-G_DEFINE_TYPE_WITH_CODE (GstTSDemux, gst_ts_demux, GST_TYPE_MPEGTS_BASE,
-    _extra_init ());
+G_DEFINE_TYPE (GstTSDemux, gst_ts_demux, GST_TYPE_MPEGTS_BASE);
 #define _do_element_init \
   GST_DEBUG_CATEGORY_INIT (ts_demux_debug, "tsdemux", 0, \
       "MPEG transport stream demuxer");\
@@ -449,7 +433,7 @@ gst_ts_demux_class_init (GstTSDemuxClass * klass)
       "MPEG transport stream demuxer",
       "Codec/Demuxer",
       "Demuxes MPEG2 transport streams",
-      "Zaheer Abbas Merali <zaheerabbas at merali dot org>\n"
+      "Zaheer Abbas Merali <zaheerabbas at merali dot org>, "
       "Edward Hervey <edward.hervey@collabora.co.uk>");
 
   ts_class = GST_MPEGTS_BASE_CLASS (klass);
@@ -942,12 +926,6 @@ gst_ts_demux_do_seek (MpegTSBase * base, GstEvent * event)
     goto done;
   }
 
-  if (flags & (GST_SEEK_FLAG_SEGMENT)) {
-    GST_WARNING_OBJECT (demux, "seek flags 0x%x are not supported",
-        (int) flags);
-    goto done;
-  }
-
   /* configure the segment with the seek variables */
   memcpy (&seeksegment, &base->out_segment, sizeof (GstSegment));
   GST_LOG_OBJECT (demux, "Before seek, output segment %" GST_SEGMENT_FORMAT,
@@ -1019,6 +997,8 @@ gst_ts_demux_do_seek (MpegTSBase * base, GstEvent * event)
 
   /* Commit the new segment */
   memcpy (&base->out_segment, &seeksegment, sizeof (GstSegment));
+  /* And prepare to restart */
+  gst_flow_combiner_reset (demux->flowcombiner);
   res = GST_FLOW_OK;
 
 done:
@@ -1111,10 +1091,12 @@ push_event (MpegTSBase * base, GstEvent * event)
   for (tmp = demux->program->stream_list; tmp; tmp = tmp->next) {
     TSDemuxStream *stream = (TSDemuxStream *) tmp->data;
     if (stream->pad) {
-      /* If we are pushing out EOS, flush out pending data first */
-      if (GST_EVENT_TYPE (event) == GST_EVENT_EOS &&
-          gst_pad_is_active (stream->pad))
+      /* If we are pushing out EOS or segment-done, flush out pending data first */
+      if ((GST_EVENT_TYPE (event) == GST_EVENT_EOS ||
+              GST_EVENT_TYPE (event) == GST_EVENT_SEGMENT_DONE) &&
+          gst_pad_is_active (stream->pad)) {
         gst_ts_demux_push_pending_data (demux, stream, NULL);
+      }
 
       gst_event_ref (event);
       gst_pad_push_event (stream->pad, event);
@@ -1159,7 +1141,7 @@ handle_psi (MpegTSBase * base, GstMpegtsSection * section)
       GstMpegtsSCTESIT *sit =
           (GstMpegtsSCTESIT *) gst_mpegts_section_get_scte_sit (new_section);
 
-      rtime_map = gst_structure_new_empty ("running-time-map");
+      rtime_map = gst_structure_new_static_str_empty ("running-time-map");
 
       if (sit->fully_parsed) {
         if (sit->splice_time_specified) {
@@ -1267,6 +1249,21 @@ gst_ts_demux_create_tags (TSDemuxStream * stream)
   MpegTSBaseStream *bstream = (MpegTSBaseStream *) stream;
   const GstMpegtsDescriptor *desc = NULL;
   int i, nb;
+
+  if (bstream->stream_type == ST_PS_AUDIO_AC3 &&
+      !mpegts_get_descriptor_from_stream (bstream,
+          GST_MTS_DESC_DVB_ENHANCED_AC3)) {
+    const GstMpegtsDescriptor *ac3_desc =
+        mpegts_get_descriptor_from_stream (bstream,
+        GST_MTS_DESC_AC3_AUDIO_STREAM);
+    if (ac3_desc && DESC_AC_AUDIO_STREAM_has_lang1 (ac3_desc->data)) {
+      gchar lang_code[4];
+
+      memcpy (lang_code, DESC_AC_AUDIO_STREAM_lang1_code (ac3_desc->data), 3);
+      lang_code[3] = '\0';
+      add_iso639_language_to_tags (stream, lang_code);
+    }
+  }
 
   desc =
       mpegts_get_descriptor_from_stream (bstream,
@@ -1503,6 +1500,24 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
           is_audio = TRUE;
           caps = gst_caps_new_empty_simple ("audio/x-smpte-302m");
           break;
+        case DRF_ID_AV1G:
+          GST_DEBUG ("AV1");
+          is_video = TRUE;
+          caps =
+              gst_caps_new_simple ("video/x-av1", "stream-format",
+              G_TYPE_STRING, "obu-stream", "alignment", G_TYPE_STRING, "frame",
+              NULL);
+          desc = mpegts_get_descriptor_from_stream (bstream, 0x80);
+          if (desc != NULL) {
+            GstCaps *av1c_caps;
+            GstBuffer *buf = gst_buffer_new_wrapped (g_memdup2 (desc->data + 2,
+                    desc->length), desc->length);
+            av1c_caps = gst_codec_utils_av1_create_caps_from_av1c (buf);
+            gst_caps_set_simple (av1c_caps, "codec_data", GST_TYPE_BUFFER, buf,
+                NULL);
+            caps = gst_caps_intersect (caps, av1c_caps);
+          }
+          break;
         case DRF_ID_OPUS:
           desc = mpegts_get_descriptor_from_stream (bstream,
               GST_MTS_DESC_DVB_EXTENSION);
@@ -1514,7 +1529,7 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
             gst_byte_reader_init (&br, desc->data + 3, desc->length - 1);
             channel_config_code = gst_byte_reader_get_uint8_unchecked (&br);
 
-            if ((channel_config_code & 0x8f) <= 8) {
+            if (channel_config_code < 0x89) {
               static const guint8 coupled_stream_counts[9] = {
                 1, 0, 1, 1, 2, 2, 2, 3, 3
               };
@@ -1540,11 +1555,12 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
               };
 
               gint channels = -1, stream_count, coupled_count, mapping_family;
-              guint8 *channel_mapping = NULL;
+              guint8 channel_mapping[255] = { 0, };
 
               channels = channel_config_code ? (channel_config_code & 0x0f) : 2;
               if (channel_config_code == 0 || channel_config_code == 0x80) {
                 /* Dual Mono */
+                channels = 2;
                 mapping_family = 255;
                 if (channel_config_code == 0) {
                   stream_count = 1;
@@ -1553,7 +1569,6 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                   stream_count = 2;
                   coupled_count = 0;
                 }
-                channel_mapping = g_new0 (guint8, channels);
                 memcpy (channel_mapping, &channel_map_a[1], channels);
               } else if (channel_config_code <= 8) {
                 mapping_family = (channels > 2) ? 1 : 0;
@@ -1562,7 +1577,6 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                     coupled_stream_counts[channel_config_code];
                 coupled_count = coupled_stream_counts[channel_config_code];
                 if (mapping_family != 0) {
-                  channel_mapping = g_new0 (guint8, channels);
                   memcpy (channel_mapping, &channel_map_a[channels - 1],
                       channels);
                 }
@@ -1571,7 +1585,6 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                 mapping_family = 1;
                 stream_count = channels;
                 coupled_count = 0;
-                channel_mapping = g_new0 (guint8, channels);
                 memcpy (channel_mapping, &channel_map_b[channels - 1],
                     channels);
               } else if (channel_config_code == 0x81) {
@@ -1601,13 +1614,14 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                   guint8 stream_count_minus_one, coupled_stream_count;
                   gint stream_count_minus_one_len, coupled_stream_count_len;
                   gint channel_mapping_len, i;
+                  guint remaining_bytes;
 
+                  remaining_bytes = gst_byte_reader_get_remaining (&br);
                   gst_bit_reader_init (&breader,
                       gst_byte_reader_get_data_unchecked
-                      (&br, gst_byte_reader_get_remaining
-                          (&br)), gst_byte_reader_get_remaining (&br));
+                      (&br, remaining_bytes), remaining_bytes);
 
-                  stream_count_minus_one_len = ceil (_gst_log2 (channels));
+                  stream_count_minus_one_len = g_bit_storage (channels);
                   if (!gst_bit_reader_get_bits_uint8 (&breader,
                           &stream_count_minus_one,
                           stream_count_minus_one_len)) {
@@ -1618,8 +1632,7 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                   }
 
                   stream_count = stream_count_minus_one + 1;
-                  coupled_stream_count_len =
-                      ceil (_gst_log2 (stream_count_minus_one + 2));
+                  coupled_stream_count_len = g_bit_storage (stream_count + 1);
 
                   if (!gst_bit_reader_get_bits_uint8 (&breader,
                           &coupled_stream_count, coupled_stream_count_len)) {
@@ -1632,9 +1645,7 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                   coupled_count = coupled_stream_count;
 
                   channel_mapping_len =
-                      ceil (_gst_log2 (stream_count_minus_one + 1 +
-                          coupled_stream_count + 1));
-                  channel_mapping = g_new0 (guint8, channels);
+                      g_bit_storage (stream_count + coupled_stream_count + 1);
                   for (i = 0; i < channels; i++) {
                     if (!gst_bit_reader_get_bits_uint8 (&breader,
                             &channel_mapping[i], channel_mapping_len)) {
@@ -1647,8 +1658,6 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                   /* error above */
                   if (i != channels) {
                     channels = -1;
-                    g_free (channel_mapping);
-                    channel_mapping = NULL;
                     break;
                   }
                 }
@@ -1662,8 +1671,6 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
                     gst_codec_utils_opus_create_caps (48000, channels,
                     mapping_family, stream_count, coupled_count,
                     channel_mapping);
-
-                g_free (channel_mapping);
               }
             } else {
               GST_WARNING_OBJECT (demux,
@@ -1687,6 +1694,16 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
         case DRF_ID_AC4:
           is_audio = TRUE;
           caps = gst_caps_new_empty_simple ("audio/x-ac4");
+          break;
+        case DRF_ID_VP09:
+          is_video = TRUE;
+          caps = gst_caps_new_empty_simple ("video/x-vp9");
+          break;
+        case DRF_ID_VANC:
+          is_private = TRUE;
+          caps =
+              gst_caps_new_simple ("meta/x-st-2038", "alignment", G_TYPE_STRING,
+              "line", NULL);
           break;
       }
       if (caps)
@@ -1734,6 +1751,27 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
           "mpegversion", G_TYPE_INT, 4,
           "systemstream", G_TYPE_BOOLEAN, FALSE, NULL);
       break;
+    case GST_MPEGTS_STREAM_TYPE_METADATA_PES_PACKETS:
+      desc = mpegts_get_descriptor_from_stream (bstream, GST_MTS_DESC_METADATA);
+      if (desc) {
+        GstMpegtsMetadataDescriptor *metadataDescriptor;
+        if (gst_mpegts_descriptor_parse_metadata (desc, &metadataDescriptor)) {
+          if ((metadataDescriptor->metadata_format ==
+                  GST_MPEGTS_METADATA_FORMAT_IDENTIFIER_FIELD)
+              && (metadataDescriptor->metadata_format_identifier ==
+                  DRF_ID_KLVA)) {
+            sparse = TRUE;
+            is_private = TRUE;
+            /* registration_id is not correctly set or parsed for some streams */
+            bstream->registration_id = DRF_ID_KLVA;
+
+            caps = gst_caps_new_simple ("meta/x-klv",
+                "parsed", G_TYPE_BOOLEAN, TRUE, NULL);
+          }
+          g_free (metadataDescriptor);
+        }
+      }
+      break;
     case GST_MPEGTS_STREAM_TYPE_VIDEO_H264:
       is_video = TRUE;
       caps = gst_caps_new_simple ("video/x-h264",
@@ -1742,6 +1780,11 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
     case GST_MPEGTS_STREAM_TYPE_VIDEO_HEVC:
       is_video = TRUE;
       caps = gst_caps_new_simple ("video/x-h265",
+          "stream-format", G_TYPE_STRING, "byte-stream", NULL);
+      break;
+    case GST_MPEGTS_STREAM_TYPE_VIDEO_VVC:
+      is_video = TRUE;
+      caps = gst_caps_new_simple ("video/x-h266",
           "stream-format", G_TYPE_STRING, "byte-stream", NULL);
       break;
     case GST_MPEGTS_STREAM_TYPE_VIDEO_JP2K:
@@ -1821,6 +1864,104 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
             "colorspace", G_TYPE_STRING, colorspace, NULL);
       }
       break;
+    case GST_MPEGTS_STREAM_TYPE_VIDEO_JPEG_XS:
+    {
+      GstMpegtsJpegXsDescriptor jpegxs;
+      desc =
+          mpegts_get_descriptor_from_stream_with_extension (bstream,
+          GST_MTS_DESC_EXTENSION, GST_MTS_DESC_EXT_JXS_VIDEO);
+      if (!desc) {
+        GST_WARNING_OBJECT (demux,
+            "image/x-jxsc stream does not have mandatory descriptor");
+        break;
+      }
+      if (!gst_mpegts_descriptor_parse_jpeg_xs (desc, &jpegxs)) {
+        GST_WARNING_OBJECT (demux, "Invalid JPEG XS descriptor");
+        break;
+      }
+
+      guint8 interlace_mode = (jpegxs.frat >> 30) & 0x3;
+
+      if (interlace_mode == 3) {        // Reserved
+        GST_WARNING_OBJECT (demux, "Unknown JPEG XS interlace mode 3");
+        break;
+      }
+
+      const gchar *field_order_str;
+      guint n_fields;
+
+      switch (interlace_mode) {
+        case 1:
+          field_order_str = "top-field-first";
+          n_fields = 2;
+          break;
+        case 2:
+          field_order_str = "bottom-field-first";
+          n_fields = 2;
+          break;
+        default:
+          g_assert_not_reached ();
+          /* fall through */
+        case 0:
+          field_order_str = NULL;
+          n_fields = 1;
+          break;
+      }
+
+      if ((jpegxs.schar >> 15) == 0) {
+        GST_WARNING_OBJECT (demux, "JPEG-XS sampling properties are required");
+        break;
+      }
+      is_video = TRUE;
+      caps = gst_caps_from_string ("image/x-jxsc, alignment=(string)frame");
+      /* interlace-mode, sampling, depth, framerate */
+      gint depth = ((jpegxs.schar >> 4) & 0xf) + 1;
+      gst_caps_set_simple (caps, "width", G_TYPE_INT, jpegxs.horizontal_size,
+          "height", G_TYPE_INT, jpegxs.vertical_size * n_fields,
+          "depth", G_TYPE_INT, depth, NULL);
+
+      if (field_order_str) {
+        gst_caps_set_simple (caps,
+            "interlace-mode", G_TYPE_STRING, "fields",
+            "field-order", G_TYPE_STRING, field_order_str, NULL);
+      } else {
+        gst_caps_set_simple (caps,
+            "interlace-mode", G_TYPE_STRING, "progressive", NULL);
+      }
+
+      if (jpegxs.frat != 0) {
+        gint framerate_num = (jpegxs.frat & 0x0000FFFFU);
+        gint framerate_den = ((jpegxs.frat >> 24) & 0x0000003FU);
+        if (framerate_den == 1) {
+          // framerate_den = 1;
+        } else if (framerate_den == 2) {
+          framerate_num *= 1000;
+          framerate_den = 1001;
+        } else {                // Reserved value
+          GST_WARNING_OBJECT (demux,
+              "Unknown JPEG XS framerate denominator code %u", framerate_den);
+          break;
+        }
+
+        gst_caps_set_simple (caps,
+            "framerate", GST_TYPE_FRACTION, framerate_num, framerate_den, NULL);
+      }
+
+      switch (jpegxs.schar & 0xf) {
+        case 0:
+          gst_caps_set_simple (caps, "sampling", G_TYPE_STRING, "YCbCr-4:2:2",
+              NULL);
+          break;
+        case 1:
+          gst_caps_set_simple (caps, "sampling", G_TYPE_STRING, "YCbCr-4:4:4",
+              NULL);
+          break;
+        default:
+          GST_WARNING_OBJECT (demux, "Unsupported JPEG-XS sampling format");
+          break;
+      }
+      break;
+    }
     case ST_VIDEO_DIRAC:
       if (bstream->registration_id == 0x64726163) {
         GST_LOG_OBJECT (demux, "dirac");
@@ -2165,7 +2306,7 @@ gst_ts_demux_stream_flush (TSDemuxStream * stream, GstTSDemux * tsdemux,
     for (tmp = stream->pending; tmp; tmp = tmp->next) {
       PendingBuffer *pend = (PendingBuffer *) tmp->data;
       gst_buffer_unref (pend->buffer);
-      g_slice_free (PendingBuffer, pend);
+      g_free (pend);
     }
     g_list_free (stream->pending);
     stream->pending = NULL;
@@ -2384,11 +2525,9 @@ gst_ts_demux_record_pts (GstTSDemux * demux, TSDemuxStream * stream,
 
   if (G_UNLIKELY (demux->emit_statistics)) {
     GstStructure *st;
-    st = gst_structure_new_id_empty (QUARK_TSDEMUX);
-    gst_structure_id_set (st,
-        QUARK_PID, G_TYPE_UINT, bs->pid,
-        QUARK_OFFSET, G_TYPE_UINT64, offset, QUARK_PTS, G_TYPE_UINT64, pts,
-        NULL);
+    st = gst_structure_new_static_str ("tsdemux",
+        "pid", G_TYPE_UINT, bs->pid,
+        "offset", G_TYPE_UINT64, offset, "pts", G_TYPE_UINT64, pts, NULL);
     gst_element_post_message (GST_ELEMENT_CAST (demux),
         gst_message_new_element (GST_OBJECT (demux), st));
   }
@@ -2418,11 +2557,9 @@ gst_ts_demux_record_dts (GstTSDemux * demux, TSDemuxStream * stream,
 
   if (G_UNLIKELY (demux->emit_statistics)) {
     GstStructure *st;
-    st = gst_structure_new_id_empty (QUARK_TSDEMUX);
-    gst_structure_id_set (st,
-        QUARK_PID, G_TYPE_UINT, bs->pid,
-        QUARK_OFFSET, G_TYPE_UINT64, offset, QUARK_DTS, G_TYPE_UINT64, dts,
-        NULL);
+    st = gst_structure_new_static_str ("tsdemux",
+        "pid", G_TYPE_UINT, bs->pid,
+        "offset", G_TYPE_UINT64, offset, "dts", G_TYPE_UINT64, dts, NULL);
     gst_element_post_message (GST_ELEMENT_CAST (demux),
         gst_message_new_element (GST_OBJECT (demux), st));
   }
@@ -2715,6 +2852,13 @@ gst_ts_demux_queue_data (GstTSDemux * demux, TSDemuxStream * stream,
   GST_LOG_OBJECT (demux, "pid: 0x%04x state:%d", stream->stream.pid,
       stream->state);
 
+  /* Handle expected discontinuity */
+  if (G_UNLIKELY (packet->afc_flags & MPEGTS_AFC_DISCONTINUITY_FLAG)) {
+    GST_LOG_OBJECT (demux, "pid: 0x%04x discontinuity flag, resetting counter",
+        stream->stream.pid);
+    stream->continuity_counter = CONTINUITY_UNSET;
+  }
+
   size = packet->data_end - packet->payload;
   data = packet->payload;
 
@@ -2981,6 +3125,13 @@ gst_ts_demux_check_and_sync_streams (GstTSDemux * demux, GstClockTime time)
 
       /* Now send gap event */
       gst_pad_push_event (ps->pad, gst_event_new_gap (time, 0));
+
+      /* And do an EOS check */
+      MpegTSBase *base = GST_MPEGTS_BASE (demux);
+      if (base->out_segment.stop != -1 && time >= base->out_segment.stop) {
+        gst_flow_combiner_update_pad_flow (demux->flowcombiner, ps->pad,
+            GST_FLOW_EOS);
+      }
     }
 
     /* Update GAP tracking vars so we don't re-check this stream for a while */
@@ -3083,6 +3234,50 @@ error:
       gst_buffer_list_unref (buffer_list);
     return NULL;
   }
+}
+
+static GstBuffer *
+parse_jpegxs_access_unit (TSDemuxStream * stream)
+{
+  GstByteReader br;
+  guint32 header_tag;
+  guint32 header_size;
+  GstBuffer *retbuf;
+
+  if (stream->current_size < 30) {
+    GST_ERROR_OBJECT (stream->pad, "Not enough data for header");
+    goto error;
+  }
+
+  gst_byte_reader_init (&br, stream->data, stream->current_size);
+
+  /* Should start with `jxes` box header */
+  header_size = gst_byte_reader_get_uint32_be_unchecked (&br);
+  header_tag = gst_byte_reader_get_uint32_be_unchecked (&br);
+  if (header_size != 30 || header_tag != 0x6a786573) {
+    GST_ERROR_OBJECT (stream->pad,
+        "Invalid 'jxes' header (size:%u, tag:%" GST_FOURCC_FORMAT ")",
+        header_size, GST_FOURCC_ARGS (header_tag));
+    return NULL;
+  }
+
+  /* FIXME : Parse/extract timecode */
+
+  /* Ignore the rest of that box */
+  retbuf =
+      gst_buffer_new_wrapped_full (0, stream->data, stream->current_size,
+      header_size, stream->current_size - header_size, stream->data, g_free);
+  stream->data = NULL;
+  stream->current_size = 0;
+  return retbuf;
+
+error:
+  GST_ERROR ("Failed to parse JPEG-XS access unit");
+  g_free (stream->data);
+  stream->data = NULL;
+  stream->current_size = 0;
+  return NULL;
+
 }
 
 /* interlaced mode is disabled at the moment */
@@ -3316,6 +3511,74 @@ out:
   return gst_buffer_new_wrapped (stream->data, stream->current_size);
 }
 
+static GstBufferList *
+parse_pes_metadata_frame (TSDemuxStream * stream)
+{
+  GstByteReader reader;
+  GstBufferList *buffer_list = NULL;
+
+  buffer_list = gst_buffer_list_new ();
+  gst_byte_reader_init (&reader, stream->data, stream->current_size);
+
+  do {
+    GstBuffer *buffer;
+    GstMpegtsPESMetadataMeta *meta;
+    guint8 *au_data;
+    guint16 au_size;
+    guint8 service_id;
+    guint8 sequence_number;
+    guint8 flags;
+
+    if (gst_byte_reader_get_remaining (&reader) <
+        PES_PACKET_METADATA_AU_HEADER_LEN)
+      goto error;
+
+    if (!gst_byte_reader_get_uint8 (&reader, &service_id))
+      goto error;
+
+    if (!gst_byte_reader_get_uint8 (&reader, &sequence_number))
+      goto error;
+
+    if (!gst_byte_reader_get_uint8 (&reader, &flags))
+      goto error;
+
+    if (!gst_byte_reader_get_uint16_be (&reader, &au_size))
+      goto error;
+
+    if (gst_byte_reader_get_remaining (&reader) < au_size)
+      goto error;
+
+    if (!gst_byte_reader_dup_data (&reader, au_size, &au_data))
+      goto error;
+
+    buffer = gst_buffer_new_wrapped (au_data, au_size);
+    meta = gst_buffer_add_mpegts_pes_metadata_meta (buffer);
+    meta->metadata_service_id = service_id;
+    meta->flags = flags;
+    GST_DEBUG_OBJECT (stream->pad,
+        "metadata_service_id: 0x%02x, flags: 0x%02x, cell_data_length: 0x%04x",
+        meta->metadata_service_id, meta->flags, au_size);
+
+    gst_buffer_list_add (buffer_list, buffer);
+  } while (gst_byte_reader_get_remaining (&reader) > 0);
+
+  g_free (stream->data);
+  stream->data = NULL;
+  stream->current_size = 0;
+
+  return buffer_list;
+
+error:
+  {
+    GST_ERROR ("Failed to parse PES metadata access units");
+    g_free (stream->data);
+    stream->data = NULL;
+    stream->current_size = 0;
+    if (buffer_list)
+      gst_buffer_list_unref (buffer_list);
+    return NULL;
+  }
+}
 
 static GstFlowReturn
 gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
@@ -3365,24 +3628,20 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
       if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_PRIVATE_PES_PACKETS &&
           bs->registration_id == DRF_ID_OPUS) {
         buffer_list = parse_opus_access_unit (stream);
-        if (!buffer_list) {
-          res = GST_FLOW_ERROR;
-          goto beach;
-        }
-
-        if (gst_buffer_list_length (buffer_list) == 1) {
-          buffer = gst_buffer_ref (gst_buffer_list_get (buffer_list, 0));
-          gst_buffer_list_unref (buffer_list);
-          buffer_list = NULL;
-        }
       } else if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_VIDEO_JP2K) {
         buffer = parse_jp2k_access_unit (stream);
-        if (!buffer) {
-          res = GST_FLOW_ERROR;
-          goto beach;
-        }
+      } else if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_METADATA_PES_PACKETS
+          && bs->registration_id == DRF_ID_KLVA) {
+        buffer_list = parse_pes_metadata_frame (stream);
+      } else if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_VIDEO_JPEG_XS) {
+        buffer = parse_jpegxs_access_unit (stream);
       } else {
         buffer = gst_buffer_new_wrapped (stream->data, stream->current_size);
+      }
+
+      if (buffer == NULL && buffer_list == NULL) {
+        res = GST_FLOW_ERROR;
+        goto beach;
       }
 
       stream->seeked_pts = stream->pts;
@@ -3419,36 +3678,27 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
     if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_PRIVATE_PES_PACKETS &&
         bs->registration_id == DRF_ID_OPUS) {
       buffer_list = parse_opus_access_unit (stream);
-      if (!buffer_list) {
-        res = GST_FLOW_ERROR;
-        goto beach;
-      }
-
-      if (gst_buffer_list_length (buffer_list) == 1) {
-        buffer = gst_buffer_ref (gst_buffer_list_get (buffer_list, 0));
-        gst_buffer_list_unref (buffer_list);
-        buffer_list = NULL;
-      }
     } else if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_VIDEO_JP2K) {
       buffer = parse_jp2k_access_unit (stream);
-      if (!buffer) {
-        res = GST_FLOW_ERROR;
-        goto beach;
-      }
     } else if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_AUDIO_AAC_ADTS) {
       buffer = parse_aac_adts_frame (stream);
-      if (!buffer) {
-        res = GST_FLOW_ERROR;
-        goto beach;
-      }
+    } else if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_METADATA_PES_PACKETS
+        && bs->registration_id == DRF_ID_KLVA) {
+      buffer_list = parse_pes_metadata_frame (stream);
+    } else if (bs->stream_type == GST_MPEGTS_STREAM_TYPE_VIDEO_JPEG_XS) {
+      buffer = parse_jpegxs_access_unit (stream);
     } else {
       buffer = gst_buffer_new_wrapped (stream->data, stream->current_size);
+    }
+    if (buffer == NULL && buffer_list == NULL) {
+      res = GST_FLOW_ERROR;
+      goto beach;
     }
 
     if (G_UNLIKELY (stream->pending_ts && !check_pending_buffers (demux))) {
       if (buffer) {
         PendingBuffer *pend;
-        pend = g_slice_new0 (PendingBuffer);
+        pend = g_new0 (PendingBuffer, 1);
         pend->buffer = buffer;
         pend->pts = stream->raw_pts;
         pend->dts = stream->raw_dts;
@@ -3459,7 +3709,7 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
         n = gst_buffer_list_length (buffer_list);
         for (i = 0; i < n; i++) {
           PendingBuffer *pend;
-          pend = g_slice_new0 (PendingBuffer);
+          pend = g_new0 (PendingBuffer, 1);
           pend->buffer = gst_buffer_ref (gst_buffer_list_get (buffer_list, i));
           pend->pts = i == 0 ? stream->raw_pts : -1;
           pend->dts = i == 0 ? stream->raw_dts : -1;
@@ -3471,6 +3721,13 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
           "Not enough information to push buffers yet, storing buffer");
       goto beach;
     }
+  }
+
+
+  if (buffer_list != NULL && gst_buffer_list_length (buffer_list) == 1) {
+    buffer = gst_buffer_ref (gst_buffer_list_get (buffer_list, 0));
+    gst_buffer_list_unref (buffer_list);
+    buffer_list = NULL;
   }
 
   if (G_UNLIKELY (stream->need_newsegment))
@@ -3493,7 +3750,7 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
 
       res = gst_pad_push (stream->pad, pend->buffer);
       stream->nb_out_buffers += 1;
-      g_slice_free (PendingBuffer, pend);
+      g_free (pend);
     }
     g_list_free (stream->pending);
     stream->pending = NULL;
@@ -3559,8 +3816,26 @@ gst_ts_demux_push_pending_data (GstTSDemux * demux, TSDemuxStream * stream,
     /* Record that a buffer was pushed */
     stream->nb_out_buffers += n;
   }
+
+  /* If this proceeded past the end of the configured segment, mark it as EOS */
+  if (res == GST_FLOW_OK) {
+    /* If the pad returned anything other than GST_FLOW_OK, the flow combiner
+     * will already handle that, we only need to check for EOS */
+    GstClockTime ts = stream->dts;
+    if (!GST_CLOCK_TIME_IS_VALID (ts))
+      ts = stream->pts;
+
+    if (base->out_segment.stop != -1 &&
+        GST_CLOCK_TIME_IS_VALID (ts) && ts >= base->out_segment.stop) {
+      GST_DEBUG_OBJECT (stream->pad, "DTS %" GST_TIMEP_FORMAT
+          " is past the segment stop %" GST_TIMEP_FORMAT ". Marking pad as EOS",
+          &ts, &base->out_segment.stop);
+      res = GST_FLOW_EOS;
+    }
+  }
   GST_DEBUG_OBJECT (stream->pad, "Returned %s", gst_flow_get_name (res));
-  res = gst_flow_combiner_update_flow (demux->flowcombiner, res);
+  res =
+      gst_flow_combiner_update_pad_flow (demux->flowcombiner, stream->pad, res);
   GST_DEBUG_OBJECT (stream->pad, "combined %s", gst_flow_get_name (res));
 
   /* GAP / sparse stream tracking */

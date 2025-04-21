@@ -85,6 +85,10 @@ G_BEGIN_DECLS
 /* The live stream has lost synchronization and the demuxer needs to be resetted */
 #define GST_ADAPTIVE_DEMUX_FLOW_LOST_SYNC GST_FLOW_CUSTOM_SUCCESS_2 + 1
 
+/* The stream sub-class is busy and can't supply information for
+ * ::update_fragment_info() right now */
+#define GST_ADAPTIVE_DEMUX_FLOW_BUSY (GST_FLOW_CUSTOM_SUCCESS_2 + 3)
+
 typedef struct _GstAdaptiveDemuxPrivate GstAdaptiveDemuxPrivate;
 
 struct _GstAdaptiveDemuxTrack
@@ -99,6 +103,9 @@ struct _GstAdaptiveDemuxTrack
 
   /* Stream flags */
   GstStreamFlags flags;
+
+  /* Unique identifier (for naming and debugging) */
+  gchar *id;
 
   /* Unique identifier */
   gchar *stream_id;
@@ -143,7 +150,7 @@ struct _GstAdaptiveDemuxTrack
   GstPad *pending_srcpad;
 
   /* Data storage */
-  GstQueueArray *queue;
+  GstVecDeque *queue;
 
   /* Sticky event storage for this track */
   GstEventStore sticky_events;
@@ -202,20 +209,20 @@ struct _GstAdaptiveDemuxPeriod
   gint ref_count;
 
   GstAdaptiveDemux *demux;
-  
+
   /* TRUE if the streams of this period were prepared and can be started */
   gboolean prepared;
 
 
   /* TRUE if there is another period after this one */
   gboolean has_next_period;
-  
+
   /* An increasing unique identifier for the period.
    *
    * Note: unrelated to dash period id (which can be identical across
    * periods) */
   guint period_num;
-  
+
   /* The list of GstAdaptiveDemux2Stream (ref hold) */
   GList *streams;
 
@@ -257,7 +264,7 @@ struct _GstAdaptiveDemux
 
   /* Period used for input */
   GstAdaptiveDemuxPeriod *input_period;
-  
+
   GstSegment segment;
   gdouble instant_rate_multiplier; /* 1.0 by default, or from instant-rate seek */
 
@@ -457,6 +464,7 @@ GstAdaptiveDemuxTrack *gst_adaptive_demux_track_new (GstAdaptiveDemux *demux,
 GstAdaptiveDemuxTrack *gst_adaptive_demux_track_ref (GstAdaptiveDemuxTrack *track);
 void                   gst_adaptive_demux_track_unref (GstAdaptiveDemuxTrack *track);
 
+const gchar *gst_adaptive_demux_get_manifest_ref_uri (GstAdaptiveDemux * demux);
 
 gboolean gst_adaptive_demux_start_new_period (GstAdaptiveDemux * demux);
 
@@ -470,6 +478,11 @@ GstClockTime gst_adaptive_demux2_get_qos_earliest_time (GstAdaptiveDemux *demux)
 GstCaps * gst_codec_utils_caps_from_iso_rfc6831 (gchar * codec);
 
 gdouble gst_adaptive_demux_play_rate (GstAdaptiveDemux *demux);
+
+void gst_adaptive_demux2_manual_manifest_update (GstAdaptiveDemux * demux);
+GstAdaptiveDemuxLoop *gst_adaptive_demux_get_loop (GstAdaptiveDemux *demux);
+gint gst_adaptive_demux_max_retries (GstAdaptiveDemux *self);
+GstClockTime gst_adaptive_demux_retry_delay (GstAdaptiveDemux * self, gint retry, GstClockTime default_delay);
 
 G_END_DECLS
 

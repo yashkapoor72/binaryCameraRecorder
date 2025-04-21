@@ -120,17 +120,17 @@ sync_flags (GstMViewWidget * mv)
 {
   mv->synching = TRUE;
   g_object_set (G_OBJECT (mv->lflip), "active",
-      ! !(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_LEFT_FLIPPED), NULL);
+      !!(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_LEFT_FLIPPED), NULL);
   g_object_set (G_OBJECT (mv->lflop), "active",
-      ! !(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_LEFT_FLOPPED), NULL);
+      !!(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_LEFT_FLOPPED), NULL);
   g_object_set (G_OBJECT (mv->rflip), "active",
-      ! !(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_FLIPPED), NULL);
+      !!(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_FLIPPED), NULL);
   g_object_set (G_OBJECT (mv->rflop), "active",
-      ! !(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_FLOPPED), NULL);
+      !!(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_FLOPPED), NULL);
   g_object_set (G_OBJECT (mv->right_first), "active",
-      ! !(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_VIEW_FIRST), NULL);
+      !!(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_VIEW_FIRST), NULL);
   g_object_set (G_OBJECT (mv->half_aspect), "active",
-      ! !(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_HALF_ASPECT), NULL);
+      !!(mv->flags & GST_VIDEO_MULTIVIEW_FLAGS_HALF_ASPECT), NULL);
   mv->synching = FALSE;
 }
 
@@ -197,6 +197,8 @@ gst_mview_widget_constructed (GObject * o)
   GstMViewWidget *mv = GST_MVIEW_WIDGET (o);
   GtkGrid *g = GTK_GRID (mv);
   GtkWidget *w;
+
+  G_OBJECT_CLASS (gst_mview_widget_parent_class)->constructed (o);
 
   gtk_widget_set_has_window (GTK_WIDGET (mv), FALSE);
 

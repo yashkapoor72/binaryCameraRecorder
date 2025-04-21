@@ -82,7 +82,7 @@ struct _GstVp9DecoderPrivate
   gboolean wait_keyframe;
   /* controls how many frames to delay when calling output_picture() */
   guint preferred_output_delay;
-  GstQueueArray *output_queue;
+  GstVecDeque *output_queue;
   gboolean is_live;
 
   gboolean input_state_changed;
@@ -140,6 +140,7 @@ static void
 gst_vp9_decoder_init (GstVp9Decoder * self)
 {
   gst_video_decoder_set_packetized (GST_VIDEO_DECODER (self), TRUE);
+  gst_video_decoder_set_needs_format (GST_VIDEO_DECODER (self), TRUE);
 
   self->priv = gst_vp9_decoder_get_instance_private (self);
 
@@ -163,8 +164,8 @@ gst_vp9_decoder_start (GstVideoDecoder * decoder)
   priv->render_height = 0;
 
   priv->output_queue =
-      gst_queue_array_new_for_struct (sizeof (GstVp9DecoderOutputFrame), 1);
-  gst_queue_array_set_clear_func (priv->output_queue,
+      gst_vec_deque_new_for_struct (sizeof (GstVp9DecoderOutputFrame), 1);
+  gst_vec_deque_set_clear_func (priv->output_queue,
       (GDestroyNotify) gst_vp9_decoder_clear_output_frame);
 
   return TRUE;
@@ -179,7 +180,7 @@ gst_vp9_decoder_stop (GstVideoDecoder * decoder)
   g_clear_pointer (&self->input_state, gst_video_codec_state_unref);
   g_clear_pointer (&priv->parser, gst_vp9_stateful_parser_free);
   g_clear_pointer (&priv->dpb, gst_vp9_dpb_free);
-  gst_queue_array_free (priv->output_queue);
+  gst_vec_deque_free (priv->output_queue);
 
   return TRUE;
 }
@@ -250,7 +251,8 @@ gst_vp9_decoder_check_codec_change (GstVp9Decoder * self,
   }
 
   ret = klass->new_sequence (self, frame_hdr,
-      GST_VP9_REF_FRAMES + priv->preferred_output_delay);
+      /* +1 for the current frame */
+      GST_VP9_REF_FRAMES + 1 + priv->preferred_output_delay);
 
   if (ret != GST_FLOW_OK)
     priv->had_sequence = FALSE;
@@ -303,7 +305,7 @@ gst_vp9_decoder_reset (GstVp9Decoder * self)
     gst_vp9_dpb_clear (priv->dpb);
 
   priv->wait_keyframe = TRUE;
-  gst_queue_array_clear (priv->output_queue);
+  gst_vec_deque_clear (priv->output_queue);
 }
 
 static GstFlowReturn
@@ -375,6 +377,7 @@ gst_vp9_decoder_handle_frame (GstVideoDecoder * decoder,
   GstVp9ParserResult pres;
   GstMapInfo map;
   GstFlowReturn ret = GST_FLOW_OK;
+  GstFlowReturn output_ret = GST_FLOW_OK;
   gboolean intra_only = FALSE;
   gboolean check_codec_change = FALSE;
   GstVp9DecoderOutputFrame output_frame;
@@ -489,13 +492,31 @@ gst_vp9_decoder_handle_frame (GstVideoDecoder * decoder,
       goto unmap_and_error;
     }
 
-    picture->system_frame_number = pic_to_dup->system_frame_number;
+    GST_CODEC_PICTURE_COPY_FRAME_NUMBER (picture, pic_to_dup);
   } else {
     picture = gst_vp9_picture_new ();
     picture->frame_hdr = frame_hdr;
-    picture->system_frame_number = frame->system_frame_number;
+    GST_CODEC_PICTURE_FRAME_NUMBER (picture) = frame->system_frame_number;
     picture->data = map.data;
     picture->size = map.size;
+
+    /* If changing of resolution drain all output buffers.
+     * This will allow subclass to renegotiate immediatly. */
+    if (priv->support_non_kf_change
+        && gst_vp9_decoder_is_format_change (self, &frame_hdr)) {
+      gst_vp9_decoder_drain_output_queue (self, 0, &ret);
+      if (ret != GST_FLOW_OK) {
+        GST_WARNING_OBJECT (self, "Failed to drain pending frames, returned %s",
+            gst_flow_get_name (ret));
+        goto unmap_and_error;
+      }
+
+      priv->frame_width = frame_hdr.width;
+      priv->frame_height = frame_hdr.height;
+      priv->render_width = frame_hdr.render_width;
+      priv->render_height = frame_hdr.render_height;
+      priv->profile = frame_hdr.profile;
+    }
 
     if (klass->new_picture) {
       ret = klass->new_picture (self, frame, picture);
@@ -549,17 +570,23 @@ gst_vp9_decoder_handle_frame (GstVideoDecoder * decoder,
     /* If subclass didn't update output state at this point,
      * marking this picture as a discont and stores current input state */
     if (priv->input_state_changed) {
-      picture->discont_state = gst_video_codec_state_ref (self->input_state);
+      gst_vp9_picture_set_discont_state (picture, self->input_state);
       priv->input_state_changed = FALSE;
     }
 
     output_frame.frame = frame;
     output_frame.picture = picture;
     output_frame.self = self;
-    gst_queue_array_push_tail_struct (priv->output_queue, &output_frame);
+    gst_vec_deque_push_tail_struct (priv->output_queue, &output_frame);
   }
 
-  gst_vp9_decoder_drain_output_queue (self, priv->preferred_output_delay, &ret);
+  gst_vp9_decoder_drain_output_queue (self,
+      priv->preferred_output_delay, &output_ret);
+  if (output_ret != GST_FLOW_OK) {
+    GST_DEBUG_OBJECT (self,
+        "Output returned %s", gst_flow_get_name (output_ret));
+    return output_ret;
+  }
 
   if (ret == GST_FLOW_ERROR) {
     GST_VIDEO_DECODER_ERROR (self, 1, STREAM, DECODE,
@@ -585,7 +612,7 @@ error:
           ("Failed to decode data"), (NULL), ret);
     }
 
-    gst_video_decoder_drop_frame (decoder, frame);
+    gst_video_decoder_release_frame (decoder, frame);
 
     return ret;
   }
@@ -600,9 +627,9 @@ gst_vp9_decoder_drain_output_queue (GstVp9Decoder * self, guint num,
 
   g_assert (klass->output_picture);
 
-  while (gst_queue_array_get_length (priv->output_queue) > num) {
+  while (gst_vec_deque_get_length (priv->output_queue) > num) {
     GstVp9DecoderOutputFrame *output_frame = (GstVp9DecoderOutputFrame *)
-        gst_queue_array_pop_head_struct (priv->output_queue);
+        gst_vec_deque_pop_head_struct (priv->output_queue);
     /* Output queued frames whatever the return value is, in order to empty
      * the queue */
     GstFlowReturn flow_ret = klass->output_picture (self,

@@ -80,9 +80,6 @@ GST_PLUGIN_STATIC_DECLARE(vorbis);
 #if defined(GST_IOS_PLUGIN_OPUS) || defined(GST_IOS_PLUGINS_CODECS)
 GST_PLUGIN_STATIC_DECLARE(opus);
 #endif
-#if defined(GST_IOS_PLUGIN_IVORBISDEC) || defined(GST_IOS_PLUGINS_CODECS)
-GST_PLUGIN_STATIC_DECLARE(ivorbisdec);
-#endif
 #if defined(GST_IOS_PLUGIN_ALAW) || defined(GST_IOS_PLUGINS_CODECS)
 GST_PLUGIN_STATIC_DECLARE(alaw);
 #endif
@@ -181,9 +178,6 @@ GST_PLUGIN_STATIC_DECLARE(hls);
 #endif
 #if defined(GST_IOS_PLUGIN_ID3TAG) || defined(GST_IOS_PLUGINS_CODECS)
 GST_PLUGIN_STATIC_DECLARE(id3tag);
-#endif
-#if defined(GST_IOS_PLUGIN_KATE) || defined(GST_IOS_PLUGINS_CODECS)
-GST_PLUGIN_STATIC_DECLARE(kate);
 #endif
 #if defined(GST_IOS_PLUGIN_MIDI) || defined(GST_IOS_PLUGINS_CODECS)
 GST_PLUGIN_STATIC_DECLARE(midi);
@@ -403,9 +397,6 @@ GST_PLUGIN_STATIC_DECLARE(fieldanalysis);
 #endif
 #if defined(GST_IOS_PLUGIN_FREEVERB) || defined(GST_IOS_PLUGINS_EFFECTS)
 GST_PLUGIN_STATIC_DECLARE(freeverb);
-#endif
-#if defined(GST_IOS_PLUGIN_FREI0R) || defined(GST_IOS_PLUGINS_EFFECTS)
-GST_PLUGIN_STATIC_DECLARE(frei0r);
 #endif
 #if defined(GST_IOS_PLUGIN_GAUDIEFFECTS) || defined(GST_IOS_PLUGINS_EFFECTS)
 GST_PLUGIN_STATIC_DECLARE(gaudieffects);
@@ -649,9 +640,6 @@ gst_ios_init (void)
 #if defined(GST_IOS_PLUGIN_OPUS) || defined(GST_IOS_PLUGINS_CODECS)
     GST_PLUGIN_STATIC_REGISTER(opus);
 #endif
-#if defined(GST_IOS_PLUGIN_IVORBISDEC) || defined(GST_IOS_PLUGINS_CODECS)
-    GST_PLUGIN_STATIC_REGISTER(ivorbisdec);
-#endif
 #if defined(GST_IOS_PLUGIN_ALAW) || defined(GST_IOS_PLUGINS_CODECS)
     GST_PLUGIN_STATIC_REGISTER(alaw);
 #endif
@@ -750,9 +738,6 @@ gst_ios_init (void)
 #endif
 #if defined(GST_IOS_PLUGIN_ID3TAG) || defined(GST_IOS_PLUGINS_CODECS)
     GST_PLUGIN_STATIC_REGISTER(id3tag);
-#endif
-#if defined(GST_IOS_PLUGIN_KATE) || defined(GST_IOS_PLUGINS_CODECS)
-    GST_PLUGIN_STATIC_REGISTER(kate);
 #endif
 #if defined(GST_IOS_PLUGIN_MIDI) || defined(GST_IOS_PLUGINS_CODECS)
     GST_PLUGIN_STATIC_REGISTER(midi);
@@ -972,9 +957,6 @@ gst_ios_init (void)
 #endif
 #if defined(GST_IOS_PLUGIN_FREEVERB) || defined(GST_IOS_PLUGINS_EFFECTS)
     GST_PLUGIN_STATIC_REGISTER(freeverb);
-#endif
-#if defined(GST_IOS_PLUGIN_FREI0R) || defined(GST_IOS_PLUGINS_EFFECTS)
-    GST_PLUGIN_STATIC_REGISTER(frei0r);
 #endif
 #if defined(GST_IOS_PLUGIN_GAUDIEFFECTS) || defined(GST_IOS_PLUGINS_EFFECTS)
     GST_PLUGIN_STATIC_REGISTER(gaudieffects);

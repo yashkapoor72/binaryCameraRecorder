@@ -2304,15 +2304,15 @@ gst_asf_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         GST_INFO_OBJECT (demux, "Chained asf starting");
         /* cleanup and get ready for a chained asf */
         gst_asf_demux_reset (demux, TRUE);
-        /* fall through */
       }
     }
+      /* FALLTHROUGH */
     case GST_ASF_DEMUX_STATE_HEADER:{
       ret = gst_asf_demux_chain_headers (demux);
       if (demux->state != GST_ASF_DEMUX_STATE_DATA)
         break;
-      /* otherwise fall through */
     }
+      /* FALLTHROUGH */
     case GST_ASF_DEMUX_STATE_DATA:
     {
       guint64 data_size;
@@ -3042,7 +3042,7 @@ gst_asf_demux_parse_stream_object (GstASFDemux * demux, guint8 * data,
 
   flags = gst_asf_demux_get_uint16 (&data, &size);
   stream_id = flags & 0x7f;
-  is_encrypted = ! !(flags & 0x8000);
+  is_encrypted = !!(flags & 0x8000);
   unknown = gst_asf_demux_get_uint32 (&data, &size);
 
   GST_DEBUG_OBJECT (demux, "Found stream %u, time_offset=%" GST_TIME_FORMAT,
@@ -3712,6 +3712,16 @@ gst_asf_demux_process_header (GstASFDemux * demux, guint8 * data, guint64 size)
   demux->saw_file_header = FALSE;
   /* Loop through the header's objects, processing those */
   for (i = 0; i < num_objects; ++i) {
+
+    /* Do not try to process non existent header and accept the num_objects was
+     * too high (as VLC counts METADATA object even if it shouldn't) and proceed
+     * normally */
+    if (size == 0) {
+      GST_WARNING_OBJECT (demux, "No bytes left for header part %u: Skipping",
+          i);
+      break;
+    }
+
     GST_INFO_OBJECT (demux, "reading header part %u", i);
     ret = gst_asf_demux_process_object (demux, &data, &size);
     if (ret != GST_FLOW_OK) {
@@ -3759,8 +3769,8 @@ gst_asf_demux_process_file (GstASFDemux * demux, guint8 * data, guint64 size)
   max_pktsize = gst_asf_demux_get_uint32 (&data, &size);
   min_bitrate = gst_asf_demux_get_uint32 (&data, &size);
 
-  demux->broadcast = ! !(flags & 0x01);
-  demux->seekable = ! !(flags & 0x02);
+  demux->broadcast = !!(flags & 0x01);
+  demux->seekable = !!(flags & 0x02);
 
   GST_DEBUG_OBJECT (demux, "min_pktsize = %u", min_pktsize);
   GST_DEBUG_OBJECT (demux, "flags::broadcast = %d", demux->broadcast);

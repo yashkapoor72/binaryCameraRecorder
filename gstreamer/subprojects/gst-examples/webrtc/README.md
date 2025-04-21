@@ -35,9 +35,9 @@ sudo apt-get install -y gstreamer1.0-tools gstreamer1.0-nice gstreamer1.0-plugin
 
 ## Filing bugs
 
-Please only file bugs about the demos here. Bugs about GStreamer's WebRTC implementation should be filed on the [GStreamer gitlab](https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/new).
+Please only file bugs about the demos here. Bugs about GStreamer's WebRTC implementation should be filed on the [GStreamer gitlab](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/new).
 
-You can also find us on IRC by joining #gstreamer @ FreeNode.
+You can also find us on [Matrix](https://matrix.to/#/#gstreamer:gstreamer.org).
 
 ## Documentation
 
@@ -61,7 +61,7 @@ Build outputs will be placed in the directory `_builddir`.
 
 ### sendrecv: Send and receive audio and video
 
-* Serve the `js/` directory on the root of your website, or open https://webrtc.nirbheek.in
+* Serve the `js/` directory on the root of your website, or open https://webrtc.gstreamer.net
   - The JS code assumes the signalling server is on port 8443 of the same server serving the HTML
 
 * Open the website in a browser and ensure that the status is "Registered with server, waiting for call", and note the `id` too.
@@ -93,7 +93,7 @@ You can pass a --server argument to all versions, for example `--server=wss://12
 `./gradlew build`\
 `java -jar build/libs/gst-java.jar --peer-id=ID` with the `id` from the browser.
 
-You can optionally specify the server URL too (it defaults to wss://webrtc.nirbheek.in:8443):
+You can optionally specify the server URL too (it defaults to wss://webrtc.gstreamer.net:8443):
 
 `java -jar build/libs/gst-java.jar --peer-id=1 --server=ws://localhost:8443`
 

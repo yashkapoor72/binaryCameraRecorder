@@ -1,4 +1,4 @@
-app_sources = files(['gstappsrc.c', 'gstappsink.c'])
+app_sources = files(['gstappsrc.c', 'gstappsink.c', 'gstapputils.c'])
 
 app_mkenum_headers = files([
   'gstappsrc.h',
@@ -6,6 +6,15 @@ app_mkenum_headers = files([
 
 app_headers = app_mkenum_headers + files([ 'app.h', 'app-prelude.h', 'gstappsrc.h', 'gstappsink.h' ])
 install_headers(app_headers, subdir : 'gstreamer-1.0/gst/app/')
+
+doc_sources = []
+foreach s: app_sources + app_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'app': pathsep.join(doc_sources)
+}
 
 app_enums = gnome.mkenums_simple('app-enumtypes',
   sources : app_mkenum_headers,
@@ -57,6 +66,7 @@ if build_gir
   library_def += {'gir': [gir]}
   if not static_build
     app_gir = gnome.generate_gir(gstapp, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [app_gir]}
     app_gen_sources += app_gir
   endif
 endif

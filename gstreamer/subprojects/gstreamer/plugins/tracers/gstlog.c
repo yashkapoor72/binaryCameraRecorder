@@ -22,7 +22,91 @@
  * SECTION:tracer-log
  * @short_description: log hook event
  *
- * A tracing module that logs all data from all hooks.
+ * A tracing module that logs all data from all GstTracer hooks. Takes no
+ * arguments other than an optional name.
+ *
+ * ### Enabling the log tracer
+ *
+ * Enable through an environment variable: `GST_TRACERS=log` (notice
+ * the plural).
+ *
+ * You can double check the plugin has been enabled using
+ * `GST_DEBUG='*:INFO'`. You should see:
+ *
+ * ```
+ * $ GST_TRACERS="log" GST_DEBUG='*:INFO' \
+ *      gst-launch-1.0 fakesrc num-buffers=1 ! fakesink \
+ *      2>&1 | grep "enabling tracers"
+[...] _priv_gst_tracing_init: enabling tracers: 'log'
+ * ```
+ *
+ * ### Using the log tracer
+ *
+ * This tracer logs accross a number of categories at the `TRACE` level.
+ *
+ * **For this reason, you need to set `GST_DEBUG` to capture the output from
+ * this plugin.**
+ *
+ * These are the logging categories under which the different hooks operate:
+ *
+ *  * `GST_DEBUG=GST_BUFFER:TRACE`
+ *    * `pad-push-pre`, `pad-push-post`
+ *    * `pad-chain-pre`, `pad-chain-post`
+ *    * `pad-pull-range-pre`, `pad-pull-range-post`
+ *  * `GST_DEBUG=GST_BUFFER_LIST:TRACE`
+ *    * `pad-push-list-pre`, `pad-push-list-post`
+ *    * `pad-chain-list-pre`, `pad-chain-list-post`
+ *  * `GST_DEBUG=GST_EVENT:TRACE`
+ *    * `pad-push-event-pre`, `pad-push-event-post`
+ *    * `pad-send-event-pre`, `pad-send-event-post`
+ *  * `GST_DEBUG=query:TRACE`
+ *    * `pad-query-pre`, `pad-query-post`
+ *    * `element-query-pre`, `element-query-post`
+ *  * `GST_DEBUG=GST_MESSAGE:TRACE`
+ *    * `element-post-message-pre`, `element-post-message-post`
+ *  * `GST_DEBUG=GST_ELEMENT_FACTORY:TRACE`
+ *    * `element-new`
+ *  * `GST_DEBUG=GST_ELEMENT_PADS:TRACE`
+ *    * `element-add-pad`
+ *    * `element-remove-pad`
+ *  * `GST_DEBUG=GST_STATES:TRACE`
+ *    * `element-change-state-pre`, `element-change-state-post`
+ *  * `GST_DEBUG=bin:TRACE`
+ *    * `bin-add-pre`, `bin-add-post`
+ *    * `bin-remove-pre`, `bin-remove-post`
+ *  * `GST_DEBUG=GST_PADS:TRACE`
+ *    * `pad-link-pre`, `pad-link-post`
+ *    * `pad-unlink-pre`, `pad-unlink-post`
+ *
+ * Since the categories mentioned above are not exclusive to this tracer
+ * plugin, but are also used by core GStreamer code, you should expect a lot of
+ * unrelated logging to appear.
+ *
+ * On the other hand, the functions in this plugin have a consistent naming
+ * scheme, which should make it easy to filter the logs: `do_{hook_name}`
+ *
+ * ### Example
+ *
+ * As an example, if we wanted to log the flow of events and pads being linked
+ * we could run the following command:
+ *
+ * ```
+ * $ GST_TRACERS="log" \
+ *       GST_DEBUG=GST_EVENT:TRACE,GST_PADS:TRACE \
+ *       gst-play-1.0 file.webm \
+ *       2>&1 | egrep -w 'do_(pad_link)_(pre|post):'
+ * [...]
+ * [...] GST_PADS :0:do_pad_link_pre:<typefind:src> 0:00:00.096516923, src=<typefind:src>, sink=<matroskademux0:sink>
+ * [...] GST_PADS :0:do_pad_link_post:<typefind:src> 0:00:00.096678191, src=<typefind:src>, sink=<matroskademux0:sink>, res=0
+ * [...] GST_PADS :0:do_pad_link_pre:<matroskademux0:audio_0> 0:00:00.103133773, src=<matroskademux0:audio_0>, sink=<decodepad1:proxypad2>
+ * [...] GST_PADS :0:do_pad_link_post:<matroskademux0:audio_0> 0:00:00.103567148, src=<matroskademux0:audio_0>, sink=<decodepad1:proxypad2>, res=0
+ * [...]
+ * [...] GST_EVENT :0:do_push_event_pre:<vp8dec0:sink> 0:00:00.930848627, pad=<vp8dec0:sink>, event=qos event: 0x7fec9c00c0a0, time 99:99:99.999999999, seq-num 393, GstEventQOS, type=(GstQOSType)overflow, proportion=(double)0.036137789409526271, diff=(gint64)-29350000, timestamp=(guint64)533000000;
+ * [...] GST_EVENT :0:do_push_event_pre:<multiqueue0:sink_1> 0:00:00.930901498, pad=<multiqueue0:sink_1>, event=qos event: 0x7fec9c00c0a0, time 99:99:99.999999999, seq-num 393, GstEventQOS, type=(GstQOSType)overflow, proportion=(double)0.036137789409526271, diff=(gint64)-29350000, timestamp=(guint64)533000000;
+ * [...] GST_EVENT :0:do_push_event_post:<multiqueue0:sink_1> 0:00:00.931041882, pad=<multiqueue0:sink_1>, res=1
+ * [...] GST_EVENT :0:do_push_event_post:<vp8dec0:sink> 0:00:00.931082112, pad=<vp8dec0:sink>, res=1
+ * [...]
+ * ```
  */
 
 #ifdef HAVE_CONFIG_H
@@ -60,6 +144,8 @@ GST_DEBUG_CATEGORY_STATIC (GST_CAT_ELEMENT_FACTORY);
 G_DEFINE_TYPE_WITH_CODE (GstLogTracer, gst_log_tracer, GST_TYPE_TRACER,
     _do_init);
 
+#define bool_to_str(val) (val ? "true" : "false")
+
 static void
 do_log (GstDebugCategory * cat, const char *func, GObject * obj,
     const char *fmt, ...)
@@ -85,8 +171,8 @@ do_push_buffer_post (GstTracer * self, guint64 ts, GstPad * pad,
     GstFlowReturn res)
 {
   do_log (GST_CAT_BUFFER, GST_FUNCTION, (GObject *) pad,
-      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%d",
-      GST_TIME_ARGS (ts), pad, res);
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), pad, gst_flow_get_name (res));
 }
 
 static void
@@ -94,7 +180,7 @@ do_push_buffer_list_pre (GstTracer * self, guint64 ts, GstPad * pad,
     GstBufferList * list)
 {
   do_log (GST_CAT_BUFFER_LIST, GST_FUNCTION, (GObject *) pad,
-      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", list=%p",
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", list=%" GST_PTR_FORMAT,
       GST_TIME_ARGS (ts), pad, list);
 }
 
@@ -103,8 +189,44 @@ do_push_buffer_list_post (GstTracer * self, guint64 ts, GstPad * pad,
     GstFlowReturn res)
 {
   do_log (GST_CAT_BUFFER_LIST, GST_FUNCTION, (GObject *) pad,
-      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%d",
-      GST_TIME_ARGS (ts), pad, res);
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), pad, gst_flow_get_name (res));
+}
+
+static void
+do_chain_buffer_pre (GstTracer * self, guint64 ts, GstPad * pad,
+    GstBuffer * buffer)
+{
+  do_log (GST_CAT_BUFFER, GST_FUNCTION, (GObject *) pad,
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", buffer=%" GST_PTR_FORMAT,
+      GST_TIME_ARGS (ts), pad, buffer);
+}
+
+static void
+do_chain_buffer_post (GstTracer * self, guint64 ts, GstPad * pad,
+    GstFlowReturn res)
+{
+  do_log (GST_CAT_BUFFER, GST_FUNCTION, (GObject *) pad,
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), pad, gst_flow_get_name (res));
+}
+
+static void
+do_chain_buffer_list_pre (GstTracer * self, guint64 ts, GstPad * pad,
+    GstBufferList * list)
+{
+  do_log (GST_CAT_BUFFER_LIST, GST_FUNCTION, (GObject *) pad,
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", list=%" GST_PTR_FORMAT,
+      GST_TIME_ARGS (ts), pad, list);
+}
+
+static void
+do_chain_buffer_list_post (GstTracer * self, guint64 ts, GstPad * pad,
+    GstFlowReturn res)
+{
+  do_log (GST_CAT_BUFFER_LIST, GST_FUNCTION, (GObject *) pad,
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), pad, gst_flow_get_name (res));
 }
 
 static void
@@ -122,7 +244,7 @@ do_pull_range_post (GstTracer * self, guint64 ts, GstPad * pad,
 {
   do_log (GST_CAT_BUFFER, GST_FUNCTION, (GObject *) pad,
       "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", buffer=%" GST_PTR_FORMAT
-      ", res=%d", GST_TIME_ARGS (ts), pad, buffer, res);
+      ", res=%s", GST_TIME_ARGS (ts), pad, buffer, gst_flow_get_name (res));
 }
 
 static void
@@ -137,8 +259,25 @@ static void
 do_push_event_post (GstTracer * self, guint64 ts, GstPad * pad, gboolean res)
 {
   do_log (GST_CAT_EVENT, GST_FUNCTION, (GObject *) pad,
-      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%d",
-      GST_TIME_ARGS (ts), pad, res);
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), pad, bool_to_str (res));
+}
+
+static void
+do_send_event_pre (GstTracer * self, guint64 ts, GstPad * pad, GstEvent * event)
+{
+  do_log (GST_CAT_EVENT, GST_FUNCTION, (GObject *) pad,
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", event=%" GST_PTR_FORMAT,
+      GST_TIME_ARGS (ts), pad, event);
+}
+
+static void
+do_send_event_post (GstTracer * self, guint64 ts, GstPad * pad,
+    GstFlowReturn res)
+{
+  do_log (GST_CAT_EVENT, GST_FUNCTION, (GObject *) pad,
+      "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), pad, gst_flow_get_name (res));
 }
 
 static void
@@ -155,7 +294,7 @@ do_pad_query_post (GstTracer * self, guint64 ts, GstPad * pad, GstQuery * query,
 {
   do_log (GST_CAT_QUERY, GST_FUNCTION, (GObject *) pad,
       "%" GST_TIME_FORMAT ", pad=%" GST_PTR_FORMAT ", query=%" GST_PTR_FORMAT
-      ", res=%d", GST_TIME_ARGS (ts), pad, query, res);
+      ", res=%s", GST_TIME_ARGS (ts), pad, query, bool_to_str (res));
 }
 
 static void
@@ -172,8 +311,8 @@ do_post_message_post (GstTracer * self, guint64 ts, GstElement * elem,
     gboolean res)
 {
   do_log (GST_CAT_MESSAGE, GST_FUNCTION, (GObject *) elem,
-      "%" GST_TIME_FORMAT ", element=%" GST_PTR_FORMAT ", res=%d",
-      GST_TIME_ARGS (ts), elem, res);
+      "%" GST_TIME_FORMAT ", element=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), elem, bool_to_str (res));
 }
 
 static void
@@ -191,7 +330,8 @@ do_element_query_post (GstTracer * self, guint64 ts, GstElement * elem,
 {
   do_log (GST_CAT_QUERY, GST_FUNCTION, (GObject *) elem,
       "%" GST_TIME_FORMAT ", element=%" GST_PTR_FORMAT ", query=%"
-      GST_PTR_FORMAT ", res=%d", GST_TIME_ARGS (ts), elem, query, res);
+      GST_PTR_FORMAT ", res=%s", GST_TIME_ARGS (ts), elem, query,
+      bool_to_str (res));
 }
 
 static void
@@ -225,8 +365,8 @@ do_element_change_state_pre (GstTracer * self, guint64 ts, GstElement * elem,
     GstStateChange change)
 {
   do_log (GST_CAT_STATES, GST_FUNCTION, (GObject *) elem,
-      "%" GST_TIME_FORMAT ", element=%" GST_PTR_FORMAT ", change=%d",
-      GST_TIME_ARGS (ts), elem, (gint) change);
+      "%" GST_TIME_FORMAT ", element=%" GST_PTR_FORMAT ", change=%s",
+      GST_TIME_ARGS (ts), elem, gst_state_change_get_name (change));
 }
 
 static void
@@ -234,8 +374,9 @@ do_element_change_state_post (GstTracer * self, guint64 ts, GstElement * elem,
     GstStateChange change, GstStateChangeReturn res)
 {
   do_log (GST_CAT_STATES, GST_FUNCTION, (GObject *) elem,
-      "%" GST_TIME_FORMAT ", element=%" GST_PTR_FORMAT ", change=%d, res=%d",
-      GST_TIME_ARGS (ts), elem, (gint) change, (gint) res);
+      "%" GST_TIME_FORMAT ", element=%" GST_PTR_FORMAT ", change=%s, res=%s",
+      GST_TIME_ARGS (ts), elem, gst_state_change_get_name (change),
+      gst_element_state_change_return_get_name (res));
 }
 
 static void
@@ -252,7 +393,7 @@ do_bin_add_post (GstTracer * self, guint64 ts, GstBin * bin, GstElement * elem,
 {
   do_log (GST_CAT_BIN, GST_FUNCTION, (GObject *) bin,
       "%" GST_TIME_FORMAT ", bin=%" GST_PTR_FORMAT ", element=%" GST_PTR_FORMAT
-      ", res=%d", GST_TIME_ARGS (ts), bin, elem, res);
+      ", res=%s", GST_TIME_ARGS (ts), bin, elem, bool_to_str (res));
 }
 
 static void
@@ -268,8 +409,8 @@ static void
 do_bin_remove_post (GstTracer * self, guint64 ts, GstBin * bin, gboolean res)
 {
   do_log (GST_CAT_BIN, GST_FUNCTION, (GObject *) bin,
-      "%" GST_TIME_FORMAT ", bin=%" GST_PTR_FORMAT ", res=%d",
-      GST_TIME_ARGS (ts), bin, res);
+      "%" GST_TIME_FORMAT ", bin=%" GST_PTR_FORMAT ", res=%s",
+      GST_TIME_ARGS (ts), bin, bool_to_str (res));
 }
 
 static void
@@ -286,7 +427,7 @@ do_pad_link_post (GstTracer * self, guint64 ts, GstPad * src, GstPad * sink,
 {
   do_log (GST_CAT_PADS, GST_FUNCTION, (GObject *) src,
       "%" GST_TIME_FORMAT ", src=%" GST_PTR_FORMAT ", sink=%" GST_PTR_FORMAT
-      ", res=%d", GST_TIME_ARGS (ts), src, sink, (gint) res);
+      ", res=%s", GST_TIME_ARGS (ts), src, sink, gst_pad_link_get_name (res));
 }
 
 static void
@@ -304,7 +445,7 @@ do_pad_unlink_post (GstTracer * self, guint64 ts, GstPad * src,
 {
   do_log (GST_CAT_PADS, GST_FUNCTION, (GObject *) src,
       "%" GST_TIME_FORMAT ", src=%" GST_PTR_FORMAT ", sink=%" GST_PTR_FORMAT
-      ", res=%d", GST_TIME_ARGS (ts), src, sink, (gint) res);
+      ", res=%s", GST_TIME_ARGS (ts), src, sink, bool_to_str (res));
 }
 
 /* tracer class */
@@ -316,6 +457,8 @@ gst_log_tracer_constructed (GObject * object)
   gchar *params, *tmp;
   const gchar *name;
   GstStructure *params_struct = NULL;
+
+  G_OBJECT_CLASS (parent_class)->constructed (object);
 
   g_object_get (self, "params", &params, NULL);
 
@@ -356,6 +499,14 @@ gst_log_tracer_init (GstLogTracer * self)
       G_CALLBACK (do_push_buffer_list_pre));
   gst_tracing_register_hook (tracer, "pad-push-list-post",
       G_CALLBACK (do_push_buffer_list_post));
+  gst_tracing_register_hook (tracer, "pad-chain-pre",
+      G_CALLBACK (do_chain_buffer_pre));
+  gst_tracing_register_hook (tracer, "pad-chain-post",
+      G_CALLBACK (do_chain_buffer_post));
+  gst_tracing_register_hook (tracer, "pad-chain-list-pre",
+      G_CALLBACK (do_chain_buffer_list_pre));
+  gst_tracing_register_hook (tracer, "pad-chain-list-post",
+      G_CALLBACK (do_chain_buffer_list_post));
   gst_tracing_register_hook (tracer, "pad-pull-range-pre",
       G_CALLBACK (do_pull_range_pre));
   gst_tracing_register_hook (tracer, "pad-pull-range-post",
@@ -364,6 +515,10 @@ gst_log_tracer_init (GstLogTracer * self)
       G_CALLBACK (do_push_event_pre));
   gst_tracing_register_hook (tracer, "pad-push-event-post",
       G_CALLBACK (do_push_event_post));
+  gst_tracing_register_hook (tracer, "pad-send-event-pre",
+      G_CALLBACK (do_send_event_pre));
+  gst_tracing_register_hook (tracer, "pad-send-event-post",
+      G_CALLBACK (do_send_event_post));
   gst_tracing_register_hook (tracer, "pad-query-pre",
       G_CALLBACK (do_pad_query_pre));
   gst_tracing_register_hook (tracer, "pad-query-post",

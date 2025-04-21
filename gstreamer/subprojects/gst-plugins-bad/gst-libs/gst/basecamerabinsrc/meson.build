@@ -11,6 +11,15 @@ camerabin_headers = files(
 )
 install_headers(camerabin_headers, subdir : 'gstreamer-1.0/gst/basecamerabinsrc')
 
+doc_sources = []
+foreach s: camerabin_sources + camerabin_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'basecamerabinsrc': pathsep.join(doc_sources)
+}
+
 gstbasecamerabin = library('gstbasecamerabinsrc-' + api_version,
   camerabin_sources,
   c_args : gst_plugins_bad_args + ['-DGST_USE_UNSTABLE_API', '-DBUILDING_GST_BASE_CAMERA_BIN_SRC', '-DG_LOG_DOMAIN="GStreamer-BaseCameraBinSrc"'],
@@ -42,9 +51,11 @@ if build_gir and not static_build
   library_def += {'gir': [gir]}
   if not static_build
     basecamerabin_gir = gnome.generate_gir(gstbasecamerabin, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [basecamerabin_gir]}
     gen_sources += basecamerabin_gir
   endif
 endif
+gst_libraries += [[pkg_name, library_def]]
 
 gstbasecamerabin_dep = declare_dependency(link_with : gstbasecamerabin,
   include_directories : [libsinc],

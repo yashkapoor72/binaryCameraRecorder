@@ -7,16 +7,16 @@ ugly_tests = [
 # FIXME: unistd dependency or not tested yet on windows
 if host_machine.system() != 'windows'
   ugly_tests += [
-    [ 'elements/amrnbenc', not amrnb_dep.found() ],
     [ 'elements/mpeg2dec', not mpeg2_dep.found() or not cdata.has('HAVE_UNISTD_H'), [ gstvideo_dep ] ],
   ]
 endif
 
+fsmod = import('fs')
 test_defines = [
   '-UG_DISABLE_ASSERT',
   '-UG_DISABLE_CAST_CHECKS',
   '-DGST_CHECK_TEST_ENVIRONMENT_BEACON="GST_PLUGIN_LOADING_WHITELIST"',
-  '-DGST_TEST_FILES_PATH="' + meson.current_source_dir() + '/../files"',
+  '-DGST_TEST_FILES_PATH="' + fsmod.as_posix(meson.current_source_dir()) + '/../files"',
   '-DGST_USE_UNSTABLE_API',
 ]
 

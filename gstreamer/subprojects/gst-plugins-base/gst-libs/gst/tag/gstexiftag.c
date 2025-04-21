@@ -65,6 +65,25 @@ typedef struct _GstExifWriter GstExifWriter;
 typedef struct _GstExifReader GstExifReader;
 typedef struct _GstExifTagData GstExifTagData;
 
+#define GST_CAT_DEFAULT gst_exif_tag_ensure_debug_category()
+
+static GstDebugCategory *
+gst_exif_tag_ensure_debug_category (void)
+{
+  static gsize cat_gonce = 0;
+
+  if (g_once_init_enter (&cat_gonce)) {
+    GstDebugCategory *cat = NULL;
+
+    GST_DEBUG_CATEGORY_INIT (cat, "exif-tags", 0, "EXIF tag parsing");
+
+    g_once_init_leave (&cat_gonce, (gsize) cat);
+  }
+
+  return (GstDebugCategory *) cat_gonce;
+}
+
+
 typedef void (*GstExifSerializationFunc) (GstExifWriter * writer,
     const GstTagList * taglist, const GstExifTagMatch * exiftag);
 
@@ -260,6 +279,7 @@ EXIF_SERIALIZATION_DESERIALIZATION_FUNC (shutter_speed);
 EXIF_SERIALIZATION_DESERIALIZATION_FUNC (source);
 EXIF_SERIALIZATION_DESERIALIZATION_FUNC (speed);
 EXIF_SERIALIZATION_DESERIALIZATION_FUNC (white_balance);
+EXIF_SERIALIZATION_DESERIALIZATION_FUNC (light_source);
 
 EXIF_DESERIALIZATION_FUNC (resolution);
 EXIF_DESERIALIZATION_FUNC (add_to_pending_tags);
@@ -311,6 +331,7 @@ EXIF_DESERIALIZATION_FUNC (add_to_pending_tags);
 #define EXIF_TAG_SCENE_TYPE 0xA301
 #define EXIF_TAG_EXPOSURE_MODE 0xA402
 #define EXIF_TAG_WHITE_BALANCE 0xA403
+#define EXIF_TAG_LIGHT_SOURCE 0x9208
 #define EXIF_TAG_DIGITAL_ZOOM_RATIO 0xA404
 #define EXIF_TAG_FOCAL_LENGTH_IN_35_MM_FILM 0xa405
 #define EXIF_TAG_SCENE_CAPTURE_TYPE 0xA406
@@ -410,6 +431,8 @@ static const GstExifTagMatch tag_map_exif[] = {
       0, serialize_exposure_mode, deserialize_exposure_mode},
   {GST_TAG_CAPTURING_WHITE_BALANCE, EXIF_TAG_WHITE_BALANCE, EXIF_TYPE_SHORT,
       0, serialize_white_balance, deserialize_white_balance},
+  {GST_TAG_CAPTURING_LIGHT_SOURCE, EXIF_TAG_LIGHT_SOURCE, EXIF_TYPE_SHORT,
+      0, serialize_light_source, deserialize_light_source},
   {GST_TAG_CAPTURING_DIGITAL_ZOOM_RATIO, EXIF_TAG_DIGITAL_ZOOM_RATIO,
         EXIF_TYPE_RATIONAL, 0, NULL,
       NULL},
@@ -480,7 +503,7 @@ gst_exif_reader_add_pending_tag (GstExifReader * reader, GstExifTagData * data)
 {
   GstExifTagData *copy;
 
-  copy = g_slice_new (GstExifTagData);
+  copy = g_new (GstExifTagData, 1);
   memcpy (copy, data, sizeof (GstExifTagData));
 
   reader->pending_tags = g_slist_prepend (reader->pending_tags, copy);
@@ -509,7 +532,7 @@ gst_exif_reader_reset (GstExifReader * reader, gboolean return_taglist)
   for (walker = reader->pending_tags; walker; walker = g_slist_next (walker)) {
     GstExifTagData *data = (GstExifTagData *) walker->data;
 
-    g_slice_free (GstExifTagData, data);
+    g_free (data);
   }
   g_slist_free (reader->pending_tags);
 
@@ -1303,9 +1326,13 @@ parse_exif_ascii_tag (GstExifReader * reader, const GstExifTagMatch * tag,
       GstDateTime *d;
 
       d = gst_date_time_new_local_time (year, month, day, hour, minute, second);
-      gst_tag_list_add (reader->taglist, GST_TAG_MERGE_REPLACE,
-          tag->gst_tag, d, NULL);
-      gst_date_time_unref (d);
+      if (d) {
+        gst_tag_list_add (reader->taglist, GST_TAG_MERGE_REPLACE,
+            tag->gst_tag, d, NULL);
+        gst_date_time_unref (d);
+      } else {
+        GST_WARNING ("Failed to parse %s into a datetime tag", utfstr);
+      }
     } else {
       GST_WARNING ("Failed to parse %s into a datetime tag", utfstr);
     }
@@ -1383,6 +1410,7 @@ parse_exif_undefined_tag (GstExifReader * reader, const GstExifTagMatch * tag,
 
   if (count > 4) {
     GstMapInfo info;
+    gsize alloc_size;
 
     if (offset < reader->base_offset) {
       GST_WARNING ("Offset is smaller (%u) than base offset (%u)", offset,
@@ -1404,14 +1432,28 @@ parse_exif_undefined_tag (GstExifReader * reader, const GstExifTagMatch * tag,
       return;
     }
 
+    if (info.size - real_offset < count) {
+      GST_WARNING ("Invalid size %u for buffer of size %" G_GSIZE_FORMAT
+          ", not adding tag %s", count, info.size, tag->gst_tag);
+      gst_buffer_unmap (reader->buffer, &info);
+      return;
+    }
+
+    if (!g_size_checked_add (&alloc_size, count, 1)) {
+      GST_WARNING ("Invalid size %u for buffer of size %" G_GSIZE_FORMAT
+          ", not adding tag %s", real_offset, info.size, tag->gst_tag);
+      gst_buffer_unmap (reader->buffer, &info);
+      return;
+    }
+
     /* +1 because it could be a string without the \0 */
-    data = malloc (sizeof (guint8) * count + 1);
+    data = malloc (alloc_size);
     memcpy (data, info.data + real_offset, count);
     data[count] = 0;
 
     gst_buffer_unmap (reader->buffer, &info);
   } else {
-    data = malloc (sizeof (guint8) * count + 1);
+    data = malloc (count + 1);
     memcpy (data, (guint8 *) offset_as_data, count);
     data[count] = 0;
   }
@@ -2087,6 +2129,8 @@ EXIF_SERIALIZATION_DESERIALIZATION_MAP_STRING_TO_INT_FUNC (source,
     capturing_source);
 EXIF_SERIALIZATION_DESERIALIZATION_MAP_STRING_TO_INT_FUNC (white_balance,
     capturing_white_balance);
+EXIF_SERIALIZATION_DESERIALIZATION_MAP_STRING_TO_INT_FUNC (light_source,
+    capturing_light_source);
 
 static void
 serialize_geo_coordinate (GstExifWriter * writer, const GstTagList * taglist,

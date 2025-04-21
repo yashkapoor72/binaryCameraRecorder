@@ -69,24 +69,48 @@ if __name__ == "__main__":
     # 'gstreamer' namespace. Fetch the branch name in the same way, just in
     # case it breaks in the future.
     if 'CI_MERGE_REQUEST_SOURCE_PROJECT_URL' in os.environ:
-        project_url = os.environ['CI_MERGE_REQUEST_SOURCE_PROJECT_URL']
+        project_path = os.environ['CI_MERGE_REQUEST_SOURCE_PROJECT_PATH']
         project_branch = os.environ['CI_MERGE_REQUEST_SOURCE_BRANCH_NAME']
     else:
-        project_url = os.environ['CI_PROJECT_URL']
+        project_path = os.environ['CI_PROJECT_PATH']
         project_branch = os.environ['CI_COMMIT_REF_NAME']
 
-    pipe = cerbero.trigger_pipeline(
-        token=os.environ['CI_JOB_TOKEN'],
-        ref=cerbero_branch,
-        variables={
-            "CI_GSTREAMER_URL": project_url,
-            "CI_GSTREAMER_REF_NAME": project_branch,
-            # This tells cerbero CI that this is a pipeline started via the
-            # trigger API, which means it can use a deps cache instead of
-            # building from scratch.
-            "CI_GSTREAMER_TRIGGERED": "true",
-        }
-    )
+    variables = {
+        "CI_GSTREAMER_PATH": project_path,
+        "CI_GSTREAMER_REF_NAME": project_branch,
+        # This tells cerbero CI that this is a pipeline started via the
+        # trigger API, which means it can use a deps cache instead of
+        # building from scratch.
+        "CI_GSTREAMER_TRIGGERED": "true",
+    }
+
+    meson_commit = os.environ.get('MESON_COMMIT')
+    if meson_commit:
+        # Propagate the Meson commit to cerbero pipeline and make sure it's not
+        # using deps cache.
+        variables['MESON_COMMIT'] = meson_commit
+        del variables['CI_GSTREAMER_TRIGGERED']
+
+    try:
+        pipe = cerbero.trigger_pipeline(
+            token=os.environ['CI_JOB_TOKEN'],
+            ref=cerbero_branch,
+            variables=variables,
+        )
+    except gitlab.exceptions.GitlabCreateError as e:
+        if e.response_code == 400:
+            exit('''
+
+            Could not start cerbero sub-pipeline due to insufficient permissions.
+
+            This is not a problem and is expected if you are not a GStreamer
+            developer with merge permission in the cerbero project.
+
+            When your Merge Request is assigned to Marge (our merge bot), it
+            will trigger the cerbero sub-pipeline with the correct permissions.
+            ''')
+        else:
+            exit(f'Could not create cerbero sub-pipeline. Error: {e}')
 
     fprint(f'Cerbero pipeline running at {pipe.web_url} ')
     while True:

@@ -14,12 +14,22 @@ these operations:
   If you don't want to create a new account you should also be able to sign in
   with a Google, GitHub or Twitter account.
 
+- Due to an [influx of spam](https://gitlab.freedesktop.org/freedesktop/freedesktop/-/wikis/home)
+  user accounts on GitLab are restricted by default and can't fork projects,
+  which is needed to create a Merge Request.
+
+  Please [file an issue and fill in the User Verification template][user-verification]
+  in order to get full access. Sorry for the hassle, and thanks for your
+  understanding.
+
+[user-verification]: https://gitlab.freedesktop.org/freedesktop/freedesktop/issues/new?issuable_template=User%20verification
+
 ## How to File Issues and Request for Enhancements
 
 ### Where to File Issues and Feature Requests
 
 - If your issue is security related, please see
-  [GStreamer Security Center][https://gstreamer.freedesktop.org/security/] before
+  [GStreamer Security Center](https://gstreamer.freedesktop.org/security/) before
   continuing.
 
 - Create a new issue if there is no existing report for this problem yet.
@@ -53,11 +63,9 @@ these operations:
 
 - If you don't know which component to file the issue against, just pick the one
   that seems the most likely to you, or file it against the gstreamer-project
-  component. If in doubt just pop into our IRC channel `#gstreamer` on the
-  [OFTC IRC network](https://www.oftc.net/), which you can connect to using
-  any IRC client application or the [OFTC IRC webchat](https://webchat.oftc.net/?channels=%23gstreamer).
-  In any case, if it's not the right component someone will move the issue
-  once they have a better idea what the problem is and where it belongs.
+  component. If in doubt just pop into our [Matrix Discussion channel][matrix].
+  In any case, if it's not the right component someone will move the issue once
+  they have a better idea what the problem is and where it belongs.
 
 - Please mention:
 
@@ -103,7 +111,7 @@ In a nutshell, you will:
 1. [Clone](https://github.com/git-guides/git-clone) the gstreamer repository on
    your development machine
 1. Create a [fork](https://docs.gitlab.com/ee/user/project/repository/forking_workflow.html)
-   of it in your gitlab namespace
+   of it in your gitlab namespace (you may have to obtain forking permission first)
 1. Add that fork as a [git "remote"](https://github.com/git-guides/git-remote)
    to the clone on your machine
 1. Setup a [branch](https://docs.gitlab.com/ee/user/project/repository/branches/)
@@ -132,6 +140,11 @@ Select the namespace (your username), ensure that the visibility is set to
 "Public", and hit the "Fork project" button:
 
 ![Fork settings](images/contribute/fork-settings.png)
+
+**Please note** that new gitlab accounts do not have permission to create forks by
+default, so you will have to [first file an issue and fill in the user verification
+template][user-verification] as mentioned above in order to get forking rights.
+This should be a fairly quick process.
 
 A new repository will be created in your user namespace
 (<https://gitlab.freedesktop.org/$GITLAB_USERNAME/gstreamer>). You will be redirected
@@ -409,27 +422,22 @@ In the simplest case, you might be able to get away with just doing a `git pull
 [special-md-references]: https://docs.gitlab.com/ee/user/markdown.html#special-gitlab-references
 [bugs]: https://gstreamer.freedesktop.org/bugs/
 [gitlab]: https://gitlab.freedesktop.org/gstreamer
+[matrix]: https://matrix.to/#/#gstreamer:gstreamer.org
 
 #### Coding Style
 
-Try to stick to the GStreamer indentation and coding style. There is a script
-called [`gst-indent`][gst-indent] which you can run over your `.c` or `.cpp`
-files if you want your code auto-indented before making the patch. The script
-requires GNU indent to be installed already. Please do _not_ run `gst-indent` on
-header files, our header file indentation is free-form. If you build GStreamer
-from git, a local commit hook will be installed that checks if your commit
-conforms to the required style (also using GNU indent).
+Try to stick to the GStreamer indentation and coding style. There is an
+application called [`gst-indent-1.0`][gst-indent] that can be installed
+with `pip install gst-indent`. You can run it over your `.c` or
+`.cpp` files if you want your code auto-indented before making the patch.
 
-Different versions of GNU indent may occasionally yield slightly different
-indentations. If that happens, please ignore any indentation changes in
-sections of code that your patch does not touch. You can do that by staging
-changes selectively via `git add -p`. You can bypass the local indentation
-check hook by using `git commit -n`, but it will still be checked again later
-when you submit your changes through GitLab for merging.
+Please do _not_ run `gst-indent-1.0` on header files, our header file
+indentation is free-form.
 
-We are working on making this less hasslesome.
-
-[gst-indent]: https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/scripts/gst-indent-all
+If you build GStreamer from git, a local commit hook will be installed that
+checks if your commit conforms to the required style. You can bypass that local
+indentation check hook by using `git commit -n`, but it will still be checked
+again later on the CI when you submit your changes through GitLab for merging.
 
 Compiler requirements:
  - we are targetting the C99 compiler and preprocesser feature subset
@@ -447,9 +455,41 @@ Other style guidelines:
    - declare variables inline (as opposed to only at the beginning of a block)
    - use advanced/nicer struct initialisers
 
-[gst-indent]: https://gitlab.freedesktop.org/gstreamer/gstreamer/tree/master/tools/gst-indent
+[gst-indent]: https://gitlab.freedesktop.org/gstreamer/gst-indent/
 [bitreader]: https://gstreamer.freedesktop.org/documentation/base/gstbitreader.html?gi-language=c#GstBitReader
 [bytereader]: https://gstreamer.freedesktop.org/documentation/base/gstbytereader.html?gi-language=c#GstByteReader
+
+##### Pre-commit
+
+GStreamer uses [pre-commit](https://pre-commit.com/) to validate coding style automatically when you create a new commit.
+
+pre-commit can be installed with `pip`:
+```
+pip install pre-commit
+```
+
+The pre-commit hooks are automatically installed the first you run `meson setup`.
+They can be also be installed manually using:
+```
+pre-commit install
+```
+
+One installed, pre-commit will run automatically on every `git commit`.
+You can also run manually all the pre-commit hooks using:
+```
+pre-commit run --all-files --show-diff-on-failure
+```
+
+When you create a new commit, the pre-commit hooks may apply changes to your files,
+automatically fixing the issues found. When this happens, simply add the changes to
+your staging environment, and re-run the commit.
+
+You can bypass the pre-commit hooks using `git commit --no-verify`. The commits will
+be validated in the CI's `check` stage, so you will still need to ensure that all
+hooks passes correctly. To fix your commits,  you can use the helper script located in
+`scripts/check-commits.py` that will rebase your work starting from the commit passed
+as first argument and it will run pre-commit for each commit, allowing you to fix them
+individually rather than using a new commit on top of your branch to fix the issues found.
 
 ### Writing Good Commit Messages
 
@@ -515,7 +555,7 @@ code repositories in commit messages.
 Whenever you submit a new Merge Request, add a comment to an existing issue or
 Merge Request, GitLab will send a notification e-mail to GStreamer
 developers. This means that there is usually no need to advertise the fact that
-you have done so in other forums such as on IRC or on the mailing list, unless
+you have done so in other forums such as on Matrix or Discourse, unless
 you have been asked to file an issue there, in which case it's nice to follow up
 with the link to the issue.
 
@@ -575,6 +615,156 @@ a comment and when all oustanding discussions have been resolved. They may or
 may not receive e-mail notifications when you update the commits in your branch.
 
 # Workflows for GStreamer developers
+
+## Merging merge requests
+
+Merge requests should be merged either by assigning the merge request to Marge,
+our merge bot, or by adding the `Merge in X hours` or `Merge in X days` labels.
+
+### Marge merge bot
+
+Marge will rebase the merge request on top of the target branch and will
+also automatically add `Part-of: <url>` footers to each commit that point
+back to the merge request in gitlab.
+
+When Marge rebases, the continuous integration (CI) pipeline will start
+automatically and the merge request will get merged once it passes. Since
+the CI pipeline is triggered by Marge in this case, it will also have the
+right permissions to trigger the Cerbero sub-pipeline, which won't run for
+monorepo pipelines triggered by external contributors.
+
+Sidenote: Our CI pipelines don't start automatically usually, but are gated
+by a manual trigger in order not to waste CI resources. However, pipelines
+will start running automatically if Marge triggers them which will happen
+when Marge rebases commits. This means that when pushing updates to a
+merge request branch (especially if Marge touched it once already) it's
+usually a good idea to either remove the `Part-of` footers from the top
+commit message, or to not be entirely on top of the target branch, so that
+Marge is forced to rebase again when being re-assigned the merge request.
+Otherwise Marge will not rebase and wait for the pipeline to complete, but
+the pipeline won't actually run because it's not been triggered.
+
+If Marge is assigned a merge request but nothing happens, it usually means
+she's busy with another merge request in the same project and target branch.
+Check GitLab for a [list of merge requests assigned to Marge][marge-list]. If
+no other merge requests are being processed, you may be encountering the above
+pipeline trigger problem and may have to trigger the merge request pipeline
+manually.
+
+[marge-list]: https://gitlab.freedesktop.org/groups/gstreamer/-/merge_requests?scope=all&state=opened&assignee_username=gstreamer-merge-bot
+
+### "Merge in X days" and "Merge in X hours" labels
+
+We have a range of `Merge in X hours` or `Merge in X days` labels available.
+
+When these labels are added to a merge request, Marge will assign the merge
+request to herself after the specified amount of time has passed (roughly).
+
+They can be useful for multiple purposes:
+
+- Schedule merge requests for later in the day or night, when the
+  CI farm is less busy
+
+- Provide a heads-up to other developers that you intend to merge
+  something, whilst still allowing some time for others to review or
+  comment.
+
+It's possible to subscribe to specific labels in GitLab and receive
+notifications when they are added to a merge request.
+
+When Marge picks up the label and assigns merge requests to itself, a
+notification will be generated. When merging fails, a notification will
+also be generated, which helps make sure things don't fall through the
+cracks once they've been scheduled for merging.
+
+It's of course fine for another developer to assign a merge request with
+a `Merge in X` label to Marge immediately if they think it's fine to go in
+now and don't expect further comments or review being needed by others.
+
+### Fixing Since tags
+
+Since a few releases, CI  runs checks to ensure that all new symbols added
+as public API are marked with a Since tag in their docstrings.
+
+If the documentation job rejects your MR with:
+
+```
+ERROR: [check-missing-since-markers]: (missing-since-marker): /some/path: Missing since marker for GST_SOME_SYMBOL
+```
+
+You should be able to get rid of the warning by adding a new gtk-doc comment
+in the relevant source or header file with such contents:
+
+```
+/**
+ * GST_SOME_SYMBOL:
+ *
+ * some description of the symbol purposes
+ *
+ * Since: 1.XX
+ */
+```
+
+A common mistake for the docstring is to omit the description paragraph:
+
+```
+/**
+ * GST_SOME_SYMBOL:
+ *
+ * Since: 1.XX
+ */
+```
+
+This will *not* parse as valid gtk-doc syntax.
+
+
+If your attempt is not enough and you'd rather avoid waiting for CI to try various
+docstrings, or you simply want to build your documentation changes *fast* on
+your local machine, you can proceed as follows:
+
+```
+# Make sure you have hotdoc
+pipx install hotdoc
+# Make sure you have a doc-enabled build
+rm -rf build && meson build -Dgpl=enabled -Ddoc=enabled && ninja -C build
+# Build the complete documentation once
+ninja -C build/ subprojects/gst-docs/GStreamer-doc -v
+# Enter the devenv, hotdoc now finds the current devhelp2 files and
+# will not emit warnings about incorrect links
+ninja -C build devenv
+# Go back to the toplevel directory
+cd ..
+# Build the exact documentation subproject you are interested in,
+# this is super fast, adapt command to your case
+hotdoc run --conf-file build/subprojects/gst-plugins-bad/docs/mpegts-doc.json --previous-symbol-index subprojects/gst-docs/symbols/symbol_index.json
+```
+
+Another, less common situation is for the header file the docstring was added in to
+be explicitly excluded by the meson build files: some header files are known
+to contain gtk-doc like docstrings and to generate a ton of irrelevant warnings,
+we ignore those.
+
+If you have a concern it might be the case you can look at the relevant
+hotdoc.json file for your subproject to see exactly what sources are
+included / excluded.
+
+You can enable checks for up-to-date plugin caches and presence of the necessary
+since tags at commit time by setting the `GST_ENABLE_DOC_PRE_COMMIT_HOOK`
+environment variable to any value other than "0":
+
+``` shell
+GST_ENABLE_DOC_PRE_COMMIT_HOOK=1 git commit
+```
+
+The pre-commit hook will:
+
+* Stash unstaged changes (the path to the patch file is printed out)
+* Locate the build directory (the location can be specified through the `GST_DOC_BUILDDIR` environment variable)
+* Build the version of the code that is to be committed
+* Build the relevant plugins caches and error out if there is a diff
+* Build the relevant doc subprojects using `hotdoc` and error out in case of since tag errors
+
+In any case, the stashed changes are then re-applied
 
 ## Backporting to a stable branch
 

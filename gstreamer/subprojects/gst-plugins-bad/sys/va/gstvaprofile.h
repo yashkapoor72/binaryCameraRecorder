@@ -31,6 +31,7 @@ typedef enum
   H263 = GST_MAKE_FOURCC ('H', '2', '6', '3'),
   H264 = GST_MAKE_FOURCC ('H', '2', '6', '4'),
   HEVC = GST_MAKE_FOURCC ('H', '2', '6', '5'),
+  VVC = GST_MAKE_FOURCC ('H', '2', '6', '6'),
   JPEG = GST_MAKE_FOURCC ('J', 'P', 'E', 'G'),
   MPEG2 = GST_MAKE_FOURCC ('M', 'P', 'E', 'G'),
   MPEG4 = GST_MAKE_FOURCC ('M', 'P', 'G', '4'),
@@ -40,7 +41,8 @@ typedef enum
 } GstVaCodecs;
 
 guint32               gst_va_profile_codec                (VAProfile profile);
-GstCaps *             gst_va_profile_caps                 (VAProfile profile);
+GstCaps *             gst_va_profile_caps                 (VAProfile profile,
+                                                           VAEntrypoint entrypoint);
 const gchar *         gst_va_profile_name                 (VAProfile profile);
 VAProfile             gst_va_profile_from_name            (GstVaCodecs codec,
                                                            const gchar * name);

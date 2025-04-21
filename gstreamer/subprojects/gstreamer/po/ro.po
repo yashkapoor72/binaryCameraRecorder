@@ -1,29 +1,37 @@
-# Romanian translation for gstreamer
+# Romanian translation for gstreamer.
+# Mesajele în limba română pentru pachetul gstreamer.
 # This file is distributed under the same license as the gstreamer package.
 #
 # Lucian Adrian Grijincu <lucian.grijincu@gmail.com>, 2010.
 # Florentina Mușat <florentina.musat.28@gmail.com>, 2020.
+# Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>. 2022 - 2024.
+#
+# Cronologia traducerii fișierului „gstreamer”:
+# Traducerea inițială, făcută de LAG, pentru versiunea gstreamer 0.10.29.2
+# Actualizare a traducerii pentru versiunea 1.16.0, făcută de FM, iun-2020.
 # Actualizare a mesajelor, de la fișierul „gstreamer-1.19.2.pot”.
 # Eliminare a mesajelor ce-au dispărut în ultima versiune.
-# Actualizări realizate de Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>, 15.01.2022.
-# Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>. 2022.
+# Actualizare a traducerii pentru versiunea 1.19.2, făcută de R-GC, ian-2022.
+# Actualizare a traducerii pentru versiunea 1.21.90, făcută de R-GC, ian-2023.
+# Actualizare a traducerii pentru versiunea 1.24.0, făcută de R-GC, mar-2024.
+# Actualizare a traducerii pentru versiunea Y, făcută de X, Z(anul).
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gstreamer 1.19.2\n"
+"Project-Id-Version: gstreamer 1.24.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-09-23 01:32+0100\n"
-"PO-Revision-Date: 2022-01-21 14:07+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
+"PO-Revision-Date: 2024-03-08 14:24+0100\n"
 "Last-Translator: Remus-Gabriel Chelu <remusgabriel.chelu@disroot.org>\n"
 "Language-Team: Romanian <translation-team-ro@lists.sourceforge.net>\n"
 "Language: ro\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"X-Bugs: Report translation errors to the Language-Team address.\n"
 "Plural-Forms: nplurals=3; plural=(n==1 ? 0 : (n==0 || (n%100 > 0 && n%100 < "
 "20)) ? 1 : 2);\n"
-"X-Generator: Poedit 2.3.1\n"
+"X-Bugs: Report translation errors to the Language-Team address.\n"
+"X-Generator: Poedit 3.2.2\n"
 
 msgid "Print the GStreamer version"
 msgstr "Afișează versiunea GStreamer"
@@ -60,8 +68,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Listă separată prin virgulă de perechi nume_categorie:nivel pentru a stabili "
-"niveluri specifice pentru fiecare categorie. Exemplu: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"niveluri specifice pentru fiecare categorie. Exemplu: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "LISTĂ"
@@ -76,21 +84,17 @@ msgid ""
 "Changes coloring mode of the debug log. Possible modes: off, on, disable, "
 "auto, unix"
 msgstr ""
-"Modifică modul de colorare al jurnalului de depanare. Moduri posibile: "
-"oprit, pornit, dezactivat, auto, unix"
+"Modifică modul de colorare al jurnalului de depanare. Moduri posibile: „off” "
+"oprit, „on” pornit, „disable” dezactivat, auto, unix"
 
 msgid "Disable debugging"
 msgstr "Dezactivează depanarea"
 
-msgid "Enable verbose plugin loading diagnostics"
-msgstr ""
-"Activează diagnosticele detaliate pentru încărcarea modulelor de extensie"
-
 msgid "Colon-separated paths containing plugins"
-msgstr "Căile către modulele de extensie, separate prin două puncte (:)"
+msgstr "Rutele către modulele de extensie, separate prin două puncte (:)"
 
 msgid "PATHS"
-msgstr "CĂI"
+msgstr "RUTE"
 
 msgid ""
 "Comma-separated list of plugins to preload in addition to the list stored in "
@@ -117,7 +121,7 @@ msgid "GStreamer Options"
 msgstr "Opțiuni GStreamer"
 
 msgid "Show GStreamer Options"
-msgstr "Arată opțiunile GStreamer"
+msgstr "Afișează opțiunile GStreamer"
 
 #, c-format
 msgid "Unknown option"
@@ -146,7 +150,7 @@ msgstr ""
 "posteze un mesaj de eroare adecvat cu motivul eșecului."
 
 msgid "Internal GStreamer error: pad problem."
-msgstr "Eroare internă GStreamer: problemă de contact la pini(pad)."
+msgstr "Eroare internă GStreamer: problemă de contact la pini."
 
 msgid "Internal GStreamer error: thread problem."
 msgstr "Eroare internă GStreamer: problemă cu firele de execuție."
@@ -193,7 +197,7 @@ msgid "Could not configure supporting library."
 msgstr "Nu se poate configura biblioteca suport."
 
 msgid "Encoding error."
-msgstr "Eroare de codare."
+msgstr "Eroare de codificare."
 
 msgid "GStreamer encountered a general resource error."
 msgstr "GStreamer a întâlnit o eroare generală de resurse."
@@ -243,7 +247,7 @@ msgstr "GStreamer a întâlnit o eroare generală de flux."
 msgid "Element doesn't implement handling of this stream. Please file a bug."
 msgstr ""
 "Elementul nu implementează gestionarea acestui flux. Trimiteți o sesizare de "
-"defecțiune."
+"eroare."
 
 msgid "Could not determine type of stream."
 msgstr "Nu se poate determina tipul fluxului."
@@ -255,10 +259,10 @@ msgid "There is no codec present that can handle the stream's type."
 msgstr "Nu există niciun codec care să poată gestiona acest tip de flux."
 
 msgid "Could not decode stream."
-msgstr "Nu se poate decoda fluxul."
+msgstr "Nu se poate decodifica fluxul."
 
 msgid "Could not encode stream."
-msgstr "Nu se poate coda fluxul."
+msgstr "Nu se poate codifica fluxul."
 
 msgid "Could not demultiplex stream."
 msgstr "Nu se poate demultiplexa fluxul."
@@ -270,7 +274,7 @@ msgid "The stream is in the wrong format."
 msgstr "Fluxul este într-un format greșit."
 
 msgid "The stream is encrypted and decryption is not supported."
-msgstr "Fluxul este criptat și decriptarea nu este suportată."
+msgstr "Fluxul este criptat și decriptarea nu este acceptată."
 
 msgid ""
 "The stream is encrypted and can't be decrypted because no suitable key has "
@@ -318,7 +322,7 @@ msgstr "titlu folosit în mod obișnuit"
 # a definii această acțiune
 # =====================================
 # oricum, această versiune, «19.2» este o
-# versiune aflată „în curs de dezvoltare”, la 
+# versiune aflată „în curs de dezvoltare”, la
 # momentul scrieriii acestui comentariu; așa că
 # sugestia făcută, rămîne în „vizor”
 msgid "title sortname"
@@ -370,7 +374,7 @@ msgid "date the data was created (as a GDate structure)"
 msgstr "data la care au fost create aceste date (ca structură GDate)"
 
 msgid "datetime"
-msgstr "datăoră"
+msgstr "dată_oră"
 
 msgid "date and time the data was created (as a GstDateTime structure)"
 msgstr "data și ora la care datele au fost create (ca o structură GstDateTime)"
@@ -428,15 +432,15 @@ msgid ""
 "Origin of media as a URI (location, where the original of the file or stream "
 "is hosted)"
 msgstr ""
-"Originea fișierului media ca un URI (locație unde este stocată versiunea "
-"originală a fișierului sau fluxului)"
+"Originea fișierului media ca o adresă URI (locație unde este stocată "
+"versiunea originală a fișierului sau fluxului)"
 
 msgid "homepage"
-msgstr "pagina de pornire"
+msgstr "pagina principală"
 
 msgid "Homepage for this media (i.e. artist or movie homepage)"
 msgstr ""
-"Pagina de pornire pentru acest fișier media (adică pagina de pornire a "
+"Pagina de principală a acestui fișier(e) media (adică pagina de pornire a "
 "artistului sau a filmului)"
 
 msgid "description"
@@ -475,10 +479,10 @@ msgid "URI to the copyright notice of the data"
 msgstr "URI către notița asupra drepturilor de autor pentru aceste date (URI)"
 
 msgid "encoded by"
-msgstr "codat de"
+msgstr "codificat de"
 
 msgid "name of the encoding person or organization"
-msgstr "numele persoanei sau organizației care codează"
+msgstr "numele persoanei sau organizației care codifică"
 
 msgid "contact"
 msgstr "contact"
@@ -583,13 +587,13 @@ msgid "encoder"
 msgstr "codificator"
 
 msgid "encoder used to encode this stream"
-msgstr "codificatorul folosit pentru a coda acest flux"
+msgstr "codificatorul folosit pentru a codifica acest flux"
 
 msgid "encoder version"
 msgstr "versiunea codificatorului"
 
 msgid "version of the encoder used to encode this stream"
-msgstr "versiunea codificatorului folosit pentru a coda acest flux"
+msgstr "versiunea codificatorului folosit pentru a codifica acest flux"
 
 msgid "serial"
 msgstr "serial"
@@ -830,7 +834,7 @@ msgid "The episode number in the season the media is part of"
 msgstr "Numărul episodului din care acest fișier media face parte"
 
 msgid "season number"
-msgstr "numărul sezon"
+msgstr "număr sezon"
 
 msgid "The season number of the show the media is part of"
 msgstr "Numărul sezonului din care acest fișier media face parte"
@@ -923,21 +927,27 @@ msgstr "date-private"
 msgid "Private data"
 msgstr "Date private"
 
+msgid "container-specific-track-id"
+msgstr "id-pistă-specific-containerului"
+
+msgid "Container-specific Track ID"
+msgstr "ID-PISTĂ-specific-containerului"
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
 
 #, c-format
 msgid "Invalid URI: %s"
-msgstr "URI-ul: %s nu este valid"
+msgstr "adresa URI: %s nu este validă"
 
 #, c-format
 msgid "No URI handler for the %s protocol found"
-msgstr "Nu există niciun manipulant de URI pentru protocolul %s găsit"
+msgstr "Nu există niciun gestionar de adresă URI pentru protocolul %s găsit"
 
 #, c-format
 msgid "URI scheme '%s' not supported"
-msgstr "Schema URL „%s” nu este suportată"
+msgstr "Schema URL „%s” nu este acceptată"
 
 #, c-format
 msgid "ERROR: from element %s: %s\n"
@@ -962,9 +972,24 @@ msgstr "legătura nu are nicio sursă [sink=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "legătura nu are niciun destinatar [sursă=%s@%p]"
 
+msgid "No such property."
+msgstr "Nici o astfel de proprietate."
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "nicio proprietate „%s” în elementul „%s”"
+
+#, c-format
+msgid "Element \"%s\" is not a GstPreset"
+msgstr "Elementul „%s” nu este o preconfigurare Gstreamer"
+
+#, c-format
+msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "nu se poate stabili preconfigurarea „%s” în elementul „%s”"
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "niciun element „%s”"
 
 #, c-format
 msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
@@ -972,12 +997,10 @@ msgstr ""
 "nu se poate stabili proprietatea „%s” în elementul „%s” la valoarea „%s”"
 
 #, c-format
-msgid "Element \"%s\" is not a GstPreset"
-msgstr "Elementul „% s” nu este o preconfigurare Gstreamer"
-
-#, c-format
-msgid "could not set preset \"%s\" in element \"%s\""
-msgstr "nu se poate stabili preconfigurarea „%s” în elementul „%s”"
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
+msgstr ""
+"nu se poate stabili proprietatea „%s” din fiul-elementului „%s” la valoarea "
+"„%s”"
 
 msgid "Delayed linking failed."
 msgstr "Legătura întârziată a eșuat."
@@ -985,9 +1008,14 @@ msgstr "Legătura întârziată a eșuat."
 # R-GC, scrie:
 # cred că traducerea corectă, ar fi:
 # „nu s-a putut asocia %s cu %s, %s nu poate manipula majusculele %s”
+# ***
+# La actualizarea fișierului la versiunea 1.21.90,
+# am schimbat „lega”, cu „vincula”; ce mi se pare
+# un termen mai apropiat pentru traducerea
+# acestui mesaj
 #, c-format
 msgid "could not link %s to %s, %s can't handle caps %s"
-msgstr "nu s-a putut lega %s la %s, %s nu poate manipula majusculele %s"
+msgstr "nu s-a putut vincula %s la %s, %s nu poate manipula majusculele %s"
 
 #, c-format
 msgid "could not link %s to %s, neither element can handle caps %s"
@@ -1002,10 +1030,6 @@ msgstr "nu s-a putut lega %s la %s cu majusculele %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "nu se poate lega %s la %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "niciun element „%s”"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1042,7 +1066,7 @@ msgid "empty pipeline not allowed"
 msgstr "linia de asamblare vidă nu este permisă"
 
 msgid "Pipeline construction is invalid, please add queues."
-msgstr "Construirea liniei de conexiune nu este validă, adăugați cozi."
+msgstr "Construcția liniei de asamblare nu este validă, adăugați cozi."
 
 msgid "A lot of buffers are being dropped."
 msgstr "Multe zone de memorie tampon sunt abandonate."
@@ -1060,20 +1084,20 @@ msgid "Failed to map buffer."
 msgstr "Nu s-a putut cartografia memoria tampon."
 
 msgid "Filter caps"
-msgstr "Filtrare majuscule"
+msgstr "Filtrare capacități"
 
 msgid ""
 "Restrict the possible allowed capabilities (NULL means ANY). Setting this "
 "property takes a reference to the supplied GstCaps object."
 msgstr ""
-"Restricționează caracteristicele permise (NULL înseamnă ORICE). Definirea "
+"Restricționează caapacitățile permise (NULL înseamnă ORICE). Definirea "
 "acestei proprietăți preia o referință către obiectul GstCaps furnizat."
 
 msgid "Caps Change Mode"
-msgstr "Modul de modificare a majusculelor"
+msgstr "Modul de modificare a capacităților"
 
 msgid "Filter caps change behaviour"
-msgstr "Majusculele de filtru schimbă comportamentul"
+msgstr "Filtrul de capacități schimbă comportamentul"
 
 msgid "No Temp directory specified."
 msgstr "Niciun director temporar specificat."
@@ -1130,20 +1154,20 @@ msgid "eos-after and error-after can't both be defined."
 msgstr "eos-after și error-after nu pot fi amândouă definite."
 
 msgid "caps"
-msgstr "majuscule"
+msgstr "capacități"
 
 msgid "detected capabilities in stream"
-msgstr "caracteristici detectate în flux"
+msgstr "capacități detectate în flux"
 
 msgid "minimum"
 msgstr "minim"
 
 msgid "force caps"
-msgstr "forțează folosirea majusculelor"
+msgstr "forțează folosirea capacităților"
 
 msgid "force caps without doing a typefind"
 msgstr ""
-"forțează folosirea majusculelor fără a efectua un tip de găsire(typefind)"
+"forțează folosirea capacităților fără a efectua un tip de găsire(typefind)"
 
 msgid "Stream doesn't contain enough data."
 msgstr "Fluxul nu conține destule date."
@@ -1153,6 +1177,10 @@ msgstr "Fluxul nu conține date."
 
 #, c-format
 msgid "%sImplemented Interfaces%s:\n"
+msgstr "%sInterfețe implementate%s:\n"
+
+#, fuzzy, c-format
+msgid "%sElement Flags%s:\n"
 msgstr "%sInterfețe implementate%s:\n"
 
 msgid "readable"
@@ -1170,14 +1198,19 @@ msgstr "se poate controla"
 msgid "conditionally available"
 msgstr "condiționare disponibilă"
 
+msgid "can be set only at object construction time"
+msgstr "poate fi stabilit numai în momentul construirii obiectului"
+
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
-msgstr "modificabil în stările NULL, GATA, PAUZAT sau REDARE"
+msgstr ""
+"modificabil în stările NULL, „READY” GATA, „PAUSED” PAUZAT sau „PLAYING” "
+"REDARE"
 
 msgid "changeable only in NULL, READY or PAUSED state"
-msgstr "modificabil doar în stările NULL, GATA sau PAUZAT"
+msgstr "modificabil doar în stările NULL, „READY” GATA sau „PAUSED” PAUZAT"
 
 msgid "changeable only in NULL or READY state"
-msgstr "modificabil doar în stările NULL sau GATA"
+msgstr "modificabil doar în stările NULL sau „READY” GATA"
 
 msgid "Blacklisted files:"
 msgstr "Fișierele de pe lista neagră:"
@@ -1253,7 +1286,7 @@ msgstr ""
 
 msgid "Print supported URI schemes, with the elements that implement them"
 msgstr ""
-"Imprimă schemele URI suportate, cu elementele pe care acestea le "
+"Imprimă schemele URI acceptate, cu elementele pe care acestea le "
 "implementează"
 
 msgid ""
@@ -1380,7 +1413,7 @@ msgstr "Întrerupere: Se oprește linia de asamblare ...\n"
 msgid "Interrupt while waiting for EOS - stopping pipeline...\n"
 msgstr ""
 "Întrerupere în timpul așteptării pentru EOS - se oprește linia de "
-"conexiune...\n"
+"asamblare...\n"
 
 msgid "EOS on shutdown enabled -- Forcing EOS on the pipeline\n"
 msgstr "EOS la închidere activat -- Se forțează EOS pe linia de asamblare\n"
@@ -1435,8 +1468,14 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr "NUME-PROPRIETATE"
 
+msgid "Set the name of the program"
+msgstr "Stabilește numele programului"
+
+msgid "PROGRAM-NAME"
+msgstr "NUME-PROGRAM"
+
 msgid "Do not install a fault handler"
-msgstr "Nu instala un gestionar de erori"
+msgstr "Nu instalează un gestionar de erori"
 
 msgid "Force EOS on sources before shutting the pipeline down"
 msgstr "Forțează EOS pe surse înainte de a închide linia de asamblare"
@@ -1450,17 +1489,17 @@ msgid ""
 "position when stdout is not a TTY, use \"force-position\" option"
 msgstr ""
 "Nu se imprimă poziția curentă a liniei de asamblare. Dacă această opțiune nu "
-"este specificată, poziția va fi imprimată atunci când stdout este un TTY. "
-"Pentru a activa poziția de imprimare atunci când stdout nu este un TTY, "
-"utilizați opțiunea „force-position”."
+"este specificată, poziția va fi imprimată atunci când ieșirea standard este "
+"un TTY. Pentru a activa imprimarea poziției atunci când ieșirea standard nu "
+"este un TTY, utilizați opțiunea „force-position”."
 
 msgid ""
 "Allow printing current position of pipeline even if stdout is not a TTY. "
 "This option has no effect if the \"no-position\" option is specified"
 msgstr ""
-"Permite imprimarea poziției curente a liniei de asamblare chiar dacă stdout "
-"nu este un TTY. Această opțiune nu are efect dacă este specificată opțiunea "
-"„fără poziție(no-position)”."
+"Permite imprimarea poziției curente a liniei de asamblare chiar dacă ieșire "
+"standard nu este un TTY. Această opțiune nu are efect dacă este specificată "
+"opțiunea „fără poziție(no-position)”."
 
 #, c-format
 msgid "ERROR: pipeline could not be constructed: %s.\n"
@@ -1496,3 +1535,7 @@ msgstr "Se stabilește linia de asamblare la NULL ...\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Se eliberează linia de asamblare...\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr ""
+#~ "Activează diagnosticele detaliate pentru încărcarea modulelor de extensie"

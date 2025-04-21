@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gstreamer 0.10.29.2\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
 "PO-Revision-Date: 2010-07-16 00:50+0300\n"
 "Last-Translator: Žygimantas Beručka <uid0@akl.lt>\n"
 "Language-Team: Lithuanian <komp_lt@konferencijos.lt>\n"
@@ -16,8 +16,8 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "X-Bugs: Report translation errors to the Language-Team address.\n"
-"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && (n"
-"%100<10 || n%100>=20) ? 1 : 2);\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"(n%100<10 || n%100>=20) ? 1 : 2);\n"
 "X-Generator: Virtaal 0.6.1\n"
 
 msgid "Print the GStreamer version"
@@ -44,8 +44,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Kableliais skiriamas category_name:level porų sąrašas, nustatantis "
-"konkrečius lygius paskiroms kategorijoms. Pavyzdys: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"konkrečius lygius paskiroms kategorijoms. Pavyzdys: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "SĄRAŠAS"
@@ -60,9 +60,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Išjungti derinimą"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Įjungti informatyvią įskiepių įkėlimo diagnostiką"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Dvitaškiais skiriami keliai, kur yra įskiepių"
@@ -838,6 +835,12 @@ msgstr ""
 msgid "Private data"
 msgstr ""
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
@@ -877,13 +880,12 @@ msgstr ""
 msgid "link has no sink [source=%s@%p]"
 msgstr ""
 
+msgid "No such property."
+msgstr ""
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "nenurodyta savybė „%s“ elemente „%s“"
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "nepavyko nustatyti savybės „%s“ elemente „%s“ į „%s“"
 
 #, fuzzy, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -891,6 +893,18 @@ msgstr "Failas „%s“ yra lizdas."
 
 #, fuzzy, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "nepavyko nustatyti savybės „%s“ elemente „%s“ į „%s“"
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "nėra elemento „%s“"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "nepavyko nustatyti savybės „%s“ elemente „%s“ į „%s“"
+
+#, fuzzy, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
 msgstr "nepavyko nustatyti savybės „%s“ elemente „%s“ į „%s“"
 
 msgid "Delayed linking failed."
@@ -911,10 +925,6 @@ msgstr "nepavyko susieti %s su %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "nepavyko susieti %s su %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "nėra elemento „%s“"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1064,6 +1074,10 @@ msgstr "Sraute nėra duomenų."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "Realizuotos sąsajos:\n"
 
+#, c-format
+msgid "%sElement Flags%s:\n"
+msgstr ""
+
 msgid "readable"
 msgstr "skaitomas"
 
@@ -1079,6 +1093,9 @@ msgstr "valdomas"
 #, fuzzy
 msgid "conditionally available"
 msgstr "valdomas"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr ""
@@ -1334,6 +1351,12 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr ""
 
+msgid "Set the name of the program"
+msgstr ""
+
+msgid "PROGRAM-NAME"
+msgstr ""
+
 msgid "Do not install a fault handler"
 msgstr "Neįdiegti klaidų apdorojimo posistemės"
 
@@ -1389,6 +1412,9 @@ msgstr "Nustatomas konvejeris į NULL...\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Atlaisvinamas konvejeris...\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Įjungti informatyvią įskiepių įkėlimo diagnostiką"
 
 #~ msgid "link without source element"
 #~ msgstr "saitas be šaltinio elemento"

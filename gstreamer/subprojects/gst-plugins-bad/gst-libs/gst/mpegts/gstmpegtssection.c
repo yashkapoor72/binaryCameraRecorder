@@ -90,18 +90,6 @@
  * # API
  */
 
-static GQuark QUARK_PAT;
-static GQuark QUARK_CAT;
-static GQuark QUARK_BAT;
-static GQuark QUARK_PMT;
-static GQuark QUARK_NIT;
-static GQuark QUARK_SDT;
-static GQuark QUARK_EIT;
-static GQuark QUARK_TDT;
-static GQuark QUARK_TOT;
-static GQuark QUARK_SCTE_SIT;
-static GQuark QUARK_SECTION;
-
 static GType _gst_mpegts_section_type = 0;
 #define MPEG_TYPE_TS_SECTION (_gst_mpegts_section_type)
 GST_DEFINE_MINI_OBJECT_TYPE (GstMpegtsSection, gst_mpegts_section);
@@ -211,7 +199,7 @@ _gst_mpegts_section_free (GstMpegtsSection * section)
 
   g_free (section->data);
 
-  g_slice_free (GstMpegtsSection, section);
+  g_free (section);
 }
 
 static GstMpegtsSection *
@@ -219,7 +207,7 @@ _gst_mpegts_section_copy (GstMpegtsSection * section)
 {
   GstMpegtsSection *copy;
 
-  copy = g_slice_new0 (GstMpegtsSection);
+  copy = g_new0 (GstMpegtsSection, 1);
   gst_mini_object_init (GST_MINI_OBJECT_CAST (copy), 0, MPEG_TYPE_TS_SECTION,
       (GstMiniObjectCopyFunction) _gst_mpegts_section_copy, NULL,
       (GstMiniObjectFreeFunction) _gst_mpegts_section_free);
@@ -265,7 +253,7 @@ gst_mpegts_section_get_data (GstMpegtsSection * section)
  *
  * Returns the #GstMpegtsSection contained in a message.
  *
- * Returns: (transfer full): the contained #GstMpegtsSection, or %NULL.
+ * Returns: (transfer full) (nullable): the contained #GstMpegtsSection, or %NULL.
  */
 GstMpegtsSection *
 gst_message_parse_mpegts_section (GstMessage * message)
@@ -278,7 +266,7 @@ gst_message_parse_mpegts_section (GstMessage * message)
 
   st = gst_message_get_structure (message);
   /* FIXME : Add checks against know section names */
-  if (!gst_structure_id_get (st, QUARK_SECTION, GST_TYPE_MPEGTS_SECTION,
+  if (!gst_structure_get (st, "section", GST_TYPE_MPEGTS_SECTION,
           &section, NULL))
     return NULL;
 
@@ -289,46 +277,46 @@ static GstStructure *
 _mpegts_section_get_structure (GstMpegtsSection * section)
 {
   GstStructure *st;
-  GQuark quark;
+  const gchar *name;
 
   switch (section->section_type) {
     case GST_MPEGTS_SECTION_PAT:
-      quark = QUARK_PAT;
+      name = "pat";
       break;
     case GST_MPEGTS_SECTION_PMT:
-      quark = QUARK_PMT;
+      name = "pmt";
       break;
     case GST_MPEGTS_SECTION_CAT:
-      quark = QUARK_CAT;
+      name = "cat";
       break;
     case GST_MPEGTS_SECTION_EIT:
-      quark = QUARK_EIT;
+      name = "eit";
       break;
     case GST_MPEGTS_SECTION_BAT:
-      quark = QUARK_BAT;
+      name = "bat";
       break;
     case GST_MPEGTS_SECTION_NIT:
-      quark = QUARK_NIT;
+      name = "nit";
       break;
     case GST_MPEGTS_SECTION_SDT:
-      quark = QUARK_SDT;
+      name = "sdt";
       break;
     case GST_MPEGTS_SECTION_TDT:
-      quark = QUARK_TDT;
+      name = "tdt";
       break;
     case GST_MPEGTS_SECTION_TOT:
-      quark = QUARK_TOT;
+      name = "tot";
       break;
     case GST_MPEGTS_SECTION_SCTE_SIT:
-      quark = QUARK_SCTE_SIT;
+      name = "scte-sit";
       break;
     default:
       GST_DEBUG ("Creating structure for unknown GstMpegtsSection");
-      quark = QUARK_SECTION;
+      name = "section";
       break;
   }
 
-  st = gst_structure_new_id (quark, QUARK_SECTION, MPEG_TYPE_TS_SECTION,
+  st = gst_structure_new_static_str (name, "section", MPEG_TYPE_TS_SECTION,
       section, NULL);
 
   return st;
@@ -341,8 +329,8 @@ _mpegts_section_get_structure (GstMpegtsSection * section)
  *
  * Creates a new #GstMessage for a @GstMpegtsSection.
  *
- * Returns: (transfer full): The new #GstMessage to be posted, or %NULL if the
- * section is not valid.
+ * Returns: (transfer full) (nullable): The new #GstMessage to be posted, or
+ * %NULL if the section is not valid.
  */
 GstMessage *
 gst_message_new_mpegts_section (GstObject * parent, GstMpegtsSection * section)
@@ -385,8 +373,8 @@ gst_event_new_mpegts_section (GstMpegtsSection * section)
  *
  * Extracts the #GstMpegtsSection contained in the @event #GstEvent
  *
- * Returns: (transfer full): The extracted #GstMpegtsSection , or %NULL if the
- * event did not contain a valid #GstMpegtsSection.
+ * Returns: (transfer full) (nullable): The extracted #GstMpegtsSection , or
+ * %NULL if the event did not contain a valid #GstMpegtsSection.
  */
 GstMpegtsSection *
 gst_event_parse_mpegts_section (GstEvent * event)
@@ -399,7 +387,7 @@ gst_event_parse_mpegts_section (GstEvent * event)
   if (!structure)
     return NULL;
 
-  if (!gst_structure_id_get (structure, QUARK_SECTION, MPEG_TYPE_TS_SECTION,
+  if (!gst_structure_get (structure, "section", MPEG_TYPE_TS_SECTION,
           &section, NULL))
     return NULL;
 
@@ -437,13 +425,13 @@ gst_mpegts_section_send_event (GstMpegtsSection * section, GstElement * element)
 static GstMpegtsPatProgram *
 _mpegts_pat_program_copy (GstMpegtsPatProgram * orig)
 {
-  return g_slice_dup (GstMpegtsPatProgram, orig);
+  return g_memdup2 (orig, sizeof (GstMpegtsPatProgram));
 }
 
 static void
 _mpegts_pat_program_free (GstMpegtsPatProgram * orig)
 {
-  g_slice_free (GstMpegtsPatProgram, orig);
+  g_free (orig);
 }
 
 G_DEFINE_BOXED_TYPE (GstMpegtsPatProgram, gst_mpegts_pat_program,
@@ -474,7 +462,7 @@ _parse_pat (GstMpegtsSection * section)
   GST_LOG ("nb_programs %u", nb_programs);
 
   for (i = 0; i < nb_programs; i++) {
-    program = g_slice_new0 (GstMpegtsPatProgram);
+    program = g_new0 (GstMpegtsPatProgram, 1);
     program->program_number = GST_READ_UINT16_BE (data);
     data += 2;
 
@@ -506,10 +494,10 @@ _parse_pat (GstMpegtsSection * section)
  * Note: The PAT `transport_stream_id` field corresponds to the
  * "subtable_extension" field of the provided @section.
  *
- * Returns: (transfer container) (element-type GstMpegtsPatProgram): The
- * #GstMpegtsPatProgram contained in the section, or %NULL if an error happened
- * or the @section did not contain a valid PAT. Release with #g_ptr_array_unref
- * when done.
+ * Returns: (transfer container) (element-type GstMpegtsPatProgram) (nullable):
+ * The #GstMpegtsPatProgram contained in the section, or %NULL if an error
+ * happened or the @section did not contain a valid PAT. Release with
+ * #g_ptr_array_unref when done.
  */
 GPtrArray *
 gst_mpegts_section_get_pat (GstMpegtsSection * section)
@@ -558,7 +546,7 @@ gst_mpegts_pat_program_new (void)
 {
   GstMpegtsPatProgram *program;
 
-  program = g_slice_new0 (GstMpegtsPatProgram);
+  program = g_new0 (GstMpegtsPatProgram, 1);
 
   return program;
 }
@@ -639,7 +627,7 @@ _gst_mpegts_pmt_stream_copy (GstMpegtsPMTStream * pmt)
 {
   GstMpegtsPMTStream *copy;
 
-  copy = g_slice_dup (GstMpegtsPMTStream, pmt);
+  copy = g_memdup2 (pmt, sizeof (GstMpegtsPMTStream));
   copy->descriptors = g_ptr_array_ref (pmt->descriptors);
 
   return copy;
@@ -650,7 +638,7 @@ _gst_mpegts_pmt_stream_free (GstMpegtsPMTStream * pmt)
 {
   if (pmt->descriptors)
     g_ptr_array_unref (pmt->descriptors);
-  g_slice_free (GstMpegtsPMTStream, pmt);
+  g_free (pmt);
 }
 
 G_DEFINE_BOXED_TYPE (GstMpegtsPMTStream, gst_mpegts_pmt_stream,
@@ -662,7 +650,7 @@ _gst_mpegts_pmt_copy (GstMpegtsPMT * pmt)
 {
   GstMpegtsPMT *copy;
 
-  copy = g_slice_dup (GstMpegtsPMT, pmt);
+  copy = g_memdup2 (pmt, sizeof (GstMpegtsPMT));
   if (pmt->descriptors)
     copy->descriptors = g_ptr_array_ref (pmt->descriptors);
   copy->streams = g_ptr_array_ref (pmt->streams);
@@ -677,7 +665,7 @@ _gst_mpegts_pmt_free (GstMpegtsPMT * pmt)
     g_ptr_array_unref (pmt->descriptors);
   if (pmt->streams)
     g_ptr_array_unref (pmt->streams);
-  g_slice_free (GstMpegtsPMT, pmt);
+  g_free (pmt);
 }
 
 G_DEFINE_BOXED_TYPE (GstMpegtsPMT, gst_mpegts_pmt,
@@ -693,7 +681,7 @@ _parse_pmt (GstMpegtsSection * section)
   guint program_info_length;
   guint stream_info_length;
 
-  pmt = g_slice_new0 (GstMpegtsPMT);
+  pmt = g_new0 (GstMpegtsPMT, 1);
 
   data = section->data;
   end = data + section->section_length;
@@ -730,7 +718,7 @@ _parse_pmt (GstMpegtsSection * section)
   /* parse entries, cycle until there's space for another entry (at least 5
    * bytes) plus the CRC */
   while (data <= end - 4 - 5) {
-    GstMpegtsPMTStream *stream = g_slice_new0 (GstMpegtsPMTStream);
+    GstMpegtsPMTStream *stream = g_new0 (GstMpegtsPMTStream, 1);
 
     g_ptr_array_add (pmt->streams, stream);
 
@@ -780,8 +768,8 @@ error:
  *
  * Parses the Program Map Table contained in the @section.
  *
- * Returns: The #GstMpegtsPMT contained in the section, or %NULL if an error
- * happened.
+ * Returns: (transfer none) (nullable): The #GstMpegtsPMT contained in the
+ * section, or %NULL if an error happened.
  */
 const GstMpegtsPMT *
 gst_mpegts_section_get_pmt (GstMpegtsSection * section)
@@ -811,7 +799,7 @@ gst_mpegts_pmt_new (void)
 {
   GstMpegtsPMT *pmt;
 
-  pmt = g_slice_new0 (GstMpegtsPMT);
+  pmt = g_new0 (GstMpegtsPMT, 1);
 
   pmt->descriptors = g_ptr_array_new_with_free_func ((GDestroyNotify)
       gst_mpegts_descriptor_free);
@@ -833,7 +821,7 @@ gst_mpegts_pmt_stream_new (void)
 {
   GstMpegtsPMTStream *stream;
 
-  stream = g_slice_new0 (GstMpegtsPMTStream);
+  stream = g_new0 (GstMpegtsPMTStream, 1);
 
   stream->descriptors = g_ptr_array_new_with_free_func ((GDestroyNotify)
       gst_mpegts_descriptor_free);
@@ -942,7 +930,8 @@ _packetize_pmt (GstMpegtsSection * section)
  *
  * Creates a #GstMpegtsSection from @pmt that is bound to @pid
  *
- * Returns: (transfer full): #GstMpegtsSection
+ * Returns: (transfer full) (nullable): #GstMpegtsSection, or %NULL if @pmt is
+ * invalid
  */
 GstMpegtsSection *
 gst_mpegts_section_from_pmt (GstMpegtsPMT * pmt, guint16 pid)
@@ -985,9 +974,9 @@ _parse_cat (GstMpegtsSection * section)
  * Returns the array of #GstMpegtsDescriptor contained in the Conditional
  * Access Table.
  *
- * Returns: (transfer container) (element-type GstMpegtsDescriptor): The array
- * of #GstMpegtsDescriptor contained in the section, or %NULL if an error
- * happened. Release with #g_array_unref when done.
+ * Returns: (transfer container) (element-type GstMpegtsDescriptor) (nullable):
+ * The array of #GstMpegtsDescriptor contained in the section, or %NULL if an
+ * error happened. Release with #g_array_unref when done.
  */
 GPtrArray *
 gst_mpegts_section_get_cat (GstMpegtsSection * section)
@@ -1014,9 +1003,9 @@ gst_mpegts_section_get_cat (GstMpegtsSection * section)
  *
  * Returns the array of #GstMpegtsDescriptor contained in the section
  *
- * Returns: (transfer container) (element-type GstMpegtsDescriptor): The array
- * of #GstMpegtsDescriptor contained in the section, or %NULL if an error
- * happened. Release with #g_array_unref when done.
+ * Returns: (transfer container) (element-type GstMpegtsDescriptor) (nullable):
+ * The array of #GstMpegtsDescriptor contained in the section, or %NULL if an
+ * error happened. Release with #g_array_unref when done.
  */
 GPtrArray *
 gst_mpegts_section_get_tsdt (GstMpegtsSection * section)
@@ -1102,6 +1091,7 @@ _identify_section (guint16 pid, guint8 table_id)
     case GST_MTS_TABLE_ID_SELECTION_INFORMATION:
       if (pid == 0x001f)
         return GST_MPEGTS_SECTION_SIT;
+      break;
     default:
       /* Handle ranges */
       if (table_id >= GST_MTS_TABLE_ID_EVENT_INFORMATION_ACTUAL_TS_PRESENT &&
@@ -1120,7 +1110,7 @@ _gst_mpegts_section_init (guint16 pid, guint8 table_id)
 {
   GstMpegtsSection *section;
 
-  section = g_slice_new0 (GstMpegtsSection);
+  section = g_new0 (GstMpegtsSection, 1);
   gst_mini_object_init (GST_MINI_OBJECT_CAST (section), 0, MPEG_TYPE_TS_SECTION,
       (GstMiniObjectCopyFunction) _gst_mpegts_section_copy, NULL,
       (GstMiniObjectFreeFunction) _gst_mpegts_section_free);
@@ -1333,16 +1323,4 @@ __initialize_sections (void)
 {
   /* FIXME : Temporary hack to initialize section gtype */
   _gst_mpegts_section_type = gst_mpegts_section_get_type ();
-
-  QUARK_PAT = g_quark_from_string ("pat");
-  QUARK_CAT = g_quark_from_string ("cat");
-  QUARK_PMT = g_quark_from_string ("pmt");
-  QUARK_NIT = g_quark_from_string ("nit");
-  QUARK_BAT = g_quark_from_string ("bat");
-  QUARK_SDT = g_quark_from_string ("sdt");
-  QUARK_EIT = g_quark_from_string ("eit");
-  QUARK_TDT = g_quark_from_string ("tdt");
-  QUARK_TOT = g_quark_from_string ("tot");
-  QUARK_SCTE_SIT = g_quark_from_string ("scte-sit");
-  QUARK_SECTION = g_quark_from_string ("section");
 }

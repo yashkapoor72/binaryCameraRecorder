@@ -108,7 +108,7 @@ gst_ssa_parse_class_init (GstSsaParseClass * klass)
   gst_element_class_add_static_pad_template (element_class, &sink_templ);
   gst_element_class_add_static_pad_template (element_class, &src_templ);
   gst_element_class_set_static_metadata (element_class,
-      "SSA Subtitle Parser", "Codec/Parser/Subtitle",
+      "SSA Subtitle Parser", "Codec/Decoder/Subtitle",
       "Parses SSA subtitle streams",
       "Tim-Philipp Müller <tim centricular net>");
 
@@ -146,6 +146,35 @@ gst_ssa_parse_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
   return res;
 }
 
+#ifndef HAVE_MEMMEM
+// memmem() is a GNU extension so if it's not available we'll need
+// our own implementation here. Thanks C.
+static void *
+my_memmem (const void *haystack, size_t haystacklen, const void *needle,
+    size_t needlelen)
+{
+  const guint8 *cur, *end;
+
+  if (needlelen > haystacklen)
+    return NULL;
+  if (needlelen == 0)
+    return (void *) haystack;
+
+
+  cur = haystack;
+  end = cur + haystacklen - needlelen;
+
+  for (; cur <= end; cur++) {
+    if (memcmp (cur, needle, needlelen) == 0)
+      return (void *) cur;
+  }
+
+  return NULL;
+}
+#else
+#define my_memmem memmem
+#endif
+
 static gboolean
 gst_ssa_parse_setcaps (GstPad * sinkpad, GstCaps * caps)
 {
@@ -154,6 +183,7 @@ gst_ssa_parse_setcaps (GstPad * sinkpad, GstCaps * caps)
   const GValue *val;
   GstStructure *s;
   const guchar bom_utf8[] = { 0xEF, 0xBB, 0xBF };
+  const guint8 header[] = "[Script Info]";
   const gchar *end;
   GstBuffer *priv;
   GstMapInfo map;
@@ -193,7 +223,7 @@ gst_ssa_parse_setcaps (GstPad * sinkpad, GstCaps * caps)
     left -= 3;
   }
 
-  if (!strstr (ptr, "[Script Info]"))
+  if (!my_memmem (ptr, left, header, sizeof (header) - 1))
     goto invalid_init;
 
   if (!g_utf8_validate (ptr, left, &end)) {
@@ -231,6 +261,10 @@ invalid_init:
   }
 }
 
+#ifdef my_memmem
+#undef my_memmem
+#endif
+
 static gboolean
 gst_ssa_parse_remove_override_codes (GstSsaParse * parse, gchar * txt)
 {
@@ -238,7 +272,7 @@ gst_ssa_parse_remove_override_codes (GstSsaParse * parse, gchar * txt)
   gboolean removed_any = FALSE;
 
   while ((t = strchr (txt, '{'))) {
-    end = strchr (txt, '}');
+    end = strchr (t, '}');
     if (end == NULL) {
       GST_WARNING_OBJECT (parse, "Missing { for style override code");
       return removed_any;

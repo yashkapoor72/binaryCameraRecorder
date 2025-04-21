@@ -4,7 +4,7 @@
 #include <opencv2/imgproc.hpp>
 #include <glib.h> 
 
-DeskewHandler::DeskewHandler(int camIndex, int audioIndex) {
+DeskewHandler::DeskewHandler(std::string camIndex, int audioIndex) {
     gst_init(nullptr, nullptr); 
     pipeline = nullptr;
     perspective = nullptr;
@@ -29,7 +29,7 @@ void DeskewHandler::stopPipeline() {
     }
 }
 
-bool DeskewHandler::setupPipeline(int camIndex, int audioIndex) {
+bool DeskewHandler::setupPipeline(std::string camIndex, int audioIndex) {
     // Cleanup if already running
     stopPipeline();
 
@@ -85,11 +85,11 @@ bool DeskewHandler::setupPipeline(int camIndex, int audioIndex) {
         stopPipeline();
         return false;
     }
-
+    std::cout<<"This is unique id: "<<camIndex.c_str()<<std::endl;
     // Configure source
     g_object_set(src, 
         "do-timestamp", TRUE, 
-        "device-index", camIndex,
+        "device-unique-id",camIndex.c_str(),
         "capture-screen", FALSE,
         NULL);
 

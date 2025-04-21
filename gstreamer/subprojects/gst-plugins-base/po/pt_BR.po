@@ -1,7 +1,8 @@
 # Brazilian Portuguese translation of gst-plugins-base.
-# Copyright (C) 2008-2021 Free Software Foundation, Inc.
+# Copyright (C) 2008-2024 Free Software Foundation, Inc.
 # This file is distributed under the same license as the gst-plugins-base package.
 # Fabrício Godoy <skarllot@gmail.com>, 2008-2021.
+# Rafael Fontenelle <rafaelff@gnome.org>, 2024.
 #
 # PCM -> PCM
 # buffering -> preenchendo buffer
@@ -10,20 +11,20 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gst-plugins-base-1.19.2\n"
+"Project-Id-Version: gst-plugins-base-1.24.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
-"PO-Revision-Date: 2021-09-25 22:29-0300\n"
-"Last-Translator: Fabrício Godoy <skarllot@gmail.com>\n"
-"Language-Team: Brazilian Portuguese <ldpbr-translation@lists.sourceforge."
-"net>\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
+"PO-Revision-Date: 2024-10-09 10:56-0300\n"
+"Last-Translator: Rafael Fontenelle <rafaelff@gnome.org>\n"
+"Language-Team: Brazilian Portuguese <ldpbr-"
+"translation@lists.sourceforge.net>\n"
 "Language: pt_BR\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "X-Bugs: Report translation errors to the Language-Team address.\n"
-"Plural-Forms: nplurals=2; plural=(n > 1);\n"
-"X-Generator: Poedit 3.0\n"
+"Plural-Forms: nplurals=2; plural=(n > 1)\n"
+"X-Generator: Gtranslator 47.0\n"
 
 msgid "Could not open device for playback in mono mode."
 msgstr "Não foi possível abrir o dispositivo para reprodução em mono."
@@ -96,9 +97,6 @@ msgstr ""
 msgid "Could not create \"uridecodebin\" element."
 msgstr "Não foi possível criar o elemento \"uridecodebin\"."
 
-msgid "Could not create \"uridecodebin3\" element."
-msgstr "Não foi possível criar o elemento \"uridecodebin3\"."
-
 #, c-format
 msgid "Both autovideosink and %s elements are missing."
 msgstr "Os elementos autovideosink e %s estão faltando."
@@ -163,8 +161,18 @@ msgstr "Este tipo de fluxo ainda não pode ser reproduzido."
 msgid "No URI handler implemented for \"%s\"."
 msgstr "Nenhum controlador para o URI \"%s\" foi implementado."
 
+msgid "Source element can't be prepared"
+msgstr "O elemento de origem não pode ser preparado"
+
 msgid "Source element is invalid."
 msgstr "O elemento de origem é inválido."
+
+#, c-format
+msgid "Failed to create download directory '%s'."
+msgstr "Falha ao criar o diretório de download \"%s\"."
+
+msgid "Source element has no pads."
+msgstr "O elemento de origem não tem preenchimentos."
 
 #, c-format
 msgid "Error while sending data to \"%s:%d\"."
@@ -176,14 +184,14 @@ msgstr "Não é possível gravar o áudio rápido suficiente"
 msgid "This CD has no audio tracks"
 msgstr "Este CD não tem trilhas de áudio"
 
-msgid "failed to draw pattern"
-msgstr "falha ao desenhar padrão"
+msgid "An OpenGL error occurred"
+msgstr "Ocorreu um erro de OpenGL"
 
-msgid "A GL error occurred"
-msgstr "Um erro ocorreu com o GL"
+msgid "The GL API is not compatible with the current GL context"
+msgstr "A API GL não é compatível com o contexto GL atual"
 
-msgid "format wasn't negotiated before get function"
-msgstr "o formato não foi negociado antes da função get"
+msgid "Subclass failed to initialize."
+msgstr "Falha na subclasse ao inicializar."
 
 msgid "ID3 tag"
 msgstr "Etiqueta ID3"
@@ -499,6 +507,14 @@ msgstr "balanço de branco ao capturar"
 msgid "The white balance mode set when capturing an image"
 msgstr "O modo de balanço de branco definido ao capturar uma imagem"
 
+#, fuzzy
+msgid "capturing light source"
+msgstr "origem ao capturar"
+
+#, fuzzy
+msgid "The light source indicates the kind of light when capturing animage"
+msgstr "O modo de captura de cena utilizado ao capturar uma imagem"
+
 msgid "capturing contrast"
 msgstr "contraste ao capturar"
 
@@ -675,14 +691,14 @@ msgstr "alterar a direção de reprodução"
 msgid "enable/disable trick modes"
 msgstr "ativar/desativar modos avançados"
 
-msgid "change audio track"
-msgstr "alterar a trilha de áudio"
+msgid "change to previous/next audio track"
+msgstr "alterar a trilha de áudio anterior/próxima"
 
-msgid "change video track"
-msgstr "alterar a trilha de vídeo"
+msgid "change to previous/next video track"
+msgstr "alterar a trilha de vídeo anterior/próxima"
 
-msgid "change subtitle track"
-msgstr "alterar a trilha de legenda"
+msgid "change to previous/next subtitle track"
+msgstr "alterar a trilha de legenda anterior/próxima"
 
 msgid "seek to beginning"
 msgstr "pular para o começo"
@@ -692,6 +708,10 @@ msgstr "exibir atalhos de teclado"
 
 msgid "Interactive mode - keyboard controls:"
 msgstr "Modo interativo - teclas de comando:"
+
+#, c-format
+msgid "Use Windows high-resolution clock, precision: %u ms\n"
+msgstr "Usar o relógio de alta precisão do Windows: precisão de %u ms\n"
 
 #  Flag: verbose
 msgid "Output status information and property notifications"
@@ -713,15 +733,18 @@ msgstr "Define o elemento consumidor de áudio (predefinido para autoaudiosink)"
 
 #  Flag: gapless
 msgid "Enable gapless playback"
-msgstr "Ativar reprodução sem intervalos"
+msgstr "Ativa reprodução sem intervalos"
+
+msgid "Enable instantaneous uri changes (only with playbin3)"
+msgstr "Ativa alterações instantâneas de uri (apenas com playbin3)"
 
 #  Flag: shuffle
 msgid "Shuffle playlist"
-msgstr "Embaralhar lista de reprodução"
+msgstr "Embaralha lista de reprodução"
 
 #  Flag: no-interactive
 msgid "Disable interactive control via the keyboard"
-msgstr "Desativar controle interativo via teclado"
+msgstr "Desativa controle interativo via teclado"
 
 #  Flag: volume
 msgid "Volume"
@@ -729,6 +752,9 @@ msgstr "Volume"
 
 msgid "Start position in seconds."
 msgstr "Posição inicial em segundos."
+
+msgid "Enable accurate seeking"
+msgstr "Ativa busca precisa"
 
 #  Flag: playlist
 msgid "Playlist file containing input media files"
@@ -741,15 +767,13 @@ msgstr ""
 
 #  Flag: quiet
 msgid "Do not print any output (apart from errors)"
-msgstr "Não exibir nenhuma saída (além dos erros)"
+msgstr "Não exibe nenhuma saída (além dos erros)"
 
-msgid "Use playbin3 pipeline"
-msgstr "Utiliza a fila de processamento playbin3"
+msgid "Use playbin3 pipeline (default)"
+msgstr "Utiliza a fila de processamento playbin3 (padrão)"
 
-msgid "(default varies depending on 'USE_PLAYBIN' env variable)"
-msgstr ""
-"(valor predefinido varia de acordo com a variável de ambiente \"USE_PLAYBIN"
-"\")"
+msgid "Use playbin2 pipeline"
+msgstr "Utiliza a fila de processamento playbin2"
 
 msgid ""
 "Keep showing the last frame on EOS until quit or playlist change command "
@@ -757,6 +781,9 @@ msgid ""
 msgstr ""
 "Continua exibindo o último quadro ao final do fluxo até sair ou ocorrer "
 "alteração da lista de reprodução (reprodução sem intervalos é ignorada)"
+
+msgid "Do not print current position of pipeline"
+msgstr "Não exibe a posição atual da fila de processamento"
 
 #, c-format
 msgid "Usage: %s FILE1|URI1 [FILE2|URI2] [FILE3|URI3] ..."
@@ -767,6 +794,23 @@ msgstr "Você deve fornecer ao menos um nome de arquivo ou URI para reproduzir."
 
 msgid "Press 'k' to see a list of keyboard shortcuts.\n"
 msgstr "Pressione \"k\" para ver a lista de atalhos do teclado.\n"
+
+#~ msgid "failed to draw pattern"
+#~ msgstr "falha ao desenhar padrão"
+
+#~ msgid "format wasn't negotiated before get function"
+#~ msgstr "o formato não foi negociado antes da função get"
+
+#, fuzzy
+#~ msgid ""
+#~ "Use playbin3 pipeline (default varies depending on 'USE_PLAYBIN' env "
+#~ "variable)"
+#~ msgstr ""
+#~ "(valor predefinido varia de acordo com a variável de ambiente "
+#~ "\"USE_PLAYBIN\")"
+
+#~ msgid "Could not create \"uridecodebin3\" element."
+#~ msgstr "Não foi possível criar o elemento \"uridecodebin3\"."
 
 #~ msgid "Could not create \"decodebin3\" element."
 #~ msgstr "Não foi possível criar o elemento \"decodebin3\"."

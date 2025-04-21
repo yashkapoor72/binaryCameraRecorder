@@ -12,37 +12,40 @@ Our documentation, including tutorials, API reference and FAQ can be found at
 
   https://gstreamer.freedesktop.org/documentation/
 
-You can subscribe to our mailing lists:
+You can ask questions on the GStreamer Discourse at
 
-  https://lists.freedesktop.org/mailman/listinfo/gstreamer-announce
-
-  https://lists.freedesktop.org/mailman/listinfo/gstreamer-devel
+  https://discourse.gstreamer.org/
 
 We track bugs, feature requests and merge requests (patches) in GitLab at
 
   https://gitlab.freedesktop.org/gstreamer/
 
-You can join us on IRC - #gstreamer on irc.oftc.net
+You can join us on our Matrix room at
+
+  https://matrix.to/#/#gstreamer:gstreamer.org
 
 This repository contains all official modules supported by the GStreamer
 community which can be found in the `subprojects/` directory.
 
 ## Getting started
 
-### Install git and python 3.5+
+### Install git and python 3.8+
 
-If you're on Linux, you probably already have these. On macOS, you can use the
+If you're on Linux, you probably already have these. On macOS, new versions of
+Xcode ship Python 3 already. If you're on an older Xcode, you can use the
 [official Python installer](https://www.python.org/downloads/mac-osx/).
 
 You can find [instructions for Windows below](#windows-prerequisites-setup).
 
 ### Install meson and ninja
 
-Meson 0.59 or newer is required.
+Meson 1.1 or newer is required.
 
 On Linux and macOS you can get meson through your package manager or using:
 
-  $ pip3 install --user meson
+```
+$ pip3 install --user meson
+```
 
 This will install meson into `~/.local/bin` which may or may not be included
 automatically in your PATH by default.
@@ -54,8 +57,9 @@ binary in your PATH.
 You can find [instructions for Windows below](#windows-prerequisites-setup).
 
 
-On macOS, you might need to execute "Install Certificates.command" from the
-Python folder in the user Applications folder:
+If you used the official Python installer on macOS instead of the Python
+3 shipped with Xcode, you might need to execute "Install Certificates.command"
+from the Python folder in the user Applications folder:
 
 ```
 $ /Applications/Python\ 3.*/Install\ Certificates.command
@@ -72,15 +76,23 @@ urllib.error.URLError: urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificat
 You can get all GStreamer built running:
 
 ```
-meson builddir
-ninja -C builddir
+meson setup builddir
+meson compile -C builddir
 ```
 
-This will automatically create the `build` directory and build everything
+This will automatically create the `builddir` directory and build everything
 inside it.
 
-NOTE: On Windows, you *must* run this from [inside the Visual Studio command
-prompt](#running-meson-on-windows) of the appropriate architecture and version.
+NOTE: On Windows, meson will automatically detect and use the latest Visual
+Studio if GCC, clang, etc are not available in `PATH`. Use the `--vsenv`
+argument to force the use of Visual Studio.
+
+NOTE: Meson will not update subprojects automatically once a subproject has
+been fetched. Remember to update subprojects if wrap files are updated.
+
+```
+meson subprojects update
+```
 
 ### External dependencies
 
@@ -167,80 +179,154 @@ List of plugins with (A)GPL-licensed dependencies (non-exhaustive) in gst-plugin
 
 ### Static build
 
-Since *1.18.0* when doing a static build using `--default-library=static`, a
-shared library `gstreamer-full-1.0` will be produced and includes all enabled
-GStreamer plugins and libraries. A list of libraries that needs to be exposed in
-`gstreamer-full-1.0` ABI can be set using `gst-full-libraries` option. glib-2.0,
-gobject-2.0 and gstreamer-1.0 are always included.
+Since *1.18.0*, when doing a static build using `--default-library=static`,
+a shared library `gstreamer-full-1.0`, in addition to a package config file,
+will be produced and includes all enabled GStreamer plugins and libraries.
+A list of libraries that needs to be exposed in `gstreamer-full-1.0`
+ABI can be set using `gst-full-libraries` option.
+glib-2.0, gobject-2.0 and gstreamer-1.0 are always included.
 
 ```
-meson --default-library=static -Dgst-full-libraries=app,video builddir
+meson setup --default-library=static -Dgst-full-libraries=gstreamer-app-1.0,gstreamer-video-1.0 builddir
 ```
 
 GStreamer *1.18* requires applications using gstreamer-full-1.0 to initialize
 static plugins by calling `gst_init_static_plugins()` after `gst_init()`. That
 function is defined in `gst/gstinitstaticplugins.h` header file.
 
-Since *1.20.0* `gst_init_static_plugins()` is called automatically by
-`gst_init()` and applications must not call it manually any more. The header
-file has been removed from public API.
+Since *1.20.0*, `gst_init_static_plugins()` is called automatically by
+`gst_init()` and applications don't have to call it manually any more.
+The header file has been removed from public API.
 
 One can use the `gst-full-version-script` option to pass a
 [version script](https://www.gnu.org/software/gnulib/manual/html_node/LD-Version-Scripts.html)
 to the linker. This can be used to control the exact symbols that are exported by
-the gstreamer-full library, allowing the linker to garbage collect unused code
-and so reduce the total library size. A default script `gstreamer-full-default.map`
-declares only glib/gstreamer symbols as public.
+the `gstreamer-full` library, allowing the linker to garbage collect unused code
+and so, reduce the total library size. A default script
+`gstreamer-full-default.map` declares only glib/gstreamer symbols as public.
 
-One can use the `gst-full-plugins` option to pass a list of plugins to be registered
-in the gstreamer-full library. The default value is '*' which means that all the plugins selected
-during the build process will be registered statically. An empty value will prevent any plugins to
-be registered.
+One can use the `gst-full-plugins` option to pass a list of plugins to be
+registered in the `gstreamer-full` library. The default value is '*'
+which means that all the plugins selected during the build process will be
+registered statically.
+An empty value will prevent any plugins to be registered.
 
-One can select a specific set of features with `gst-full-elements`, `gst-full-typefind-functions`, `gst-full-device-providers` or `gst-full-dynamic-types` to select specific feature from a plugin.
-When a feature has been listed in one of those options, the other features from its plugin will no longer be automatically included, even if the plugin is listed in `gst-full-plugins`.
+One can select a specific set of features with `gst-full-elements`,
+`gst-full-typefind-functions`, `gst-full-device-providers`
+or `gst-full-dynamic-types` to select specific feature from a plugin.
+When a feature has been listed in one of those options, the other features from
+its plugin will no longer be automatically included, even if the plugin
+is listed in `gst-full-plugins`.
 
-The user must insure that all selected plugins and features (element, typefind, etc.) have been
-enabled during the build configuration.
+The user must insure that all selected plugins and features (element,
+typefind, etc.) have been enabled during the build configuration.
 
 To register features, the syntax is the following:
-plugins are separated by ';' and features from a plugin starts after ':' and are ',' separated.
+plugins are separated by ';' and features from a plugin starts after ':'
+and are ',' separated.
 
 As an example:
- * `-Dgst-full-plugins=coreelements;playback;typefindfunctions;alsa;pbtypes`: enable only `coreelements`, `playback`, `typefindfunctions`, `alsa`, `pbtypes` plugins.
- * `-Dgst-full-elements=coreelements:filesrc,fakesink,identity;alsa:alsasrc`: enable only `filesrc`, `identity` and `fakesink` elements from `coreelements` and `alsasrc` element from `alsa` plugin.
- * `-Dgst-full-typefind-functions=typefindfunctions:wav,flv`: enable only typefind func `wav` and `flv` from `typefindfunctions`
- * `-Dgst-full-device-providers=alsa:alsadeviceprovider`: enable `alsadeviceprovider` from `alsa`.
- * `-Dgst-full-dynamic-types=pbtypes:video_multiview_flagset`:  enable `video_multiview_flagset` from `pbtypes
 
-All features from the `playback` plugin will be enabled and the other plugins will be restricted to the specific features requested.
+ * `-Dgst-full-plugins=coreelements;typefindfunctions;alsa;pbtypes`:
+ Enable only `coreelements`, `typefindfunctions`, `alsa`, `pbtypes` plugins.
+ * `-Dgst-full-elements=coreelements:filesrc,fakesink,identity;alsa:alsasrc`:
+ Enable only `filesrc`, `identity` and `fakesink` elements from `coreelements`
+ plugin and `alsasrc` element from `alsa` plugin.
+ * `-Dgst-full-typefind-functions=typefindfunctions:wav,flv`:
+ Enable only typefind func `wav` and `flv` from `typefindfunctions`
+ * `-Dgst-full-device-providers=alsa:alsadeviceprovider`:
+ Enable `alsadeviceprovider` from `alsa` plugin.
+ * `-Dgst-full-dynamic-types=pbtypes:video_multiview_flagset`:
+ Enable `video_multiview_flagset` from `pbtypes`.
 
-All the selected features will be registered into a dedicated `NULL` plugin name.
+All features from the `playback` plugin will be enabled and the other plugins
+will be restricted to the specific features requested.
 
-This will cause the features/plugins that are not registered to not be included in the final gstreamer-full library.
+All the selected features will be registered into a dedicated `NULL`
+plugin name.
+
+This will cause the features/plugins that are not registered to not be included
+in the final gstreamer-full library.
 
 This is an experimental feature, backward incompatible changes could still be
 made in the future.
+Only linux-like platforms are currently well supported when Windows, MSVC
+and MinGW, should be considered as *experimental* as the symbols export
+is still under discussion.
+
+Since 1.24.7, it is possible to disable the `gstreamer-full` library by passing
+`-Dgst-full=disabled`. This can be useful in cases where you want a static
+build of gstreamer, but you do not want to use gst-full, since linking the
+static executables associated with it can be quite CPU/RAM intensive.
+
+
+#### Full-static build
+
+Since *1.24.0*, it is also possible to link an application with GStreamer
+statically. It means that all the gstreamer libraries will be linked within
+your library or application. However, it is important to note that even though
+the `gstreamer-full` library can be statically built into the application,
+it does not contain all of the code (core libraries and plugins).
+Instead, it relies on all the other static libraries. Hence, while the
+`gstreamer-full` library provides a cohesive access point, the actual
+functionality is distributed across various static libraries.
+You can enable this option using `-Dgst-full-target-type=static_library` which
+is by default set to `shared_library`. The buildsystem will produce a set of
+archives depending on your `gstreamer-full` configuration as explained above.
+Your application can now check the `gstreamer-full` dependency within meson or
+with the package config file.
+In both case, the application can rely on the `gstreamer-full-1.0.pc` file
+generated during the build process to retrieve all its dependencies.
+In that configuration, the *features* selected during the build configuration
+will be automatically registered during the call of `gst_init()`.
+
+
+### Building documentation
+
+Documentation is not built by default because it is slow to generate. To build
+the documentation, first ensure that `hotdoc` is installed and `doc` option is
+enabled. For API documentation, gobject introspection must also be enabled.
+The special target `gst-doc` can then be used to (re)generate the documentation.
+
+```sh
+$ pip install hotdoc
+$ meson setup -Ddoc=enabled -Dintrospection=enabled builddir
+$ meson compile -C builddir gst-doc
+```
+
+NOTE: To visualize the documentation, `devhelp` can be run inside the development
+environment (see below).
 
 # Development environment
 
 ## Development environment target
 
-GStreamer also contains a special `devenv` target that lets you enter an
-development environment where you will be able to work on GStreamer
-easily. You can get into that environment running:
+GStreamer ships a script that drops you into a development environment where
+all the plugins, libraries, and tools you just built are available:
 
 ```
-ninja -C builddir devenv
+./gst-env.py
 ```
 
-If your operating system handles symlinks, built modules source code will be
-available at the root for example GStreamer core will be in
-`gstreamer/`. Otherwise they will be present in `subprojects/`. You can simply
-hack in there and to rebuild you just need to rerun `ninja -C builddir`.
+Or with a custom builddir (i.e., not `build`, `_build` or `builddir`):
 
-NOTE: In the development environment, a fully usable prefix is also configured
-in `gstreamer/prefix` where you can install any extra dependency/project.
+```
+./gst-env.py --builddir <BUILDDIR>
+```
+
+You can also use `ninja devenv` inside your build directory to achieve the same
+effect. However, this may not work on Windows if meson has auto-detected the
+visual studio environment.
+
+Alternatively, if you'd rather not start a shell in your workflow, you
+can mutate the current environment into a suitable state like so:
+
+```
+./gst-env.py --only-environment
+```
+
+This will print output suitable for an sh-compatible `eval` function,
+just like `ssh-agent -s`.
 
 An external script can be run in development environment with:
 
@@ -248,23 +334,26 @@ An external script can be run in development environment with:
 ./gst-env.py external_script.sh
 ```
 
+NOTE: In the development environment, a fully usable prefix is also configured
+in `gstreamer/prefix` where you can install any extra dependency/project.
+
 For more extensive documentation about the development environment go to [the
 documentation](https://gstreamer.freedesktop.org/documentation/installing/building-from-source-using-meson.html).
 
 ## Custom subprojects
 
 We also added a meson option, `custom_subprojects`, that allows the user
-to provide a comma-separated list of subprojects that should be built
+to provide a comma-separated list of meson subprojects that should be built
 alongside the default ones.
 
 To use it:
 
-```
-cd subprojects
-git clone my_subproject
-cd ../build
-rm -rf * && meson .. -Dcustom_subprojects=my_subproject
-ninja
+```sh
+# Clone into the subprojects directory
+$ git -C subprojects clone my_subproject
+# Wipe dependency detection state, in case you have an existing build dir
+$ meson setup --wipe builddir -Dcustom_subprojects=my_subproject
+$ meson compile -C builddir
 ```
 
 ## Run tests
@@ -272,7 +361,7 @@ ninja
 You can easily run the test of all the components:
 
 ```
-meson test -C build
+meson test -C builddir
 ```
 
 To list all available tests:
@@ -305,8 +394,8 @@ You can also install everything that is built into a predetermined prefix like
 so:
 
 ```
-meson --prefix=/path/to/install/prefix builddir
-ninja -C builddir
+meson setup --prefix=/path/to/install/prefix builddir
+meson compile -C builddir
 meson install -C builddir
 ```
 
@@ -363,7 +452,7 @@ following option:
 
 ![Select "Git from the command line and also from 3rd-party software"](/data/images/git-installer-PATH.png)
 
-### Python 3.5+ on Windows
+### Python 3.8+ on Windows
 
 Use the [official Python installer](https://www.python.org/downloads/windows/).
 You must ensure that Python is installed into `PATH`:
@@ -375,16 +464,18 @@ a system-wide location such as `C:\PythonXY`, but this is not required.
 
 ### Ninja on Windows
 
-The easiest way to install Ninja on Windows is with `pip3`, which will download
-the compiled binary and place it into the `Scripts` directory inside your
-Python installation:
+If you are using Visual Studio 2019 or newer, Ninja is already provided.
+
+In other cases, the easiest way to install Ninja on Windows is with `pip3`,
+which will download the compiled binary and place it into the `Scripts`
+directory inside your Python installation:
 
 ```
 pip3 install ninja
 ```
 
 You can also download the [official release](https://github.com/ninja-build/ninja/releases)
-and place it into `PATH`.
+and place it into `PATH`, or use MSYS2.
 
 ### Meson on Windows
 
@@ -403,16 +494,13 @@ use the latest master branch for some reason.
 
 ### Running Meson on Windows
 
-At present, to build with Visual Studio, you need to run Meson from inside the
-VS 2019 command prompt. Press `Start`, and search for `VS 2019`, and click on
-`x64 Native Tools Command Prompt for VS 2019`, or a prompt named similar to
-that:
+Since version 0.59.0, Meson automatically activates the Visual Studio
+environment on Windows if no other compilers (gcc, clang, etc) are found. To
+force the use of Visual Studio in such cases, you can use:
 
-![x64 Native Tools Command Prompt for VS 2019](/data/images/vs-2019-dev-prompt.png)
-
-**ARM64 native only**: Since Visual Studio might not install dedicated command
-prompt for native ARM64 build, you might need to run `vcvarsx86_arm64.bat` on CMD.
-Please refer to [this document](https://docs.microsoft.com/en-us/cpp/build/building-on-the-command-line?view=vs-2019#developer_command_file_locations)
+```
+meson setup --vsenv builddir
+```
 
 ### Setup a mingw/wine based development environment on linux
 
@@ -446,25 +534,23 @@ meson/meson.py install -C $BUILDDIR/
 ```
 
 > __NOTE__: You should use `meson install -C $BUILDDIR`  each time you make a change
-> instead of the usual `ninja -C build` as this is not in the development environment.
+> instead of the usual `meson compile -C $BUILDDIR` as this is not in the
+> development environment.
 
-#### The development environment
+Alternatively, you can also use `mingw64-meson` on Fedora, which is a wrapper
+script that sets things up to use Fedora's cross files and settings. However,
+the wrapper script can be buggy in some cases.
 
-You can get into the development environment the usual way:
+#### cross-mingw development environment
+
+You can get into the development environment as usual with the gst-env.py
+script:
 
 ```
-ninja -C $BUILDDIR/ devenv
+./gst-env.py
 ```
 
-Alternatively, if you'd rather not start a shell in your workflow, you
-can mutate the current environment into a suitable state like so:
-
-```
-gst-env.py --only-environment
-```
-
-This will print output suitable for an sh-compatible `eval` function,
-just like `ssh-agent -s`.
+See [above](#development-environment) for more details.
 
 After setting up [binfmt] to use wine for windows binaries,
 you can run GStreamer tools under wine by running:

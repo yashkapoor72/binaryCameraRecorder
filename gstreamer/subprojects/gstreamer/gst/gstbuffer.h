@@ -567,8 +567,8 @@ gboolean        gst_buffer_copy_into            (GstBuffer *dest, GstBuffer *src
  * that it returns. Don't access the argument after calling this function unless
  * you have an additional reference to it.
  *
- * Returns: (transfer full): a writable buffer which may or may not be the
- *     same as @buf
+ * Returns: (transfer full) (nullable): a writable buffer (which may or may not be the
+ *     same as @buf) or %NULL if copying is required but not possible.
  */
 #define         gst_buffer_make_writable(buf)   GST_BUFFER_CAST (gst_mini_object_make_writable (GST_MINI_OBJECT_CAST (buf)))
 
@@ -762,6 +762,9 @@ typedef struct _GstReferenceTimestampMeta GstReferenceTimestampMeta;
  *    on a given PTP clock.
  *  * `timestamp/x-unix`: for timestamps based on the UNIX epoch according to
  *    the local clock.
+ *
+ * Since 1.24 it can be serialized using gst_meta_serialize() and
+ * gst_meta_deserialize().
  *
  * Since: 1.14
  */

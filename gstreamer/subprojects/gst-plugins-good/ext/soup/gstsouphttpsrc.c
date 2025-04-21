@@ -84,6 +84,8 @@
 
 #include <gst/tag/tag.h>
 
+#include <gst/glib-compat-private.h>
+
 /* this is a simple wrapper class around SoupSession; it exists in order to
  * have a refcountable owner for the actual SoupSession + the thread it runs
  * in and its main loop (we cannot inverse the ownership hierarchy, because
@@ -94,6 +96,7 @@
 
 #define GST_TYPE_SOUP_SESSION (gst_soup_session_get_type())
 #define GST_SOUP_SESSION(obj) (G_TYPE_CHECK_INSTANCE_CAST ((obj), GST_TYPE_SOUP_SESSION, GstSoupSession))
+#define gst_soup_session_parent_class session_parent_class
 
 GType gst_soup_session_get_type (void);
 
@@ -137,8 +140,9 @@ gst_soup_session_finalize (GObject * obj)
   GSource *src;
 
   /* handle disposing of failure cases */
-  if (!sess->loop)
-    return;
+  if (!sess->loop) {
+    goto cleanup;
+  }
 
   src = g_idle_source_new ();
 
@@ -150,6 +154,8 @@ gst_soup_session_finalize (GObject * obj)
   g_assert (!g_main_context_is_owner (g_main_loop_get_context (sess->loop)));
   g_thread_join (sess->thread);
   g_main_loop_unref (sess->loop);
+cleanup:
+  G_OBJECT_CLASS (session_parent_class)->finalize (obj);
 }
 
 static void
@@ -196,9 +202,19 @@ enum
   PROP_RETRIES,
   PROP_METHOD,
   PROP_TLS_INTERACTION,
+  PROP_RETRY_BACKOFF_FACTOR,
+  PROP_RETRY_BACKOFF_MAX,
 };
 
-#define DEFAULT_USER_AGENT           "GStreamer souphttpsrc " PACKAGE_VERSION " "
+enum
+{
+  SIGNAL_ACCEPT_CERTIFICATE,
+  LAST_SIGNAL,
+};
+
+static guint gst_soup_http_src_signals[LAST_SIGNAL] = { 0 };
+
+#define DEFAULT_USER_AGENT           "GStreamer souphttpsrc {VERSION} "
 #define DEFAULT_IRADIO_MODE          TRUE
 #define DEFAULT_SOUP_LOG_LEVEL       SOUP_LOGGER_LOG_HEADERS
 #define DEFAULT_COMPRESS             FALSE
@@ -210,6 +226,8 @@ enum
 #define DEFAULT_TLS_INTERACTION      NULL
 #define DEFAULT_TIMEOUT              15
 #define DEFAULT_RETRIES              3
+#define DEFAULT_RETRY_BACKOFF_FACTOR 0.0
+#define DEFAULT_RETRY_BACKOFF_MAX    60.0
 #define DEFAULT_SOUP_METHOD          NULL
 
 #define GROW_BLOCKSIZE_LIMIT 1
@@ -424,7 +442,8 @@ gst_soup_http_src_class_init (GstSoupHTTPSrcClass * klass)
   g_object_class_install_property (gobject_class, PROP_SSL_CA_FILE,
       g_param_spec_string ("ssl-ca-file", "SSL CA File",
           "Location of a SSL anchor CA file to use", DEFAULT_SSL_CA_FILE,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS
+          | GST_PARAM_DOC_SHOW_DEFAULT));
 
   /**
    * GstSoupHTTPSrc::ssl-use-system-ca-file:
@@ -440,7 +459,8 @@ gst_soup_http_src_class_init (GstSoupHTTPSrcClass * klass)
   g_object_class_install_property (gobject_class, PROP_SSL_USE_SYSTEM_CA_FILE,
       g_param_spec_boolean ("ssl-use-system-ca-file", "Use System CA File",
           "Use system CA file", DEFAULT_SSL_USE_SYSTEM_CA_FILE,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS
+          | GST_PARAM_DOC_SHOW_DEFAULT));
 
   /**
    * GstSoupHTTPSrc::tls-database:
@@ -497,6 +517,60 @@ gst_soup_http_src_class_init (GstSoupHTTPSrcClass * klass)
           "The HTTP method to use (GET, HEAD, OPTIONS, etc)",
           DEFAULT_SOUP_METHOD, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+ /**
+   * GstSoupHTTPSrc:retry-backoff-factor:
+   *
+   * A backoff factor to apply between attempts after the second try
+   * (most errors are resolved immediately by a second try without a delay).
+   * souphttpsrc will sleep for:
+   *
+   * ```
+   * {backoff factor} * (2 ** ({number of previous retries}))
+   * ``
+   *
+   * seconds
+   *
+   * Since: 1.26
+   */
+  g_object_class_install_property (gobject_class, PROP_RETRY_BACKOFF_FACTOR,
+      g_param_spec_double ("retry-backoff-factor", "Backoff Factor",
+          "Exponential retry backoff factor in seconds", 0.0, G_MAXDOUBLE,
+          DEFAULT_RETRY_BACKOFF_FACTOR,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstSoupHTTPSrc:retry-backoff-max:
+   *
+   * Maximum retry backoff delay in seconds
+   *
+   * Since: 1.26
+   */
+  g_object_class_install_property (gobject_class, PROP_RETRY_BACKOFF_MAX,
+      g_param_spec_double ("retry-backoff-max", "Maximum retry Backoff delay",
+          "Maximum backoff delay in seconds", 0.0, G_MAXDOUBLE,
+          DEFAULT_RETRY_BACKOFF_MAX,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  /**
+   * GstSoupHTTPSrc::accept-certificate:
+   * @souphttpsrc: a #GstSoupHTTPSrc
+   * @peer_cert: the peer's #GTlsCertificate
+   * @errors: the problems with @peer_cert
+   *
+   * This will directly map to #SoupMessage 's "accept-certificate" after
+   * an unacceptable TLS certificate has been received, and only for libsoup 3.x
+   * or above. If "ssl-strict" was set to %FALSE, this signal will not be
+   * emitted.
+   *
+   * Returns: %TRUE to accept the TLS certificate and stop other handlers from
+   * being invoked, or %FALSE to propagate the event further.
+   *
+   * Since: 1.24
+   */
+  gst_soup_http_src_signals[SIGNAL_ACCEPT_CERTIFICATE] =
+      g_signal_new ("accept-certificate", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, 0, g_signal_accumulator_true_handled, NULL, NULL,
+      G_TYPE_BOOLEAN, 2, G_TYPE_TLS_CERTIFICATE, G_TYPE_TLS_CERTIFICATE_FLAGS);
+
   gst_element_class_add_static_pad_template (gstelement_class, &srctemplate);
 
   gst_element_class_set_static_metadata (gstelement_class, "HTTP client source",
@@ -525,7 +599,7 @@ gst_soup_http_src_class_init (GstSoupHTTPSrcClass * klass)
 static void
 gst_soup_http_src_reset (GstSoupHTTPSrc * src)
 {
-  src->retry_count = 0;
+  src->retry.count = 0;
   src->have_size = FALSE;
   src->got_headers = FALSE;
   src->headers_ret = GST_FLOW_OK;
@@ -549,6 +623,14 @@ gst_soup_http_src_reset (GstSoupHTTPSrc * src)
   src->iradio_genre = NULL;
   g_free (src->iradio_url);
   src->iradio_url = NULL;
+}
+
+static void
+gst_soup_http_src_init_retry_params (GstSoupHTTPSrc * src)
+{
+  src->retry.max = DEFAULT_RETRIES;
+  src->retry.backoff_factor = DEFAULT_RETRY_BACKOFF_FACTOR;
+  src->retry.backoff_max = DEFAULT_RETRY_BACKOFF_MAX;
 }
 
 static void
@@ -580,7 +662,6 @@ gst_soup_http_src_init (GstSoupHTTPSrc * src)
   src->ssl_use_system_ca_file = DEFAULT_SSL_USE_SYSTEM_CA_FILE;
   src->tls_database = DEFAULT_TLS_DATABASE;
   src->tls_interaction = DEFAULT_TLS_INTERACTION;
-  src->max_retries = DEFAULT_RETRIES;
   src->method = DEFAULT_SOUP_METHOD;
   src->minimum_blocksize = gst_base_src_get_blocksize (GST_BASE_SRC_CAST (src));
   proxy = g_getenv ("http_proxy");
@@ -593,6 +674,7 @@ gst_soup_http_src_init (GstSoupHTTPSrc * src)
   gst_base_src_set_automatic_eos (GST_BASE_SRC (src), FALSE);
 
   gst_soup_http_src_reset (src);
+  gst_soup_http_src_init_retry_params (src);
 }
 
 static void
@@ -748,7 +830,9 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
       src->tls_interaction = g_value_dup_object (value);
       break;
     case PROP_RETRIES:
-      src->max_retries = g_value_get_int (value);
+      GST_OBJECT_LOCK (src);
+      src->retry.max = g_value_get_int (value);
+      GST_OBJECT_UNLOCK (src);
       break;
     case PROP_METHOD:
       g_free (src->method);
@@ -764,6 +848,16 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
       if (gst_soup_loader_get_api_version () == 2) {
         src->ssl_use_system_ca_file = g_value_get_boolean (value);
       }
+      break;
+    case PROP_RETRY_BACKOFF_FACTOR:
+      GST_OBJECT_LOCK (src);
+      src->retry.backoff_factor = g_value_get_double (value);
+      GST_OBJECT_UNLOCK (src);
+      break;
+    case PROP_RETRY_BACKOFF_MAX:
+      GST_OBJECT_LOCK (src);
+      src->retry.backoff_max = g_value_get_double (value);
+      GST_OBJECT_UNLOCK (src);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -844,7 +938,9 @@ gst_soup_http_src_get_property (GObject * object, guint prop_id,
       g_value_set_object (value, src->tls_interaction);
       break;
     case PROP_RETRIES:
-      g_value_set_int (value, src->max_retries);
+      GST_OBJECT_LOCK (src);
+      g_value_set_int (value, src->retry.max);
+      GST_OBJECT_UNLOCK (src);
       break;
     case PROP_METHOD:
       g_value_set_string (value, src->method);
@@ -856,6 +952,16 @@ gst_soup_http_src_get_property (GObject * object, guint prop_id,
     case PROP_SSL_USE_SYSTEM_CA_FILE:
       if (gst_soup_loader_get_api_version () == 2)
         g_value_set_boolean (value, src->ssl_use_system_ca_file);
+      break;
+    case PROP_RETRY_BACKOFF_FACTOR:
+      GST_OBJECT_LOCK (src);
+      g_value_set_double (value, src->retry.backoff_factor);
+      GST_OBJECT_UNLOCK (src);
+      break;
+    case PROP_RETRY_BACKOFF_MAX:
+      GST_OBJECT_LOCK (src);
+      g_value_set_double (value, src->retry.backoff_max);
+      GST_OBJECT_UNLOCK (src);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -903,10 +1009,11 @@ gst_soup_http_src_add_range_header (GstSoupHTTPSrc * src, guint64 offset,
 }
 
 static gboolean
-_append_extra_header (GQuark field_id, const GValue * value, gpointer user_data)
+_append_extra_header (const GstIdStr * fieldname, const GValue * value,
+    gpointer user_data)
 {
   GstSoupHTTPSrc *src = GST_SOUP_HTTP_SRC (user_data);
-  const gchar *field_name = g_quark_to_string (field_id);
+  const gchar *field_name = gst_id_str_as_str (fieldname);
   gchar *field_content = NULL;
   SoupMessageHeaders *request_headers =
       _soup_message_get_request_headers (src->msg);
@@ -938,7 +1045,7 @@ _append_extra_header (GQuark field_id, const GValue * value, gpointer user_data)
 }
 
 static gboolean
-_append_extra_headers (GQuark field_id, const GValue * value,
+_append_extra_headers (const GstIdStr * fieldname, const GValue * value,
     gpointer user_data)
 {
   if (G_VALUE_TYPE (value) == GST_TYPE_ARRAY) {
@@ -948,7 +1055,7 @@ _append_extra_headers (GQuark field_id, const GValue * value,
     for (i = 0; i < n; i++) {
       const GValue *v = gst_value_array_get_value (value, i);
 
-      if (!_append_extra_header (field_id, v, user_data))
+      if (!_append_extra_header (fieldname, v, user_data))
         return FALSE;
     }
   } else if (G_VALUE_TYPE (value) == GST_TYPE_LIST) {
@@ -958,11 +1065,11 @@ _append_extra_headers (GQuark field_id, const GValue * value,
     for (i = 0; i < n; i++) {
       const GValue *v = gst_value_list_get_value (value, i);
 
-      if (!_append_extra_header (field_id, v, user_data))
+      if (!_append_extra_header (fieldname, v, user_data))
         return FALSE;
     }
   } else {
-    return _append_extra_header (field_id, value, user_data);
+    return _append_extra_header (fieldname, value, user_data);
   }
 
   return TRUE;
@@ -975,7 +1082,8 @@ gst_soup_http_src_add_extra_headers (GstSoupHTTPSrc * src)
   if (!src->extra_headers)
     return TRUE;
 
-  return gst_structure_foreach (src->extra_headers, _append_extra_headers, src);
+  return gst_structure_foreach_id_str (src->extra_headers,
+      _append_extra_headers, src);
 }
 
 static gpointer
@@ -1012,11 +1120,11 @@ thread_func (gpointer user_data)
           NULL);
       g_object_unref (proxy_resolver);
     }
-#if !defined(STATIC_SOUP) || STATIC_SOUP == 2
+#if !defined(LINK_SOUP) || LINK_SOUP == 2
   } else {
     g_object_set (session->session, "ssl-strict", src->ssl_strict, NULL);
     if (src->proxy != NULL) {
-      /* Need #if because there's no proxy->soup_uri when STATIC_SOUP == 3 */
+      /* Need #if because there's no proxy->soup_uri when LINK_SOUP == 3 */
       g_object_set (session->session, "proxy-uri", src->proxy->soup_uri, NULL);
     }
 #endif
@@ -1165,7 +1273,7 @@ gst_soup_http_src_session_open (GstSoupHTTPSrc * src)
     /* now owned by the loop */
     g_main_context_unref (ctx);
 
-    src->session->thread = g_thread_try_new ("souphttpsrc-thread",
+    src->session->thread = g_thread_try_new ("souphttpsrc",
         thread_func, src, NULL);
 
     if (!src->session->thread) {
@@ -1312,6 +1420,7 @@ gst_soup_http_src_accept_certificate_cb (SoupMessage * msg,
     gpointer user_data)
 {
   GstSoupHTTPSrc *src = user_data;
+  gboolean accept = FALSE;
 
   /* Might be from another user of the shared session */
   if (!GST_IS_SOUP_HTTP_SRC (src) || msg != src->msg)
@@ -1321,7 +1430,10 @@ gst_soup_http_src_accept_certificate_cb (SoupMessage * msg,
   if (!src->ssl_strict)
     return TRUE;
 
-  return FALSE;
+  g_signal_emit (src, gst_soup_http_src_signals[SIGNAL_ACCEPT_CERTIFICATE], 0,
+      tls_certificate, tls_errors, &accept);
+
+  return accept;
 }
 
 static void
@@ -1614,7 +1726,11 @@ gst_soup_http_src_parse_status (SoupMessage * msg, GstSoupHTTPSrc * src)
   }
 
   /* SOUP_STATUS_IS_TRANSPORT_ERROR was replaced with GError in libsoup-3.0 */
-#if !defined(STATIC_SOUP) || STATIC_SOUP == 2
+  GST_OBJECT_LOCK (src);
+  Retry retry = src->retry;
+  GST_OBJECT_UNLOCK (src);
+
+#if !defined(LINK_SOUP) || LINK_SOUP == 2
   if (SOUP_STATUS_IS_TRANSPORT_ERROR (status_code)) {
     switch (status_code) {
       case SOUP_STATUS_CANT_RESOLVE:
@@ -1632,7 +1748,7 @@ gst_soup_http_src_parse_status (SoupMessage * msg, GstSoupHTTPSrc * src)
             _("Secure connection setup failed."));
         return GST_FLOW_ERROR;
       case SOUP_STATUS_IO_ERROR:
-        if (src->max_retries == -1 || src->retry_count < src->max_retries)
+        if (retry.max == -1 || retry.count < retry.max)
           return GST_FLOW_CUSTOM_ERROR;
         SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, READ,
             _("A network error occurred, or the server closed the connection "
@@ -1651,6 +1767,19 @@ gst_soup_http_src_parse_status (SoupMessage * msg, GstSoupHTTPSrc * src)
     return GST_FLOW_OK;
   }
 #endif
+
+  switch (status_code) {
+    case SOUP_STATUS_SERVICE_UNAVAILABLE:
+    case SOUP_STATUS_INTERNAL_SERVER_ERROR:
+      if (retry.max == -1 || retry.count < retry.max) {
+        return GST_FLOW_CUSTOM_ERROR;
+      }
+      /* Error out when retry_params.max is reached. */
+      break;
+    default:
+      break;
+  }
+
 
   if (SOUP_STATUS_IS_CLIENT_ERROR (status_code) ||
       SOUP_STATUS_IS_REDIRECTION (status_code) ||
@@ -1729,22 +1858,16 @@ gst_soup_http_src_build_message (GstSoupHTTPSrc * src, const gchar * method)
   /* Duplicating the defaults of libsoup here. We don't want to set a
    * User-Agent in the session as each source might have its own User-Agent
    * set */
-  if (!src->user_agent || !*src->user_agent) {
-    gchar *user_agent =
-        g_strdup_printf ("libsoup/%u.%u.%u", _soup_get_major_version (),
-        _soup_get_minor_version (), _soup_get_micro_version ());
-    _soup_message_headers_append (request_headers, "User-Agent", user_agent);
-    g_free (user_agent);
-  } else if (g_str_has_suffix (src->user_agent, " ")) {
-    gchar *user_agent = g_strdup_printf ("%slibsoup/%u.%u.%u", src->user_agent,
-        _soup_get_major_version (),
-        _soup_get_minor_version (), _soup_get_micro_version ());
-    _soup_message_headers_append (request_headers, "User-Agent", user_agent);
-    g_free (user_agent);
-  } else {
-    _soup_message_headers_append (request_headers, "User-Agent",
-        src->user_agent);
+  GString *user_agent = g_string_new (src->user_agent);
+  g_string_replace (user_agent, "{VERSION}", PACKAGE_VERSION, 0);
+  if (user_agent->len == 0 || g_str_has_suffix (user_agent->str, " ")) {
+    g_string_append_printf (user_agent, "libsoup/%u.%u.%u",
+        _soup_get_major_version (), _soup_get_minor_version (),
+        _soup_get_micro_version ());
   }
+  _soup_message_headers_append (request_headers, "User-Agent", user_agent->str);
+  g_string_free (user_agent, TRUE);
+  user_agent = NULL;
 
   if (!src->keep_alive) {
     _soup_message_headers_append (request_headers, "Connection", "close");
@@ -1781,7 +1904,7 @@ gst_soup_http_src_build_message (GstSoupHTTPSrc * src, const gchar * method)
     /* SOUP_MESSAGE_OVERWRITE_CHUNKS is gone in libsoup-3.0, and
      * soup_message_body_set_accumulate() requires SoupMessageBody, which
      * can only be fetched from SoupServerMessage, not SoupMessage */
-#if !defined(STATIC_SOUP) || STATIC_SOUP == 2
+#if !defined(LINK_SOUP) || LINK_SOUP == 2
     if (gst_soup_loader_get_api_version () == 2)
       flags |= SOUP_MESSAGE_OVERWRITE_CHUNKS;
 #endif
@@ -1900,27 +2023,54 @@ gst_soup_http_src_do_request (GstSoupHTTPSrc * src, const gchar * method)
   GstFlowReturn ret;
   SoupMessageHeaders *request_headers;
 
-  if (src->max_retries != -1 && src->retry_count > src->max_retries) {
+  GST_OBJECT_LOCK (src);
+  if (src->retry.count > src->retry.max) {
     GST_DEBUG_OBJECT (src, "Max retries reached");
+    GST_OBJECT_UNLOCK (src);
+
     return GST_FLOW_ERROR;
   }
 
-  src->retry_count++;
+  src->retry.count++;
+  Retry retry = src->retry;
+  GST_OBJECT_UNLOCK (src);
+
+  if (retry.count > 1 && retry.backoff_factor > 0.0) {
+    gdouble backoff = MIN (retry.backoff_factor * (1 << (retry.count - 1)),
+        retry.backoff_max);
+
+    if (backoff > 0.0) {
+      gint64 end_time = g_get_monotonic_time () + (backoff * G_USEC_PER_SEC);
+      gint64 remaining_time = end_time - g_get_monotonic_time ();
+
+      while (!g_cancellable_is_cancelled (src->cancellable)
+          && remaining_time > 0) {
+        GST_INFO_OBJECT (src, "Backoff for %.2f seconds before retry %d",
+            backoff, retry.count);
+        g_mutex_lock (&src->retry.lock);
+        g_cond_wait_until (&src->retry.cond, &src->retry.lock, end_time);
+        g_mutex_unlock (&src->retry.lock);
+
+        remaining_time = end_time - g_get_monotonic_time ();
+      }
+    }
+  }
   /* EOS immediately if we have an empty segment */
   if (src->request_position == src->stop_position)
     return GST_FLOW_EOS;
 
   GST_LOG_OBJECT (src, "Running request for method: %s", method);
 
-  if (src->msg)
+  if (src->msg) {
     request_headers = _soup_message_get_request_headers (src->msg);
 
-  /* Update the position if we are retrying */
-  if (src->msg && src->request_position > 0) {
-    gst_soup_http_src_add_range_header (src, src->request_position,
-        src->stop_position);
-  } else if (src->msg && src->request_position == 0)
-    _soup_message_headers_remove (request_headers, "Range");
+    /* Update the position if we are retrying */
+    if (src->request_position > 0) {
+      gst_soup_http_src_add_range_header (src, src->request_position,
+          src->stop_position);
+    } else if (src->request_position == 0)
+      _soup_message_headers_remove (request_headers, "Range");
+  }
 
   /* add_range_header() has the side effect of setting read_position to
    * the requested position. This *needs* to be set regardless of having
@@ -2132,7 +2282,9 @@ gst_soup_http_src_read_buffer (GstSoupHTTPSrc * src, GstBuffer ** outbuf)
     gst_soup_http_src_update_position (src, res.nbytes);
 
     /* Got some data, reset retry counter */
-    src->retry_count = 0;
+    GST_OBJECT_LOCK (src);
+    src->retry.count = 0;
+    GST_OBJECT_UNLOCK (src);
 
     gst_soup_http_src_check_update_blocksize (src, res.nbytes);
 
@@ -2288,7 +2440,9 @@ done:
   }
 
   if (ret == GST_FLOW_FLUSHING) {
-    src->retry_count = 0;
+    GST_OBJECT_LOCK (src);
+    src->retry.count = 0;
+    GST_OBJECT_UNLOCK (src);
   }
 
   return ret;
@@ -2318,10 +2472,15 @@ gst_soup_http_src_stop (GstBaseSrc * bsrc)
 
   gst_soup_http_src_stream_clear (src);
 
-  if (src->keep_alive && !src->msg && !src->session_is_shared)
+  if (src->keep_alive && !src->msg && !src->session_is_shared) {
     g_cancellable_cancel (src->cancellable);
-  else
+
+    g_mutex_lock (&src->retry.lock);
+    g_cond_broadcast (&src->retry.cond);
+    g_mutex_unlock (&src->retry.lock);
+  } else {
     gst_soup_http_src_session_close (src);
+  }
 
   gst_soup_http_src_reset (src);
   return TRUE;
@@ -2381,6 +2540,9 @@ gst_soup_http_src_unlock (GstBaseSrc * bsrc)
   GST_DEBUG_OBJECT (src, "unlock()");
 
   g_cancellable_cancel (src->cancellable);
+  g_mutex_lock (&src->retry.lock);
+  g_cond_broadcast (&src->retry.cond);
+  g_mutex_unlock (&src->retry.lock);
   return TRUE;
 }
 

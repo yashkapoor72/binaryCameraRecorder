@@ -27,12 +27,13 @@ if not build_gir
     subdir_done()
 endif
 
-required_hotdoc_extensions = ['gi-extension', 'gst-extension']
 if gst_dep.type_name() == 'internal'
     gst_proj = subproject('gstreamer')
     plugins_cache_generator = gst_proj.get_variable('plugins_cache_generator')
 else
-    plugins_cache_generator = find_program(join_paths(gst_dep.get_variable('libexecdir'), 'gstreamer-' + apiversion, 'gst-plugins-doc-cache-generator'), required: false)
+    plugins_cache_generator = find_program('gst-plugins-doc-cache-generator',
+        dirs: [join_paths(gst_dep.get_variable('libexecdir', default_value: ''), 'gstreamer-' + api_version)],
+        required: false)
 endif
 
 plugins_cache = join_paths(meson.current_source_dir(), 'gst_plugins_cache.json')
@@ -48,33 +49,9 @@ else
     warning('GStreamer plugin inspector for documentation not found, can\'t update the cache')
 endif
 
-hotdoc_p = find_program('hotdoc', required: get_option('doc'))
-if not hotdoc_p.found()
-    message('Hotdoc not found, not building the documentation')
-    subdir_done()
+if get_option('doc').disabled()
+  subdir_done()
 endif
-
-hotdoc_req = '>= 0.11.0'
-hotdoc_version = run_command(hotdoc_p, '--version', check: false).stdout()
-if not hotdoc_version.version_compare(hotdoc_req)
-    if get_option('doc').enabled()
-        error('Hotdoc version @0@ not found, got @1@'.format(hotdoc_req, hotdoc_version))
-    else
-        message('Hotdoc version @0@ not found, got @1@, not building documentation'.format(hotdoc_req, hotdoc_version))
-        subdir_done()
-    endif
-endif
-
-hotdoc = import('hotdoc')
-foreach extension: required_hotdoc_extensions
-    if not hotdoc.has_extensions(extension)
-        if get_option('doc').enabled()
-            error('Documentation enabled but gi-extension missing')
-        endif
-
-        message('@0@ extensions not found, not building documentation requiring it'.format(extension))
-    endif
-endforeach
 
 build_hotdoc = true
 ges_excludes = []
@@ -93,44 +70,80 @@ foreach f: ['gesmarshal.*',
     ges_excludes += [join_paths(meson.current_source_dir(), '..', '..', 'ges', f)]
 endforeach
 
-hotdoc = import('hotdoc')
-libs_doc = [hotdoc.generate_doc('gst-editing-services',
-    project_version: apiversion,
-    extra_assets: [join_paths(meson.current_source_dir(), 'images')],
-    gi_c_sources: ges_sources + ges_headers,
-    gi_c_source_roots: [join_paths(meson.current_source_dir(), '../ges/')],
-    gi_sources: [ges_gir[0].full_path()],
-    gi_c_source_filters: ges_excludes,
-    sitemap: 'sitemap.txt',
-    index: 'index.md',
-    gi_index: 'index.md',
-    gi_smart_index: true,
-    gi_order_generated_subpages: true,
-    dependencies: [ges_dep],
-    disable_incremental_build: true,
-)]
-
-plugins_doc = []
-list_plugin_res = run_command(python3, '-c',
-'''
-import sys
-import json
-
-with open("@0@") as f:
-    print(':'.join(json.load(f).keys()), end='')
-'''.format(plugins_cache),
-  check: true)
-foreach plugin_name: list_plugin_res.stdout().split(':')
-    plugins_doc += [hotdoc.generate_doc(plugin_name,
-        project_version: apiversion,
-        sitemap: 'plugins/sitemap.txt',
-        index: 'plugins/index.md',
-        gst_index: 'plugins/index.md',
-        gst_smart_index: true,
-        gst_c_sources: ['../plugins/*/*.[ch]',],
-        dependencies: [gst_dep],
-        gst_order_generated_subpages: true,
-        gst_cache_file: plugins_cache,
-        gst_plugin_name: plugin_name,
-    )]
+cdir = meson.current_source_dir()
+doc_sources = []
+foreach s: ges_headers + ges_sources
+  doc_sources += s.full_path()
 endforeach
+
+lib_sources = {
+  'ges': pathsep.join(doc_sources)
+}
+
+lib_doc_source_file = configure_file(
+  output: 'lib_doc_sources.json',
+  configuration: lib_sources,
+  output_format: 'json')
+
+lib_doc_gi_source_file = configure_file(
+  output: 'lib_doc_gi_sources.json',
+  configuration: {'ges': ges_gir[0].full_path()},
+  output_format: 'json')
+
+lib_hotdoc_config = custom_target(
+  'build-gst-hotdoc-configs',
+  command: [
+    plugins_cache_generator,
+    'hotdoc-lib-config',
+    '--srcdir', cdir,
+    '--builddir', meson.current_build_dir(),
+    '--buildroot', meson.global_build_root(),
+    '--project_version', api_version,
+    '--gi_source_file', lib_doc_gi_source_file,
+    '--gi_c_source_file', lib_doc_source_file,
+    '--gi_c_source_filters', ges_excludes,
+    '--source_root', cdir,
+    '--gi_source_root', cdir / '..' / 'ges',
+    '--output', '@OUTPUT@',
+  ],
+  output: 'hotdoc-lib-configs.json',
+  depends: [ges_gir[0]]
+)
+
+doc_source_file = configure_file(output: 'doc_sources.json', configuration: plugin_sources, output_format: 'json')
+
+plugin_libraries = {}
+
+foreach plugin: plugins
+  if plugin.name().startswith('gst')
+    plugin_name = plugin.name().substring(3)
+  else
+    plugin_name = plugin.name()
+  endif
+
+  plugin_libraries += {
+    plugin_name: plugin.full_path()
+  }
+endforeach
+
+doc_plugin_libs_file = configure_file(output: 'doc_plugin_libs.json', configuration: plugin_libraries, output_format: 'json')
+
+cdir = meson.current_source_dir()
+plugin_hotdoc_configs = custom_target(
+  'build-hotdoc-configs',
+  command: [
+    plugins_cache_generator,
+    'hotdoc-config',
+    '--builddir', meson.current_build_dir(),
+    '--project_version', api_version,
+    '--sitemap', cdir / 'plugins/sitemap.txt',
+    '--index', cdir / 'plugins/index.md',
+    '--gst_index', cdir / 'plugins/index.md',
+    '--gst_cache_file', '@INPUT@',
+    '--output', '@OUTPUT@',
+    '--gst_c_source_file', doc_source_file,
+    '--gst_plugin_libraries_file', doc_plugin_libs_file,
+  ],
+  input: plugins_cache,
+  output: 'hotdoc-configs.json',
+)

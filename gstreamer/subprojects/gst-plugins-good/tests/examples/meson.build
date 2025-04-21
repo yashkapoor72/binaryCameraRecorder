@@ -2,6 +2,7 @@ subdir('audiofx')
 subdir('cairo')
 subdir('level')
 subdir('qt')
+subdir('qt6')
 
 if is_variable('gstrpicamsrc')
   subdir('rpicamsrc')
@@ -13,6 +14,7 @@ subdir('shapewipe')
 if have_v4l2
   subdir('v4l2')
 endif
+subdir('splitmux')
 
 if gtk_dep.found()
   subdir('equalizer')

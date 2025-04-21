@@ -1,6 +1,6 @@
 deps = [ges_dep, gstpbutils_dep, gio_dep, gstvideo_dep, gstaudio_dep]
 
-ges_tool_args = [ges_c_args, '-UG_LOG_DOMAIN']
+ges_tool_args = ['-DHAVE_CONFIG_H']
 if gstvalidate_dep.found()
   deps = deps + [gstvalidate_dep]
   ges_tool_args += ['-DGST_USE_UNSTABLE_API']
@@ -9,19 +9,20 @@ endif
 
 ges_launch_files = files('ges-validate.c', 'ges-launch.c', 'ges-launcher.c', 'utils.c', 'ges-launcher-kb.c')
 man_page = files('ges-launch-1.0.1')
-gst_tools = {'ges-launch':
-  {
+gst_tools = {
+  'ges-launch': {
     'files': ges_launch_files,
     'deps': deps,
-    'extra_c_args': ges_tool_args,
+    'extra_c_args': [ges_tool_args] + ['-DG_LOG_DOMAIN="ges-launch-@0@"'.format(api_version)],
     'man_page': man_page,
-  }
+  },
 }
 
-if not get_option('tools').disabled()
-  ges_launch = executable('ges-launch-@0@'.format(apiversion),
+if not get_option('tools').disabled() and not static_build
+  # FIXME: need ges_launch in the tests.
+  ges_launch = executable('ges-launch-@0@'.format(api_version),
       ges_launch_files,
-      c_args : [ges_tool_args] + ['-DG_LOG_DOMAIN="ges-launch-@0@"'.format(apiversion)],
+      c_args : [ges_tool_args] + ['-DG_LOG_DOMAIN="ges-launch-@0@"'.format(api_version)],
       dependencies : deps,
       install: true
   )

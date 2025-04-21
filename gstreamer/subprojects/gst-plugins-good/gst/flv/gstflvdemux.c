@@ -152,11 +152,11 @@ gst_flv_demux_parse_and_add_index_entry (GstFlvDemux * demux, GstClockTime ts,
     gboolean key;
 
     gst_index_entry_assoc_map (entry, GST_FORMAT_TIME, &time);
-    key = ! !(GST_INDEX_ASSOC_FLAGS (entry) & GST_ASSOCIATION_FLAG_KEY_UNIT);
+    key = !!(GST_INDEX_ASSOC_FLAGS (entry) & GST_ASSOCIATION_FLAG_KEY_UNIT);
     GST_LOG_OBJECT (demux, "position already mapped to time %" GST_TIME_FORMAT
         ", keyframe %d", GST_TIME_ARGS (time), key);
     /* there is not really a way to delete the existing one */
-    if (time != ts || key != ! !keyframe)
+    if (time != ts || key != !!keyframe)
       GST_DEBUG_OBJECT (demux, "metadata mismatch");
 #endif
     gst_object_unref (index);
@@ -1125,6 +1125,48 @@ gst_flv_demux_sync_streams (GstFlvDemux * demux)
   }
 }
 
+/* ensure demux->new_seg_event is set, (re)creating it if required.
+ *
+ * Returns: TRUE if the previous segment has been replaced and should be sent on the
+ * other stream pad as well.
+*/
+static gboolean
+ensure_new_segment (GstFlvDemux * demux, GstPad * pad)
+{
+  gboolean replaced_previous_segment = FALSE;
+
+  if (demux->new_seg_event) {
+    const GstSegment *segment;
+
+    gst_event_parse_segment (demux->new_seg_event, &segment);
+    if (demux->segment.position < segment->start) {
+      GST_DEBUG_OBJECT (pad,
+          "position is out of current segment boundaries, generate a new one");
+      g_clear_pointer (&demux->new_seg_event, gst_event_unref);
+      /* re-sending the segment on the other stream will create a GAP but
+       * this will only happen at the very beginning of the stream so it's
+       * not that bad.
+       */
+      replaced_previous_segment = TRUE;
+    }
+  }
+
+  if (!demux->new_seg_event) {
+    GST_DEBUG_OBJECT (pad, "pushing newsegment from %"
+        GST_TIME_FORMAT " to %" GST_TIME_FORMAT,
+        GST_TIME_ARGS (demux->segment.position),
+        GST_TIME_ARGS (demux->segment.stop));
+    demux->segment.start = demux->segment.time = demux->segment.position;
+    demux->new_seg_event = gst_event_new_segment (&demux->segment);
+    if (demux->segment_seqnum != GST_SEQNUM_INVALID)
+      gst_event_set_seqnum (demux->new_seg_event, demux->segment_seqnum);
+  } else {
+    GST_DEBUG_OBJECT (pad, "pushing pre-generated newsegment event");
+  }
+
+  return replaced_previous_segment;
+}
+
 static GstFlowReturn
 gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
 {
@@ -1365,19 +1407,20 @@ gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
 
   /* Do we need a newsegment event ? */
   if (G_UNLIKELY (demux->audio_need_segment)) {
-    if (!demux->new_seg_event) {
-      GST_DEBUG_OBJECT (demux, "pushing newsegment from %"
+    gboolean replaced_video_segment;
+
+    replaced_video_segment = ensure_new_segment (demux, demux->audio_pad);
+    gst_pad_push_event (demux->audio_pad, gst_event_ref (demux->new_seg_event));
+
+    if (replaced_video_segment) {
+      GST_DEBUG_OBJECT (demux->video_pad, "updating segment from %"
           GST_TIME_FORMAT " to %" GST_TIME_FORMAT,
           GST_TIME_ARGS (demux->segment.position),
           GST_TIME_ARGS (demux->segment.stop));
-      demux->segment.start = demux->segment.time = demux->segment.position;
-      demux->new_seg_event = gst_event_new_segment (&demux->segment);
-      gst_event_set_seqnum (demux->new_seg_event, demux->segment_seqnum);
-    } else {
-      GST_DEBUG_OBJECT (demux, "pushing pre-generated newsegment event");
-    }
 
-    gst_pad_push_event (demux->audio_pad, gst_event_ref (demux->new_seg_event));
+      gst_pad_push_event (demux->video_pad,
+          gst_event_ref (demux->new_seg_event));
+    }
 
     demux->audio_need_segment = FALSE;
   }
@@ -1841,20 +1884,20 @@ gst_flv_demux_parse_tag_video (GstFlvDemux * demux, GstBuffer * buffer)
 
   /* Do we need a newsegment event ? */
   if (G_UNLIKELY (demux->video_need_segment)) {
-    if (!demux->new_seg_event) {
-      GST_DEBUG_OBJECT (demux, "pushing newsegment from %"
+    gboolean replaced_audio_segment;
+
+    replaced_audio_segment = ensure_new_segment (demux, demux->video_pad);
+    gst_pad_push_event (demux->video_pad, gst_event_ref (demux->new_seg_event));
+
+    if (replaced_audio_segment) {
+      GST_DEBUG_OBJECT (demux->audio_pad, "updating segment from %"
           GST_TIME_FORMAT " to %" GST_TIME_FORMAT,
           GST_TIME_ARGS (demux->segment.position),
           GST_TIME_ARGS (demux->segment.stop));
-      demux->segment.start = demux->segment.time = demux->segment.position;
-      demux->new_seg_event = gst_event_new_segment (&demux->segment);
-      if (demux->segment_seqnum != GST_SEQNUM_INVALID)
-        gst_event_set_seqnum (demux->new_seg_event, demux->segment_seqnum);
-    } else {
-      GST_DEBUG_OBJECT (demux, "pushing pre-generated newsegment event");
-    }
 
-    gst_pad_push_event (demux->video_pad, gst_event_ref (demux->new_seg_event));
+      gst_pad_push_event (demux->audio_pad,
+          gst_event_ref (demux->new_seg_event));
+    }
 
     demux->video_need_segment = FALSE;
   }
@@ -1913,7 +1956,7 @@ beach:
 
 static GstClockTime
 gst_flv_demux_parse_tag_timestamp (GstFlvDemux * demux, gboolean index,
-    GstBuffer * buffer, size_t * tag_size)
+    GstBuffer * buffer, size_t *tag_size)
 {
   guint32 dts = 0, dts_ext = 0;
   guint32 tag_data_size;
@@ -3014,7 +3057,7 @@ flv_demux_handle_seek_push (GstFlvDemux * demux, GstEvent * event)
   if (format != GST_FORMAT_TIME)
     goto wrong_format;
 
-  flush = ! !(flags & GST_SEEK_FLAG_FLUSH);
+  flush = !!(flags & GST_SEEK_FLAG_FLUSH);
 
   /* Work on a copy until we are sure the seek succeeded. */
   memcpy (&seeksegment, &demux->segment, sizeof (GstSegment));
@@ -3185,7 +3228,7 @@ gst_flv_demux_handle_seek_pull (GstFlvDemux * demux, GstEvent * event,
     demux->seeking = seeking;
   GST_OBJECT_UNLOCK (demux);
 
-  flush = ! !(flags & GST_SEEK_FLAG_FLUSH);
+  flush = !!(flags & GST_SEEK_FLAG_FLUSH);
 
   if (flush) {
     /* Flush start up and downstream to make sure data flow and loops are

@@ -95,8 +95,6 @@ G_DEFINE_TYPE (GstSubParse, gst_sub_parse, GST_TYPE_ELEMENT);
 
 GST_ELEMENT_REGISTER_DEFINE_WITH_CODE (subparse, "subparse",
     GST_RANK_PRIMARY, GST_TYPE_SUBPARSE, sub_parse_element_init (plugin))
-
-
      static void gst_sub_parse_dispose (GObject * object)
 {
   GstSubParse *subparse = GST_SUBPARSE (object);
@@ -139,7 +137,7 @@ gst_sub_parse_class_init (GstSubParseClass * klass)
   gst_element_class_add_static_pad_template (element_class, &sink_templ);
   gst_element_class_add_static_pad_template (element_class, &src_templ);
   gst_element_class_set_static_metadata (element_class,
-      "Subtitle parser", "Codec/Parser/Subtitle",
+      "Subtitle parser", "Codec/Decoder/Subtitle",
       "Parses subtitle (.sub) files into text streams",
       "Gustavo J. A. M. Carneiro <gjc@inescporto.pt>, "
       "GStreamer maintainers <gstreamer-devel@lists.freedesktop.org>");
@@ -185,6 +183,7 @@ gst_sub_parse_init (GstSubParse * subparse)
   subparse->strip_pango_markup = FALSE;
   subparse->flushing = FALSE;
   gst_segment_init (&subparse->segment, GST_FORMAT_TIME);
+  subparse->segment_seqnum = gst_util_seqnum_next ();
   subparse->need_segment = TRUE;
   subparse->encoding = g_strdup (DEFAULT_ENCODING);
   subparse->detected_encoding = NULL;
@@ -274,6 +273,11 @@ gst_sub_parse_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
         goto beach;
       }
 
+      /* Forward seek event first and return if succeeded */
+      ret = gst_pad_event_default (pad, parent, g_steal_pointer (&event));
+      if (ret)
+        break;
+
       /* Convert that seek to a seeking in bytes at position 0,
          FIXME: could use an index */
       ret = gst_pad_push_event (self->sinkpad,
@@ -295,7 +299,6 @@ gst_sub_parse_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
         GST_WARNING_OBJECT (self, "seek to 0 bytes failed");
       }
 
-      gst_event_unref (event);
       break;
     }
     default:
@@ -609,8 +612,7 @@ parse_mdvdsub (ParserState * state, const gchar * line)
       break;
     }
   }
-  ret = markup->str;
-  g_string_free (markup, FALSE);
+  ret = g_string_free (markup, FALSE);
   GST_DEBUG ("parse_mdvdsub returning (%f+%f): %s",
       state->start_time / (double) GST_SECOND,
       state->duration / (double) GST_SECOND, ret);
@@ -778,7 +780,7 @@ subrip_fix_up_markup (gchar ** p_txt, gconstpointer allowed_tags_ptr)
     }
 
     if (*next_tag == '<' && *(next_tag + 1) == '/') {
-      end_tag = strchr (cur, '>');
+      end_tag = strchr (next_tag, '>');
       if (end_tag) {
         const gchar *last = NULL;
         if (num_open_tags > 0)
@@ -793,6 +795,8 @@ subrip_fix_up_markup (gchar ** p_txt, gconstpointer allowed_tags_ptr)
         } else {
           --num_open_tags;
           g_ptr_array_remove_index (open_tags, num_open_tags);
+          cur = end_tag + 1;
+          continue;
         }
       }
     }
@@ -1066,6 +1070,11 @@ parse_lrc (ParserState * state, const gchar * line)
     return NULL;
 
   start = strchr (line, ']');
+  // sscanf() does not check for the trailing ] but only up to the last
+  // placeholder, so there might be no ] at the end.
+  if (!start)
+    return NULL;
+
   if (start - line == 9)
     milli = 10;
   else
@@ -1625,10 +1634,12 @@ check_initial_events (GstSubParse * self)
 
   /* Push newsegment if needed */
   if (self->need_segment) {
+    GstEvent *segment_event = gst_event_new_segment (&self->segment);
     GST_LOG_OBJECT (self, "pushing newsegment event with %" GST_SEGMENT_FORMAT,
         &self->segment);
 
-    gst_pad_push_event (self->srcpad, gst_event_new_segment (&self->segment));
+    gst_event_set_seqnum (segment_event, self->segment_seqnum);
+    gst_pad_push_event (self->srcpad, segment_event);
     self->need_segment = FALSE;
   }
 
@@ -1805,6 +1816,7 @@ gst_sub_parse_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
         gst_event_copy_segment (event, &self->segment);
       GST_DEBUG_OBJECT (self, "newsegment (%s)",
           gst_format_get_name (self->segment.format));
+      self->segment_seqnum = gst_event_get_seqnum (event);
 
       /* if not time format, we'll either start with a 0 timestamp anyway or
        * it's following a seek in which case we'll have saved the requested

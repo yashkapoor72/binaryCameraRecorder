@@ -448,6 +448,8 @@ gst_matroska_parse_protection_meta (gpointer * data_out, gsize * size_out,
 
   /* Unencrypted buffer */
   if (!(signal_byte & GST_MATROSKA_BLOCK_ENCRYPTED)) {
+    *size_out = gst_byte_reader_get_remaining (&reader);
+    gst_byte_reader_get_data (&reader, *size_out, (const guint8 **) data_out);
     return TRUE;
   }
 
@@ -592,8 +594,9 @@ gst_matroska_parse_protection_meta (gpointer * data_out, gsize * size_out,
     gst_structure_set (info_protect, "subsample_count", G_TYPE_UINT, 0, NULL);
   }
 
-  gst_byte_reader_get_data (&reader, 0, (const guint8 **) data_out);
   *size_out = gst_byte_reader_get_remaining (&reader);
+  gst_byte_reader_get_data (&reader, *size_out, (const guint8 **) data_out);
+
   return TRUE;
 
 release_err:
@@ -756,7 +759,7 @@ gst_matroska_read_common_parse_skip (GstMatroskaReadCommon * common,
   } else if (id == GST_EBML_ID_CRC32) {
     GST_DEBUG_OBJECT (common->sinkpad, "Skipping EBML CRC32 element");
   } else {
-    GST_WARNING_OBJECT (common->sinkpad,
+    GST_FIXME_OBJECT (common->sinkpad,
         "Unknown %s subelement 0x%x - ignoring", parent_name, id);
   }
 
@@ -2756,7 +2759,7 @@ gst_matroska_read_common_parse_metadata (GstMatroskaReadCommon * common,
   }
 
   common->tags_parsed =
-      g_list_prepend (common->tags_parsed, g_slice_new (guint64));
+      g_list_prepend (common->tags_parsed, g_new (guint64, 1));
   *((guint64 *) common->tags_parsed->data) = curpos;
   /* fall-through */
 
@@ -3278,7 +3281,7 @@ gst_matroska_read_common_read_track_encodings (GstMatroskaReadCommon * common,
 void
 gst_matroska_read_common_free_parsed_el (gpointer mem, gpointer user_data)
 {
-  g_slice_free (guint64, mem);
+  g_free (mem);
 }
 
 void

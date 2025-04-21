@@ -88,7 +88,7 @@ struct _GstRTSPStreamTransportPrivate
 
   /* TCP backlog */
   GstClockTime first_rtp_timestamp;
-  GstQueueArray *items;
+  GstVecDeque *items;
   GRecMutex backlog_lock;
 };
 
@@ -141,9 +141,9 @@ static void
 gst_rtsp_stream_transport_init (GstRTSPStreamTransport * trans)
 {
   trans->priv = gst_rtsp_stream_transport_get_instance_private (trans);
-  trans->priv->items = gst_queue_array_new_for_struct (sizeof (BackLogItem), 0);
+  trans->priv->items = gst_vec_deque_new_for_struct (sizeof (BackLogItem), 0);
   trans->priv->first_rtp_timestamp = GST_CLOCK_TIME_NONE;
-  gst_queue_array_set_clear_func (trans->priv->items,
+  gst_vec_deque_set_clear_func (trans->priv->items,
       (GDestroyNotify) clear_backlog_item);
   g_rec_mutex_init (&trans->priv->backlog_lock);
 }
@@ -171,7 +171,7 @@ gst_rtsp_stream_transport_finalize (GObject * obj)
   if (priv->url)
     gst_rtsp_url_free (priv->url);
 
-  gst_queue_array_free (priv->items);
+  gst_vec_deque_free (priv->items);
 
   g_rec_mutex_clear (&priv->backlog_lock);
 
@@ -225,9 +225,9 @@ gst_rtsp_stream_transport_get_stream (GstRTSPStreamTransport * trans)
 /**
  * gst_rtsp_stream_transport_set_callbacks:
  * @trans: a #GstRTSPStreamTransport
- * @send_rtp: (scope notified): a callback called when RTP should be sent
- * @send_rtcp: (scope notified): a callback called when RTCP should be sent
- * @user_data: (closure): user data passed to callbacks
+ * @send_rtp: (scope notified) (closure user_data): a callback called when RTP should be sent
+ * @send_rtcp: (scope notified) (closure user_data): a callback called when RTCP should be sent
+ * @user_data: user data passed to callbacks
  * @notify: (allow-none): called with the user_data when no longer needed.
  *
  * Install callbacks that will be called when data for a stream should be sent
@@ -255,9 +255,9 @@ gst_rtsp_stream_transport_set_callbacks (GstRTSPStreamTransport * trans,
 /**
  * gst_rtsp_stream_transport_set_list_callbacks:
  * @trans: a #GstRTSPStreamTransport
- * @send_rtp_list: (scope notified): a callback called when RTP should be sent
- * @send_rtcp_list: (scope notified): a callback called when RTCP should be sent
- * @user_data: (closure): user data passed to callbacks
+ * @send_rtp_list: (scope notified) (closure user_data): a callback called when RTP should be sent
+ * @send_rtcp_list: (scope notified) (closure user_data): a callback called when RTCP should be sent
+ * @user_data: user data passed to callbacks
  * @notify: (allow-none): called with the user_data when no longer needed.
  *
  * Install callbacks that will be called when data for a stream should be sent
@@ -326,8 +326,8 @@ gst_rtsp_stream_transport_check_back_pressure (GstRTSPStreamTransport * trans,
 /**
  * gst_rtsp_stream_transport_set_keepalive:
  * @trans: a #GstRTSPStreamTransport
- * @keep_alive: (scope notified): a callback called when the receiver is active
- * @user_data: (closure): user data passed to callback
+ * @keep_alive: (scope notified) (closure user_data): a callback called when the receiver is active
+ * @user_data: user data passed to callback
  * @notify: (allow-none): called with the user_data when no longer needed.
  *
  * Install callbacks that will be called when RTCP packets are received from the
@@ -353,8 +353,8 @@ gst_rtsp_stream_transport_set_keepalive (GstRTSPStreamTransport * trans,
 /**
  * gst_rtsp_stream_transport_set_message_sent:
  * @trans: a #GstRTSPStreamTransport
- * @message_sent: (scope notified): a callback called when a message has been sent
- * @user_data: (closure): user data passed to callback
+ * @message_sent: (scope notified) (closure user_data): a callback called when a message has been sent
+ * @user_data: user data passed to callback
  * @notify: (allow-none): called with the user_data when no longer needed
  *
  * Install a callback that will be called when a message has been sent on @trans.
@@ -380,8 +380,8 @@ gst_rtsp_stream_transport_set_message_sent (GstRTSPStreamTransport * trans,
 /**
  * gst_rtsp_stream_transport_set_message_sent_full:
  * @trans: a #GstRTSPStreamTransport
- * @message_sent: (scope notified): a callback called when a message has been sent
- * @user_data: (closure): user data passed to callback
+ * @message_sent: (scope notified) (closure user_data): a callback called when a message has been sent
+ * @user_data: user data passed to callback
  * @notify: (allow-none): called with the user_data when no longer needed
  *
  * Install a callback that will be called when a message has been sent on @trans.
@@ -855,11 +855,11 @@ get_first_backlog_timestamp (GstRTSPStreamTransport * trans)
   GstClockTime ret = GST_CLOCK_TIME_NONE;
   guint i, l;
 
-  l = gst_queue_array_get_length (priv->items);
+  l = gst_vec_deque_get_length (priv->items);
 
   for (i = 0; i < l; i++) {
     BackLogItem *item = (BackLogItem *)
-        gst_queue_array_peek_nth_struct (priv->items, i);
+        gst_vec_deque_peek_nth_struct (priv->items, i);
 
     if (item->is_rtp) {
       ret = get_backlog_item_timestamp (item);
@@ -890,7 +890,7 @@ gst_rtsp_stream_transport_backlog_push (GstRTSPStreamTransport * trans,
     item.buffer_list = buffer_list;
   item.is_rtp = is_rtp;
 
-  gst_queue_array_push_tail_struct (priv->items, &item);
+  gst_vec_deque_push_tail_struct (priv->items, &item);
 
   item_timestamp = get_backlog_item_timestamp (&item);
 
@@ -904,7 +904,7 @@ gst_rtsp_stream_transport_backlog_push (GstRTSPStreamTransport * trans,
     g_assert (queue_duration >= 0);
 
     if (queue_duration > MAX_BACKLOG_DURATION &&
-        gst_queue_array_get_length (priv->items) > MAX_BACKLOG_SIZE) {
+        gst_vec_deque_get_length (priv->items) > MAX_BACKLOG_SIZE) {
       ret = FALSE;
     }
   } else if (is_rtp) {
@@ -930,7 +930,7 @@ gst_rtsp_stream_transport_backlog_pop (GstRTSPStreamTransport * trans,
 
   priv = trans->priv;
 
-  item = (BackLogItem *) gst_queue_array_pop_head_struct (priv->items);
+  item = (BackLogItem *) gst_vec_deque_pop_head_struct (priv->items);
 
   priv->first_rtp_timestamp = get_first_backlog_timestamp (trans);
 
@@ -963,7 +963,7 @@ gst_rtsp_stream_transport_backlog_peek_is_rtp (GstRTSPStreamTransport * trans)
 
   priv = trans->priv;
 
-  item = (BackLogItem *) gst_queue_array_peek_head_struct (priv->items);
+  item = (BackLogItem *) gst_vec_deque_peek_head_struct (priv->items);
 
   return item->is_rtp;
 }
@@ -974,7 +974,7 @@ gst_rtsp_stream_transport_backlog_peek_is_rtp (GstRTSPStreamTransport * trans)
 gboolean
 gst_rtsp_stream_transport_backlog_is_empty (GstRTSPStreamTransport * trans)
 {
-  return gst_queue_array_is_empty (trans->priv->items);
+  return gst_vec_deque_is_empty (trans->priv->items);
 }
 
 /* Not MT-safe, caller should ensure consistent locking.

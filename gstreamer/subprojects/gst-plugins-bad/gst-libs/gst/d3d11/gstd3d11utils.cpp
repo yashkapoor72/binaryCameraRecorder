@@ -24,10 +24,12 @@
 #include "gstd3d11utils.h"
 #include "gstd3d11device.h"
 #include "gstd3d11-private.h"
+#include "gstd3d11device-private.h"
 
 #include <windows.h>
 #include <versionhelpers.h>
 #include <mutex>
+#include <atomic>
 
 /**
  * SECTION:gstd3d11utils
@@ -569,11 +571,14 @@ _gst_d3d11_result (HRESULT hr, GstD3D11Device * device, GstDebugCategory * cat,
     const gchar * file, const gchar * function, gint line)
 {
 #ifndef GST_DISABLE_GST_DEBUG
-  gboolean ret = TRUE;
-
+#if (HAVE_D3D11SDKLAYERS_H || HAVE_DXGIDEBUG_H)
+  if (device) {
+    gst_d3d11_device_d3d11_debug (device, file, function, line);
+    gst_d3d11_device_dxgi_debug (device, file, function, line);
+  }
+#endif
   if (FAILED (hr)) {
     gchar *error_text = NULL;
-
     error_text = g_win32_error_message ((guint) hr);
     /* g_win32_error_message() doesn't cover all HERESULT return code,
      * so it could be empty string, or null if there was an error
@@ -582,18 +587,33 @@ _gst_d3d11_result (HRESULT hr, GstD3D11Device * device, GstDebugCategory * cat,
         NULL, "D3D11 call failed: 0x%x, %s", (guint) hr,
         GST_STR_NULL (error_text));
     g_free (error_text);
-
-    ret = FALSE;
-  }
-#if (HAVE_D3D11SDKLAYERS_H || HAVE_DXGIDEBUG_H)
-  if (device) {
-    gst_d3d11_device_d3d11_debug (device, file, function, line);
-    gst_d3d11_device_dxgi_debug (device, file, function, line);
   }
 #endif
 
-  return ret;
-#else
-  return SUCCEEDED (hr);
-#endif
+  if (SUCCEEDED (hr))
+    return TRUE;
+
+  if (device)
+    gst_d3d11_device_check_device_removed (device);
+
+  return FALSE;
+}
+
+/**
+ * gst_d3d11_create_user_token:
+ *
+ * Creates new user token value
+ *
+ * Returns: user token value
+ *
+ * Since: 1.24
+ */
+gint64
+gst_d3d11_create_user_token (void)
+{
+  /* *INDENT-OFF* */
+  static std::atomic < gint64 > user_token { 0 };
+  /* *INDENT-ON* */
+
+  return user_token.fetch_add (1);
 }

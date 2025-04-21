@@ -261,7 +261,7 @@ gst_replace_create_pipeline (GstReplace *replace)
   if (verbose) g_print ("pipeline: %s\n", pipe_desc->str);
 
   pipeline = (GstElement *) gst_parse_launch (pipe_desc->str, &error);
-  g_string_free (pipe_desc, FALSE);
+  g_string_free (pipe_desc, TRUE);
 
   if (error) {
     g_print("pipeline parsing error: %s\n", error->message);
@@ -543,7 +543,7 @@ generate | sed \
   -e "s/gstreplace/$gstreplace/g" \
   -e "s/replace/$replace/g" >$gstreplace.c
 
-gst-indent $gstreplace.c
+gst-indent-1.0 $gstreplace.c
 
 gcc -O2 -Wall $(pkg-config --cflags gstreamer-1.0) -c -o $gstreplace.o $gstreplace.c
 gcc -o $gstreplace $gstreplace.o $(pkg-config --libs gstreamer-1.0)

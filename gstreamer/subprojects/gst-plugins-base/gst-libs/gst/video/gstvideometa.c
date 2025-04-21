@@ -23,6 +23,7 @@
 #include "gstvideometa.h"
 
 #include <string.h>
+#include <gst/base/base.h>
 
 /**
  * SECTION:gstvideometa
@@ -30,6 +31,12 @@
  * @short_description: Video related GstMeta
  *
  */
+
+static gboolean
+default_map (GstVideoMeta * meta, guint plane, GstMapInfo * info,
+    gpointer * data, gint * stride, GstMapFlags flags);
+static gboolean
+default_unmap (GstVideoMeta * meta, guint plane, GstMapInfo * info);
 
 #ifndef GST_DISABLE_GST_DEBUG
 #define GST_CAT_DEFAULT ensure_debug_category()
@@ -117,6 +124,68 @@ gst_video_meta_transform (GstBuffer * dest, GstMeta * meta,
   return TRUE;
 }
 
+static gboolean
+gst_video_meta_api_params_aggregator (GstStructure ** aggregated_params,
+    const GstStructure * params0, const GstStructure * params1)
+{
+  GstVideoAlignment align0;
+  GstVideoAlignment align1;
+  GstVideoAlignment aggregated_align;
+
+  gst_video_alignment_reset (&align0);
+  gst_video_alignment_reset (&align1);
+  gst_video_alignment_reset (&aggregated_align);
+
+  if (params0 && (!gst_structure_has_name (params0, "video-meta") ||
+          !gst_buffer_pool_config_get_video_alignment (params0, &align0))) {
+    GST_WARNING ("Invalid params");
+    params0 = NULL;
+  }
+
+  if (params1 && (!gst_structure_has_name (params1, "video-meta") ||
+          !gst_buffer_pool_config_get_video_alignment (params1, &align1))) {
+    GST_WARNING ("Invalid params");
+    params1 = NULL;
+  }
+
+  if (!params0 && !params1) {
+    *aggregated_params = NULL;
+    return TRUE;
+  }
+
+  if (params0 && !params1) {
+    *aggregated_params = gst_structure_copy (params0);
+    return TRUE;
+  }
+
+  if (!params0 && params1) {
+    *aggregated_params = gst_structure_copy (params1);
+    return TRUE;
+  }
+
+  aggregated_align.padding_top = MAX (align0.padding_top, align1.padding_top);
+
+  aggregated_align.padding_bottom =
+      MAX (align0.padding_bottom, align1.padding_bottom);
+
+  aggregated_align.padding_left =
+      MAX (align0.padding_left, align1.padding_left);
+
+  aggregated_align.padding_right =
+      MAX (align0.padding_right, align1.padding_right);
+
+  for (int n = 0; n < GST_VIDEO_MAX_PLANES; ++n)
+    aggregated_align.stride_align[n] =
+        align0.stride_align[n] | align1.stride_align[n];
+
+  *aggregated_params = gst_structure_new_empty ("video-meta");
+
+  gst_buffer_pool_config_set_video_alignment (*aggregated_params,
+      &aggregated_align);
+
+  return TRUE;
+}
+
 GType
 gst_video_meta_api_get_type (void)
 {
@@ -129,9 +198,116 @@ gst_video_meta_api_get_type (void)
 
   if (g_once_init_enter (&type)) {
     GType _type = gst_meta_api_type_register ("GstVideoMetaAPI", tags);
+
+    gst_meta_api_type_set_params_aggregator (_type,
+        gst_video_meta_api_params_aggregator);
     g_once_init_leave (&type, _type);
   }
   return type;
+}
+
+static gboolean
+video_meta_serialize (const GstMeta * meta, GstByteArrayInterface * data,
+    guint8 * version)
+{
+  GstVideoMeta *vmeta = (GstVideoMeta *) meta;
+
+  if (vmeta->map != default_map || vmeta->unmap != default_unmap) {
+    GST_WARNING ("Cannot serialize video meta with custom map/unmap functions");
+    return FALSE;
+  }
+
+  gsize size = 36 + vmeta->n_planes * 16;
+  guint8 *ptr = gst_byte_array_interface_append (data, size);
+  if (ptr == NULL)
+    return FALSE;
+
+  GstByteWriter bw;
+  gboolean success = TRUE;
+  gst_byte_writer_init_with_data (&bw, ptr, size, FALSE);
+  success &= gst_byte_writer_put_int32_le (&bw, vmeta->flags);
+  success &= gst_byte_writer_put_int32_le (&bw, vmeta->format);
+  success &= gst_byte_writer_put_uint32_le (&bw, vmeta->width);
+  success &= gst_byte_writer_put_uint32_le (&bw, vmeta->height);
+  success &= gst_byte_writer_put_uint32_le (&bw, vmeta->n_planes);
+  for (int n = 0; n < vmeta->n_planes; n++)
+    success &= gst_byte_writer_put_uint64_le (&bw, vmeta->offset[n]);
+  for (int n = 0; n < vmeta->n_planes; n++)
+    success &= gst_byte_writer_put_int32_le (&bw, vmeta->stride[n]);
+  success &= gst_byte_writer_put_uint32_le (&bw, vmeta->alignment.padding_top);
+  success &=
+      gst_byte_writer_put_uint32_le (&bw, vmeta->alignment.padding_bottom);
+  success &= gst_byte_writer_put_uint32_le (&bw, vmeta->alignment.padding_left);
+  success &=
+      gst_byte_writer_put_uint32_le (&bw, vmeta->alignment.padding_right);
+  for (int n = 0; n < vmeta->n_planes; n++)
+    success &=
+        gst_byte_writer_put_uint32_le (&bw, vmeta->alignment.stride_align[n]);
+  g_assert (success);
+
+  return TRUE;
+}
+
+static GstMeta *
+video_meta_deserialize (const GstMetaInfo * info, GstBuffer * buffer,
+    const guint8 * data, gsize size, guint8 version)
+{
+  GstVideoMeta *vmeta = NULL;
+  gint32 flags;
+  gint32 format;
+  guint width;
+  guint height;
+  guint n_planes;
+  GstVideoAlignment align;
+  guint64 offset64[GST_VIDEO_MAX_PLANES];
+  gint32 stride[GST_VIDEO_MAX_PLANES];
+
+  if (version != 0)
+    return NULL;
+
+  GstByteReader br;
+  gboolean success = TRUE;
+  gst_byte_reader_init (&br, data, size);
+  success &= gst_byte_reader_get_int32_le (&br, &flags);
+  success &= gst_byte_reader_get_int32_le (&br, &format);
+  success &= gst_byte_reader_get_uint32_le (&br, &width);
+  success &= gst_byte_reader_get_uint32_le (&br, &height);
+  success &= gst_byte_reader_get_uint32_le (&br, &n_planes);
+
+  if (!success || n_planes > GST_VIDEO_MAX_PLANES)
+    return NULL;
+
+  for (int n = 0; n < n_planes; n++)
+    success &= gst_byte_reader_get_uint64_le (&br, &offset64[n]);
+  for (int n = 0; n < n_planes; n++)
+    success &= gst_byte_reader_get_int32_le (&br, &stride[n]);
+  success &= gst_byte_reader_get_uint32_le (&br, &align.padding_top);
+  success &= gst_byte_reader_get_uint32_le (&br, &align.padding_bottom);
+  success &= gst_byte_reader_get_uint32_le (&br, &align.padding_left);
+  success &= gst_byte_reader_get_uint32_le (&br, &align.padding_right);
+  for (int n = 0; n < n_planes; n++)
+    success &= gst_byte_reader_get_uint32_le (&br, &align.stride_align[n]);
+
+  if (!success)
+    return NULL;
+
+#if GLIB_SIZEOF_SIZE_T != 8
+  gsize offset[GST_VIDEO_MAX_PLANES];
+  for (int i = 0; i < n_planes; i++) {
+    if (offset64[i] > G_MAXSIZE)
+      return NULL;
+    offset[i] = offset64[i];
+  }
+#else
+  gsize *offset = (gsize *) offset64;
+#endif
+
+  vmeta =
+      gst_buffer_add_video_meta_full (buffer, flags, format, width, height,
+      n_planes, offset, stride);
+  gst_video_meta_set_alignment (vmeta, align);
+
+  return (GstMeta *) vmeta;
 }
 
 /* video metadata */
@@ -141,10 +317,14 @@ gst_video_meta_get_info (void)
   static const GstMetaInfo *video_meta_info = NULL;
 
   if (g_once_init_enter ((GstMetaInfo **) & video_meta_info)) {
-    const GstMetaInfo *meta =
-        gst_meta_register (GST_VIDEO_META_API_TYPE, "GstVideoMeta",
-        sizeof (GstVideoMeta), (GstMetaInitFunction) gst_video_meta_init,
-        (GstMetaFreeFunction) NULL, gst_video_meta_transform);
+    GstMetaInfo *info = gst_meta_info_new (GST_VIDEO_META_API_TYPE,
+        "GstVideoMeta",
+        sizeof (GstVideoMeta));
+    info->init_func = gst_video_meta_init;
+    info->transform_func = gst_video_meta_transform;
+    info->serialize_func = video_meta_serialize;
+    info->deserialize_func = video_meta_deserialize;
+    const GstMetaInfo *meta = gst_meta_info_register (info);
     g_once_init_leave ((GstMetaInfo **) & video_meta_info,
         (GstMetaInfo *) meta);
   }
@@ -310,8 +490,8 @@ gst_buffer_add_video_meta (GstBuffer * buffer,
 GstVideoMeta *
 gst_buffer_add_video_meta_full (GstBuffer * buffer,
     GstVideoFrameFlags flags, GstVideoFormat format, guint width,
-    guint height, guint n_planes, gsize offset[GST_VIDEO_MAX_PLANES],
-    gint stride[GST_VIDEO_MAX_PLANES])
+    guint height, guint n_planes, const gsize offset[GST_VIDEO_MAX_PLANES],
+    const gint stride[GST_VIDEO_MAX_PLANES])
 {
   GstVideoMeta *meta;
   guint i;
@@ -395,11 +575,39 @@ gst_video_meta_unmap (GstVideoMeta * meta, guint plane, GstMapInfo * info)
 }
 
 static gboolean
+gst_video_meta_is_alignment_valid (GstVideoAlignment * align)
+{
+  gint i;
+
+  g_return_val_if_fail (align != NULL, FALSE);
+
+  if (align->padding_top != 0 || align->padding_bottom != 0 ||
+      align->padding_left != 0 || align->padding_right != 0)
+    return TRUE;
+
+  for (i = 0; i < GST_VIDEO_MAX_PLANES; i++) {
+    if (align->stride_align[i] != 0)
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
+static gboolean
 gst_video_meta_validate_alignment (GstVideoMeta * meta,
     gsize plane_size[GST_VIDEO_MAX_PLANES])
 {
   GstVideoInfo info;
   guint i;
+
+  if (!gst_video_meta_is_alignment_valid (&meta->alignment)) {
+    GST_LOG ("Set alignment on meta to all zero");
+
+    /* When alignment is invalid, no further check is needed,
+       unless user wants to calculate the pitch for each plane. */
+    if (!plane_size)
+      return TRUE;
+  }
 
   gst_video_info_init (&info);
   gst_video_info_set_format (&info, meta->format, meta->width, meta->height);

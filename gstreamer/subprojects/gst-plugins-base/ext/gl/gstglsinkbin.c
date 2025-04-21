@@ -266,6 +266,8 @@ gst_gl_sink_bin_init (GstGLSinkBin * self)
   if (!res) {
     GST_WARNING_OBJECT (self, "Failed to add/connect the necessary machinery");
   }
+
+  gst_type_mark_as_plugin_api (GST_TYPE_GL_SINK_BIN, 0);
 }
 
 static void
@@ -379,6 +381,7 @@ gst_gl_sink_bin_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec)
 {
   GstGLSinkBin *self = GST_GL_SINK_BIN (object);
+  GParamSpec *sink_pspec;
 
   switch (prop_id) {
     case PROP_SINK:
@@ -392,8 +395,17 @@ gst_gl_sink_bin_get_property (GObject * object, guint prop_id,
         g_object_get_property (G_OBJECT (self->balance), pspec->name, value);
       break;
     default:
-      if (self->sink)
-        g_object_get_property (G_OBJECT (self->sink), pspec->name, value);
+      if (self->sink) {
+        sink_pspec =
+            g_object_class_find_property (G_OBJECT_GET_CLASS (self->sink),
+            pspec->name);
+        if (sink_pspec
+            && G_PARAM_SPEC_TYPE (sink_pspec) == G_PARAM_SPEC_TYPE (pspec)) {
+          g_object_get_property (G_OBJECT (self->sink), pspec->name, value);
+        } else {
+          GST_INFO ("Failed to get unmatched property %s", pspec->name);
+        }
+      }
       break;
   }
 }

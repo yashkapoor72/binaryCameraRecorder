@@ -9,7 +9,7 @@
 #include "gstopencvperspective.h"
 
 // Global variables for device indices (set once at startup)
-static int g_camDevIndex = -1;
+static std::string g_camDevIndex = "null";
 static int g_audioDevIndex = -1;
 
 static std::vector<std::string> splitArguments(const std::string& input) {
@@ -147,14 +147,14 @@ static bool parseDeviceIndices(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg.find("--CamDevIndex=") == 0) {
-            g_camDevIndex = std::stoi(arg.substr(14));
+            g_camDevIndex = arg.substr(14);
         }
         else if (arg.find("--AudioDevIndex=") == 0) {
             g_audioDevIndex = std::stoi(arg.substr(16));
         }
     }
     
-    if (g_camDevIndex == -1 || g_audioDevIndex == -1) {
+    if (g_camDevIndex == "null" || g_audioDevIndex == -1) {
         std::cerr << "Error: Both --CamDevIndex and --AudioDevIndex must be specified" << std::endl;
         return false;
     }
@@ -164,7 +164,7 @@ static bool parseDeviceIndices(int argc, char* argv[]) {
 static int run_app(int argc, char* argv[]) {
     CommandHandler cmdHandler;
     DeskewHandler deskewHandler(g_camDevIndex,g_audioDevIndex);  // Modified to take camera index
-    
+    std::cout<<"This is unique id: "<<g_camDevIndex<<std::endl;
     if (!deskewHandler.setupPipeline(g_camDevIndex,g_audioDevIndex)) {
         std::cerr << "Failed to setup preview pipeline!" << std::endl;
         return 1;

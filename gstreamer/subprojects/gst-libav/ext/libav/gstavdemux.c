@@ -30,6 +30,7 @@
 /* #include <ffmpeg/avi.h> */
 #include <gst/gst.h>
 #include <gst/base/gstflowcombiner.h>
+#include <gst/audio/gstdsd.h>
 
 #include "gstav.h"
 #include "gstavcodecmap.h"
@@ -66,7 +67,10 @@ struct _GstFFMpegDemux
   guint group_id;
 
   AVFormatContext *context;
-  gboolean opened;
+  /* set while avformat_open_input() is called */
+  gboolean opening;
+  /* global tags */
+  GstTagList *tags, *upstream_global_tags, *upstream_stream_tags;
 
   GstFFStream *streams[MAX_STREAMS];
 
@@ -272,7 +276,6 @@ gst_ffmpegdemux_init (GstFFMpegDemux * demux)
   demux->have_group_id = FALSE;
   demux->group_id = G_MAXUINT;
 
-  demux->opened = FALSE;
   demux->context = NULL;
 
   for (n = 0; n < MAX_STREAMS; n++) {
@@ -323,7 +326,7 @@ gst_ffmpegdemux_close (GstFFMpegDemux * demux)
   gint n;
   GstEvent **event_p;
 
-  if (!demux->opened)
+  if (!demux->context)
     return;
 
   /* remove pads from ourselves */
@@ -344,6 +347,7 @@ gst_ffmpegdemux_close (GstFFMpegDemux * demux)
   }
   demux->videopads = 0;
   demux->audiopads = 0;
+  gst_clear_tag_list (&demux->tags);
 
   /* close demuxer context from ffmpeg */
   if (demux->seekable)
@@ -352,12 +356,8 @@ gst_ffmpegdemux_close (GstFFMpegDemux * demux)
     gst_ffmpeg_pipe_close (demux->context->pb);
   demux->context->pb = NULL;
   avformat_close_input (&demux->context);
-  if (demux->context)
-    avformat_free_context (demux->context);
-  demux->context = NULL;
 
   GST_OBJECT_LOCK (demux);
-  demux->opened = FALSE;
   event_p = &demux->seek_event;
   gst_event_replace (event_p, NULL);
   GST_OBJECT_UNLOCK (demux);
@@ -468,7 +468,7 @@ gst_ffmpegdemux_do_seek (GstFFMpegDemux * demux, GstSegment * segment)
   GST_LOG_OBJECT (demux, "do seek to time %" GST_TIME_FORMAT,
       GST_TIME_ARGS (target));
 
-  /* if we need to land on a keyframe, try to do so, we don't try to do a 
+  /* if we need to land on a keyframe, try to do so, we don't try to do a
    * keyframe seek if we are not absolutely sure we have an index.*/
   if (segment->flags & GST_SEEK_FLAG_KEY_UNIT) {
     gint keyframeidx;
@@ -699,7 +699,7 @@ gst_ffmpegdemux_send_event (GstElement * element, GstEvent * event)
   switch (GST_EVENT_TYPE (event)) {
     case GST_EVENT_SEEK:
       GST_OBJECT_LOCK (demux);
-      if (!demux->opened) {
+      if (!demux->context) {
         GstEvent **event_p;
 
         GST_DEBUG_OBJECT (demux, "caching seek event");
@@ -1047,6 +1047,7 @@ gst_ffmpegdemux_get_stream (GstFFMpegDemux * demux, AVStream * avstream)
     if (stream->tags == NULL)
       stream->tags = gst_tag_list_new_empty ();
 
+    gst_tag_list_set_scope (stream->tags, GST_TAG_SCOPE_STREAM);
     gst_tag_list_add (stream->tags, GST_TAG_MERGE_REPLACE,
         (ctx->codec_type == AVMEDIA_TYPE_VIDEO) ?
         GST_TAG_VIDEO_CODEC : GST_TAG_AUDIO_CODEC, codec, NULL);
@@ -1099,27 +1100,27 @@ static const struct
   const gchar *gst_tag_name;
 } tagmapping[] = {
   {
-  "album", GST_TAG_ALBUM}, {
-  "album_artist", GST_TAG_ALBUM_ARTIST}, {
-  "artist", GST_TAG_ARTIST}, {
-  "comment", GST_TAG_COMMENT}, {
-  "composer", GST_TAG_COMPOSER}, {
-  "copyright", GST_TAG_COPYRIGHT},
-      /* Need to convert ISO 8601 to GstDateTime: */
+      "album", GST_TAG_ALBUM}, {
+      "album_artist", GST_TAG_ALBUM_ARTIST}, {
+      "artist", GST_TAG_ARTIST}, {
+      "comment", GST_TAG_COMMENT}, {
+      "composer", GST_TAG_COMPOSER}, {
+      "copyright", GST_TAG_COPYRIGHT},
+  /* Need to convert ISO 8601 to GstDateTime: */
   {
-  "creation_time", GST_TAG_DATE_TIME},
-      /* Need to convert ISO 8601 to GDateTime: */
+      "creation_time", GST_TAG_DATE_TIME},
+  /* Need to convert ISO 8601 to GDateTime: */
   {
-  "date", GST_TAG_DATE_TIME}, {
-  "disc", GST_TAG_ALBUM_VOLUME_NUMBER}, {
-  "encoder", GST_TAG_ENCODER}, {
-  "encoded_by", GST_TAG_ENCODED_BY}, {
-  "genre", GST_TAG_GENRE}, {
-  "language", GST_TAG_LANGUAGE_CODE}, {
-  "performer", GST_TAG_PERFORMER}, {
-  "publisher", GST_TAG_PUBLISHER}, {
-  "title", GST_TAG_TITLE}, {
-  "track", GST_TAG_TRACK_NUMBER}
+      "date", GST_TAG_DATE_TIME}, {
+      "disc", GST_TAG_ALBUM_VOLUME_NUMBER}, {
+      "encoder", GST_TAG_ENCODER}, {
+      "encoded_by", GST_TAG_ENCODED_BY}, {
+      "genre", GST_TAG_GENRE}, {
+      "language", GST_TAG_LANGUAGE_CODE}, {
+      "performer", GST_TAG_PERFORMER}, {
+      "publisher", GST_TAG_PUBLISHER}, {
+      "title", GST_TAG_TITLE}, {
+      "track", GST_TAG_TRACK_NUMBER}
 };
 
 static const gchar *
@@ -1225,7 +1226,7 @@ gst_ffmpegdemux_open (GstFFMpegDemux * demux)
   GstFFMpegDemuxClass *oclass =
       (GstFFMpegDemuxClass *) G_OBJECT_GET_CLASS (demux);
   gint res, n_streams, i;
-  GstTagList *tags;
+  GstTagList *tags = NULL;
   GstEvent *event;
   GList *cached_events;
   GstQuery *query;
@@ -1266,7 +1267,9 @@ gst_ffmpegdemux_open (GstFFMpegDemux * demux)
 
   demux->context = avformat_alloc_context ();
   demux->context->pb = iocontext;
+  demux->opening = TRUE;
   res = avformat_open_input (&demux->context, uri, oclass->in_plugin, NULL);
+  demux->opening = FALSE;
 
   g_free (uri);
 
@@ -1308,7 +1311,6 @@ gst_ffmpegdemux_open (GstFFMpegDemux * demux)
   demux->segment.duration = demux->duration;
 
   GST_OBJECT_LOCK (demux);
-  demux->opened = TRUE;
   event = demux->seek_event;
   demux->seek_event = NULL;
   cached_events = demux->cached_events;
@@ -1332,9 +1334,31 @@ gst_ffmpegdemux_open (GstFFMpegDemux * demux)
   }
 
   /* grab the global tags */
-  tags = gst_ffmpeg_metadata_to_tag_list (demux->context->metadata);
-  if (tags) {
-    GST_INFO_OBJECT (demux, "global tags: %" GST_PTR_FORMAT, tags);
+  demux->tags = gst_ffmpeg_metadata_to_tag_list (demux->context->metadata);
+  if (demux->tags) {
+    GstTagList *upstream_tags;
+
+    gst_tag_list_set_scope (demux->tags, GST_TAG_SCOPE_GLOBAL);
+    GST_INFO_OBJECT (demux, "local tags: %" GST_PTR_FORMAT, demux->tags);
+
+    upstream_tags =
+        gst_tag_list_merge (demux->upstream_stream_tags,
+        demux->upstream_global_tags, GST_TAG_MERGE_REPLACE);
+
+    if (upstream_tags) {
+      tags =
+          gst_tag_list_merge (upstream_tags, demux->tags,
+          GST_TAG_MERGE_REPLACE);
+      if (gst_tag_list_get_scope (tags) != GST_TAG_SCOPE_GLOBAL) {
+        tags = gst_tag_list_make_writable (tags);
+        gst_tag_list_set_scope (tags, GST_TAG_SCOPE_GLOBAL);
+      }
+      gst_clear_tag_list (&upstream_tags);
+    } else {
+      tags = gst_tag_list_ref (demux->tags);
+    }
+
+    GST_INFO_OBJECT (demux, "combined tags: %" GST_PTR_FORMAT, tags);
   }
 
   /* now handle the stream tags */
@@ -1365,66 +1389,18 @@ gst_ffmpegdemux_open (GstFFMpegDemux * demux)
   /* ERRORS */
 beach:
   {
+    if (demux->context->pb) {
+      if (demux->seekable)
+        gst_ffmpegdata_close (demux->context->pb);
+      else
+        gst_ffmpeg_pipe_close (demux->context->pb);
+      demux->context->pb = NULL;
+    }
+    avformat_close_input (&demux->context);
+
     GST_ELEMENT_ERROR (demux, LIBRARY, FAILED, (NULL),
         ("%s", gst_ffmpegdemux_averror (res)));
     return FALSE;
-  }
-}
-
-#define GST_FFMPEG_TYPE_FIND_SIZE 4096
-#define GST_FFMPEG_TYPE_FIND_MIN_SIZE 256
-
-static void
-gst_ffmpegdemux_type_find (GstTypeFind * tf, gpointer priv)
-{
-  const guint8 *data;
-  AVInputFormat *in_plugin = (AVInputFormat *) priv;
-  gint res = 0;
-  guint64 length;
-  GstCaps *sinkcaps;
-
-  /* We want GST_FFMPEG_TYPE_FIND_SIZE bytes, but if the file is shorter than
-   * that we'll give it a try... */
-  length = gst_type_find_get_length (tf);
-  if (length == 0 || length > GST_FFMPEG_TYPE_FIND_SIZE)
-    length = GST_FFMPEG_TYPE_FIND_SIZE;
-
-  /* The ffmpeg typefinders assume there's a certain minimum amount of data
-   * and will happily do invalid memory access if there isn't, so let's just
-   * skip the ffmpeg typefinders if the data available is too short
-   * (in which case it's unlikely to be a media file anyway) */
-  if (length < GST_FFMPEG_TYPE_FIND_MIN_SIZE) {
-    GST_LOG ("not typefinding %" G_GUINT64_FORMAT " bytes, too short", length);
-    return;
-  }
-
-  GST_LOG ("typefinding %" G_GUINT64_FORMAT " bytes", length);
-  if (in_plugin->read_probe &&
-      (data = gst_type_find_peek (tf, 0, length)) != NULL) {
-    AVProbeData probe_data;
-
-    probe_data.filename = "";
-    probe_data.buf = (guint8 *) data;
-    probe_data.buf_size = length;
-
-    res = in_plugin->read_probe (&probe_data);
-    if (res > 0) {
-      res = MAX (1, res * GST_TYPE_FIND_MAXIMUM / AVPROBE_SCORE_MAX);
-      /* Restrict the probability for MPEG-TS streams, because there is
-       * probably a better version in plugins-base, if the user has a recent
-       * plugins-base (in fact we shouldn't even get here for ffmpeg mpegts or
-       * mpegtsraw typefinders, since we blacklist them) */
-      if (g_str_has_prefix (in_plugin->name, "mpegts"))
-        res = MIN (res, GST_TYPE_FIND_POSSIBLE);
-
-      sinkcaps = gst_ffmpeg_formatid_to_caps (in_plugin->name);
-
-      GST_LOG ("libav typefinder '%s' suggests %" GST_PTR_FORMAT ", p=%u%%",
-          in_plugin->name, sinkcaps, res);
-
-      gst_type_find_suggest (tf, res, sinkcaps);
-      gst_caps_unref (sinkcaps);
-    }
   }
 }
 
@@ -1446,7 +1422,7 @@ gst_ffmpegdemux_loop (GstFFMpegDemux * demux)
   gint64 pts;
 
   /* open file if we didn't so already */
-  if (!demux->opened)
+  if (!demux->context)
     if (!gst_ffmpegdemux_open (demux))
       goto open_failed;
 
@@ -1574,6 +1550,36 @@ gst_ffmpegdemux_loop (GstFFMpegDemux * demux)
     GST_DEBUG_OBJECT (demux, "marking DISCONT");
     GST_BUFFER_FLAG_SET (outbuf, GST_BUFFER_FLAG_DISCONT);
     stream->discont = FALSE;
+  }
+
+  /* If we are demuxing planar DSD data, add the necessary
+   * meta to inform downstream about the planar layout. */
+  switch (avstream->codecpar->codec_id) {
+    case AV_CODEC_ID_DSD_LSBF_PLANAR:
+    case AV_CODEC_ID_DSD_MSBF_PLANAR:
+    {
+      int channel_idx;
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
+      const int num_channels = avstream->codecpar->ch_layout.nb_channels;
+#else
+      int num_channels = avstream->codecpar->channels;
+#endif
+      int num_bytes_per_channel = pkt.size / num_channels;
+      GstDsdPlaneOffsetMeta *plane_ofs_meta;
+
+      plane_ofs_meta = gst_buffer_add_dsd_plane_offset_meta (outbuf,
+          num_channels, num_bytes_per_channel, NULL);
+
+      for (channel_idx = 0; channel_idx < num_channels; ++channel_idx) {
+        plane_ofs_meta->offsets[channel_idx] =
+            num_bytes_per_channel * channel_idx;
+      }
+
+      break;
+    }
+
+    default:
+      break;
   }
 
   GST_DEBUG_OBJECT (demux,
@@ -1744,14 +1750,43 @@ gst_ffmpegdemux_sink_event (GstPad * sinkpad, GstObject * parent,
       GST_LOG_OBJECT (demux, "dropping %s event", GST_EVENT_TYPE_NAME (event));
       gst_event_unref (event);
       goto done;
+    case GST_EVENT_TAG:{
+      GstTagList *tags, *upstream_tags;
+      guint32 seqnum;
+
+      gst_event_parse_tag (event, &tags);
+      if (gst_tag_list_get_scope (tags) == GST_TAG_SCOPE_GLOBAL)
+        gst_tag_list_replace (&demux->upstream_global_tags, tags);
+      else
+        gst_tag_list_replace (&demux->upstream_stream_tags, tags);
+
+      seqnum = gst_event_get_seqnum (event);
+      gst_event_unref (event);
+      upstream_tags =
+          gst_tag_list_merge (demux->upstream_stream_tags,
+          demux->upstream_global_tags, GST_TAG_MERGE_REPLACE);
+      tags =
+          gst_tag_list_merge (upstream_tags, demux->tags,
+          GST_TAG_MERGE_REPLACE);
+      if (gst_tag_list_get_scope (tags) != GST_TAG_SCOPE_GLOBAL) {
+        tags = gst_tag_list_make_writable (tags);
+        gst_tag_list_set_scope (tags, GST_TAG_SCOPE_GLOBAL);
+      }
+      gst_clear_tag_list (&upstream_tags);
+      event = gst_event_new_tag (tags);
+      gst_event_set_seqnum (event, seqnum);
+    }
+      /* FALLTHROUGH */
     default:
       /* for a serialized event, wait until an earlier data is gone,
        * though this is no guarantee as to when task is done with it.
        *
-       * If the demuxer isn't opened, push straight away, since we'll
-       * be waiting against a cond that will never be signalled. */
+       * If the demuxer isn't opened yet, i.e. this is called as part of opening
+       * the demuxer, queue up the events for sending them at a later time since
+       * we'll otherwise be waiting against a cond that will never be signalled.
+       */
       if (GST_EVENT_IS_SERIALIZED (event)) {
-        if (demux->opened) {
+        if (demux->context && !demux->opening) {
           GST_FFMPEG_PIPE_MUTEX_LOCK (ffpipe);
           while (!ffpipe->needed)
             GST_FFMPEG_PIPE_WAIT (ffpipe);
@@ -1991,6 +2026,8 @@ gst_ffmpegdemux_change_state (GstElement * element, GstStateChange transition)
       demux->cached_events = NULL;
       demux->have_group_id = FALSE;
       demux->group_id = G_MAXUINT;
+      gst_clear_tag_list (&demux->upstream_global_tags);
+      gst_clear_tag_list (&demux->upstream_stream_tags);
       break;
     default:
       break;
@@ -2024,7 +2061,6 @@ gst_ffmpegdemux_register (GstPlugin * plugin)
   while ((in_plugin = av_demuxer_iterate (&i))) {
     gchar *type_name, *typefind_name;
     gint rank;
-    gboolean register_typefind_func = TRUE;
 
     GST_LOG ("Attempting to handle libav demuxer plugin %s [%s]",
         in_plugin->name, in_plugin->long_name);
@@ -2071,42 +2107,6 @@ gst_ffmpegdemux_register (GstPlugin * plugin)
         !strcmp (in_plugin->name, "ffmetadata"))
       continue;
 
-    /* Don't use the typefind functions of formats for which we already have
-     * better typefind functions */
-    if (!strcmp (in_plugin->name, "mov,mp4,m4a,3gp,3g2,mj2") ||
-        !strcmp (in_plugin->name, "ass") ||
-        !strcmp (in_plugin->name, "avi") ||
-        !strcmp (in_plugin->name, "asf") ||
-        !strcmp (in_plugin->name, "mpegvideo") ||
-        !strcmp (in_plugin->name, "mp3") ||
-        !strcmp (in_plugin->name, "matroska") ||
-        !strcmp (in_plugin->name, "matroska_webm") ||
-        !strcmp (in_plugin->name, "matroska,webm") ||
-        !strcmp (in_plugin->name, "mpeg") ||
-        !strcmp (in_plugin->name, "wav") ||
-        !strcmp (in_plugin->name, "au") ||
-        !strcmp (in_plugin->name, "tta") ||
-        !strcmp (in_plugin->name, "rm") ||
-        !strcmp (in_plugin->name, "amr") ||
-        !strcmp (in_plugin->name, "ogg") ||
-        !strcmp (in_plugin->name, "aiff") ||
-        !strcmp (in_plugin->name, "ape") ||
-        !strcmp (in_plugin->name, "dv") ||
-        !strcmp (in_plugin->name, "flv") ||
-        !strcmp (in_plugin->name, "mpc") ||
-        !strcmp (in_plugin->name, "mpc8") ||
-        !strcmp (in_plugin->name, "mpegts") ||
-        !strcmp (in_plugin->name, "mpegtsraw") ||
-        !strcmp (in_plugin->name, "mxf") ||
-        !strcmp (in_plugin->name, "nuv") ||
-        !strcmp (in_plugin->name, "swf") ||
-        !strcmp (in_plugin->name, "voc") ||
-        !strcmp (in_plugin->name, "pva") ||
-        !strcmp (in_plugin->name, "gif") ||
-        !strcmp (in_plugin->name, "vc1test") ||
-        !strcmp (in_plugin->name, "ivf"))
-      register_typefind_func = FALSE;
-
     /* Set the rank of demuxers known to work to MARGINAL.
      * Set demuxers for which we already have another implementation to NONE
      * Set All others to NONE*/
@@ -2146,15 +2146,16 @@ gst_ffmpegdemux_register (GstPlugin * plugin)
         !strcmp (in_plugin->name, "4xm") ||
         !strcmp (in_plugin->name, "yuv4mpegpipe") ||
         !strcmp (in_plugin->name, "pva") ||
-        !strcmp (in_plugin->name, "mpc") ||
-        !strcmp (in_plugin->name, "mpc8") ||
         !strcmp (in_plugin->name, "ivf") ||
         !strcmp (in_plugin->name, "brstm") ||
         !strcmp (in_plugin->name, "bfstm") ||
         !strcmp (in_plugin->name, "gif") ||
-        !strcmp (in_plugin->name, "dsf") || !strcmp (in_plugin->name, "iff"))
+        !strcmp (in_plugin->name, "dsf") || !strcmp (in_plugin->name, "iff")) {
       rank = GST_RANK_MARGINAL;
-    else {
+    } else if (!strcmp (in_plugin->name, "mpc") ||
+        !strcmp (in_plugin->name, "mpc8")) {
+      rank = GST_RANK_SECONDARY;
+    } else {
       GST_DEBUG ("ignoring %s", in_plugin->name);
       rank = GST_RANK_NONE;
       continue;
@@ -2182,11 +2183,7 @@ gst_ffmpegdemux_register (GstPlugin * plugin)
     else
       extensions = NULL;
 
-    if (!gst_element_register (plugin, type_name, rank, type) ||
-        (register_typefind_func == TRUE &&
-            !gst_type_find_register (plugin, typefind_name, rank,
-                gst_ffmpegdemux_type_find, extensions, NULL,
-                (gpointer) in_plugin, NULL))) {
+    if (!gst_element_register (plugin, type_name, rank, type)) {
       g_warning ("Registration of type %s failed", type_name);
       g_free (type_name);
       g_free (typefind_name);

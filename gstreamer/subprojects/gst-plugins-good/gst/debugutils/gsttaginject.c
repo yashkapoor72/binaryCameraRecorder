@@ -30,8 +30,11 @@
  * gst-launch-1.0 audiotestsrc num-buffers=100 ! taginject tags="title=testsrc,artist=gstreamer" ! vorbisenc ! oggmux ! filesink location=test.ogg
  * ]| set title and artist
  * |[
- * gst-launch-1.0 audiotestsrc num-buffers=100 ! taginject tags="keywords=\{\"testone\",\"audio\"\},title=\"audio\ testtone\"" ! vorbisenc ! oggmux ! filesink location=test.ogg
+ * gst-launch-1.0 audiotestsrc num-buffers=100 ! taginject tags="keywords=\{\"testtone\",\"audio\"\},title=\"audio\ testtone\"" ! vorbisenc ! oggmux ! filesink location=test.ogg
  * ]| set keywords and title demonstrating quoting of special chars and handling lists
+ * |[
+ * gst-launch-1.0.exe audiotestsrc num-buffers=500 ! taginject tags="title=MyTitle,artist=MyArtist,album=MyAlbum,genre=MyGenre" scope=global ! qtmux ! filesink location=test.m4a
+ * ]| set title, artist, album and genre. set scope as global
  *
  */
 
@@ -59,7 +62,9 @@ GST_DEBUG_CATEGORY_STATIC (gst_tag_inject_debug);
 
 enum
 {
-  PROP_TAGS = 1
+  PROP_TAGS = 1,
+  PROP_SCOPE,
+  PROP_MERGE_MODE
 };
 
 
@@ -76,6 +81,8 @@ static void gst_tag_inject_get_property (GObject * object, guint prop_id,
 
 static GstFlowReturn gst_tag_inject_transform_ip (GstBaseTransform * trans,
     GstBuffer * buf);
+static gboolean gst_tag_inject_sink_event (GstBaseTransform * trans,
+    GstEvent * event);
 static gboolean gst_tag_inject_start (GstBaseTransform * trans);
 
 
@@ -112,7 +119,33 @@ gst_tag_inject_class_init (GstTagInjectClass * klass)
   g_object_class_install_property (gobject_class, PROP_TAGS,
       g_param_spec_string ("tags", "taglist",
           "List of tags to inject into the target file",
-          NULL, G_PARAM_WRITABLE | G_PARAM_STATIC_STRINGS));
+          NULL, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * taginject:scope:
+   *
+   * Scope of tags to inject (stream | global).
+   *
+   * Since: 1.24
+   **/
+  g_object_class_install_property (gobject_class, PROP_SCOPE,
+      g_param_spec_enum ("scope", "Scope",
+          "Scope of tags to inject (stream | global)",
+          GST_TYPE_TAG_SCOPE, GST_TAG_SCOPE_STREAM,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * taginject:merge-mode:
+   *
+   * Merge mode to merge tags from this element with upstream tags.
+   *
+   * Since: 1.26
+   **/
+  g_object_class_install_property (gobject_class, PROP_MERGE_MODE,
+      g_param_spec_enum ("merge-mode", "Merge Mode",
+          "Merge mode to merge tags from this element with upstream tags",
+          GST_TYPE_TAG_MERGE_MODE, GST_TAG_MERGE_REPLACE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gobject_class->finalize = gst_tag_inject_finalize;
 
@@ -124,6 +157,8 @@ gst_tag_inject_class_init (GstTagInjectClass * klass)
 
   gstbasetrans_class->transform_ip =
       GST_DEBUG_FUNCPTR (gst_tag_inject_transform_ip);
+  gstbasetrans_class->sink_event =
+      GST_DEBUG_FUNCPTR (gst_tag_inject_sink_event);
 
   gstbasetrans_class->start = GST_DEBUG_FUNCPTR (gst_tag_inject_start);
 }
@@ -136,6 +171,8 @@ gst_tag_inject_init (GstTagInject * self)
   gst_base_transform_set_gap_aware (trans, TRUE);
 
   self->tags = NULL;
+  self->tags_scope = GST_TAG_SCOPE_STREAM;
+  self->merge_mode = GST_TAG_MERGE_REPLACE;
 }
 
 static GstFlowReturn
@@ -156,6 +193,36 @@ gst_tag_inject_transform_ip (GstBaseTransform * trans, GstBuffer * buf)
   return GST_FLOW_OK;
 }
 
+static gboolean
+gst_tag_inject_sink_event (GstBaseTransform * trans, GstEvent * event)
+{
+  GstTagInject *self = GST_TAG_INJECT (trans);
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_TAG:{
+      GstTagList *tags;
+
+      gst_event_parse_tag (event, &tags);
+      if (gst_tag_list_get_scope (tags) == self->tags_scope) {
+        GstTagList *new_tags;
+        guint32 seqnum = gst_event_get_seqnum (event);
+
+        new_tags = gst_tag_list_merge (tags, self->tags, self->merge_mode);
+        gst_tag_list_set_scope (new_tags, self->tags_scope);
+        gst_event_unref (event);
+        event = gst_event_new_tag (new_tags);
+        gst_event_set_seqnum (event, seqnum);
+
+        self->tags_sent = TRUE;
+      }
+    }
+    default:
+      break;
+  }
+
+  return GST_BASE_TRANSFORM_CLASS (parent_class)->sink_event (trans, event);
+}
+
 static void
 gst_tag_inject_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec)
@@ -168,6 +235,8 @@ gst_tag_inject_set_property (GObject * object, guint prop_id,
           g_strdup_printf ("taglist,%s", g_value_get_string (value));
       if (!(self->tags = gst_tag_list_new_from_string (structure))) {
         GST_WARNING ("unparsable taglist = '%s'", structure);
+      } else {
+        gst_tag_list_set_scope (self->tags, self->tags_scope);
       }
 
       /* make sure that tags will be send */
@@ -175,6 +244,14 @@ gst_tag_inject_set_property (GObject * object, guint prop_id,
       g_free (structure);
       break;
     }
+    case PROP_SCOPE:
+      self->tags_scope = g_value_get_enum (value);
+      if (self->tags)
+        gst_tag_list_set_scope (self->tags, self->tags_scope);
+      break;
+    case PROP_MERGE_MODE:
+      self->merge_mode = g_value_get_enum (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -185,9 +262,19 @@ static void
 gst_tag_inject_get_property (GObject * object, guint prop_id, GValue * value,
     GParamSpec * pspec)
 {
-  /*GstTagInject *self = GST_TAG_INJECT (object); */
+  GstTagInject *self = GST_TAG_INJECT (object);
 
   switch (prop_id) {
+    case PROP_TAGS:
+      g_value_take_string (value,
+          self->tags ? gst_tag_list_to_string (self->tags) : NULL);
+      break;
+    case PROP_SCOPE:
+      g_value_set_enum (value, self->tags_scope);
+      break;
+    case PROP_MERGE_MODE:
+      g_value_set_enum (value, self->merge_mode);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;

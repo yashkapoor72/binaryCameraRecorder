@@ -75,7 +75,7 @@ gst_playback_utils_get_n_common_capsfeatures (GstElementFactory * fact1,
       gst_static_caps_get (&raw_video_caps);
   GstStructure *raw_struct = gst_caps_get_structure (raw_caps, 0);
   gboolean native_raw =
-      (isaudioelement ? ! !(flags & GST_PLAY_FLAG_NATIVE_AUDIO) : ! !(flags &
+      (isaudioelement ? !!(flags & GST_PLAY_FLAG_NATIVE_AUDIO) : !!(flags &
           GST_PLAY_FLAG_NATIVE_VIDEO));
 
   fact1_tmpl_caps = get_template_caps (fact1, GST_PAD_SRC);
@@ -86,6 +86,7 @@ gst_playback_utils_get_n_common_capsfeatures (GstElementFactory * fact1,
       gst_caps_unref (fact1_tmpl_caps);
     else if (fact2_tmpl_caps)
       gst_caps_unref (fact2_tmpl_caps);
+    gst_clear_caps (&raw_caps);
     return 0;
   }
 
@@ -132,6 +133,7 @@ gst_playback_utils_get_n_common_capsfeatures (GstElementFactory * fact1,
 
   gst_caps_unref (fact1_tmpl_caps);
   gst_caps_unref (fact2_tmpl_caps);
+  gst_clear_caps (&raw_caps);
 
   return n_common_cf;
 }
@@ -161,4 +163,38 @@ gst_playback_utils_compare_factories_func (gconstpointer p1, gconstpointer p2)
   /* And if it's a both a parser we first sort by rank
    * and then by factory name */
   return gst_plugin_feature_rank_compare_func (p1, p2);
+}
+
+/* gst_playback_utils_stream_in_list:
+ * @streams: A list of #GstStream
+ * @stream: A #GstStream
+ *
+ * Searchs whether the given @stream is present in @streams. This also handles
+ * the case where the actual @stream was rewritten but contains the same
+ * stream-id and type.
+ *
+ * Returns: TRUE if @stream is in @streams.
+ *
+ **/
+gboolean
+gst_playback_utils_stream_in_list (GList * streams, GstStream * stream)
+{
+  GList *iter;
+  const gchar *stream_id = gst_stream_get_stream_id (stream);
+  GstStreamType stream_type = gst_stream_get_stream_type (stream);
+
+  for (iter = streams; iter; iter = iter->next) {
+    GstStream *cand = iter->data;
+
+    if (iter->data == stream)
+      return TRUE;
+    /* Compare the stream type */
+    if (gst_stream_get_stream_type (cand) != stream_type)
+      continue;
+    /* Compare the stream-id */
+    if (!g_strcmp0 (stream_id, gst_stream_get_stream_id (cand)))
+      return TRUE;
+  }
+
+  return FALSE;
 }

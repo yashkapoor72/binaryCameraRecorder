@@ -575,9 +575,10 @@ gst_rtp_h264_pay_setcaps (GstRTPBasePayload * basepayload, GstCaps * caps)
       rtph264pay->stream_format = GST_H264_STREAM_FORMAT_BYTESTREAM;
   }
 
-  if (!gst_structure_get_fraction (str, "framerate", &rtph264pay->fps_num,
-          &rtph264pay->fps_denum))
-    rtph264pay->fps_num = rtph264pay->fps_denum = 0;
+  rtph264pay->fps_num = 0;
+  rtph264pay->fps_denum = 1;
+  gst_structure_get_fraction (str, "framerate", &rtph264pay->fps_num,
+      &rtph264pay->fps_denum);
 
   /* packetized AVC video has a codec_data */
   if ((value = gst_structure_get_value (str, "codec_data"))) {
@@ -924,6 +925,7 @@ gst_rtp_h264_pay_payload_nal (GstRTPBasePayload * basepayload,
 {
   GstRtpH264Pay *rtph264pay;
   guint8 nal_header, nal_type;
+  gboolean first_slice = FALSE;
   gboolean send_spspps;
   guint size;
 
@@ -960,8 +962,17 @@ gst_rtp_h264_pay_payload_nal (GstRTPBasePayload * basepayload,
 
   send_spspps = FALSE;
 
+  if (nal_type == IDR_TYPE_ID) {
+    guint8 first_mb_in_slice;
+    gst_buffer_extract (paybuf, 1, &first_mb_in_slice, 1);
+    /* 'first_mb_in_slice' specifies the address of the first macroblock
+     * in the slice. if 'first_mb_in_slice' is 0 (note that it's exp golomb
+     * code), the current slice is the first slice of the frame */
+    first_slice = ((first_mb_in_slice >> 7) & 0x01) == 1;
+  }
+
   /* check if we need to emit an SPS/PPS now */
-  if (nal_type == IDR_TYPE_ID && rtph264pay->spspps_interval > 0) {
+  if (first_slice && nal_type == IDR_TYPE_ID && rtph264pay->spspps_interval > 0) {
     if (rtph264pay->last_spspps != -1) {
       guint64 diff;
       GstClockTime running_time =
@@ -993,7 +1004,8 @@ gst_rtp_h264_pay_payload_nal (GstRTPBasePayload * basepayload,
       GST_DEBUG_OBJECT (rtph264pay, "no previous SPS/PPS time, send now");
       send_spspps = TRUE;
     }
-  } else if (nal_type == IDR_TYPE_ID && rtph264pay->spspps_interval == -1) {
+  } else if (first_slice && nal_type == IDR_TYPE_ID
+      && rtph264pay->spspps_interval == -1) {
     GST_DEBUG_OBJECT (rtph264pay, "sending SPS/PPS before current IDR frame");
     /* send SPS/PPS before every IDR frame */
     send_spspps = TRUE;
@@ -1254,7 +1266,7 @@ gst_rtp_h264_pay_send_bundle (GstRtpH264Pay * rtph264pay, gboolean end_of_au)
       end_of_au, delta, discont);
 }
 
-static gboolean
+static GstFlowReturn
 gst_rtp_h264_pay_payload_nal_bundle (GstRTPBasePayload * basepayload,
     GstBuffer * paybuf, GstClockTime dts, GstClockTime pts, gboolean end_of_au,
     gboolean delta_unit, gboolean discont, guint8 nal_header)
@@ -1393,57 +1405,17 @@ gst_rtp_h264_pay_handle_buffer (GstRTPBasePayload * basepayload,
 
   avc = rtph264pay->stream_format == GST_H264_STREAM_FORMAT_AVC;
 
-  if (avc) {
-    /* In AVC mode, there is no adapter, so nothing to drain */
-    if (draining)
-      return GST_FLOW_OK;
-  } else {
-    if (buffer) {
-      if (!GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_DELTA_UNIT)) {
-        if (gst_adapter_available (rtph264pay->adapter) == 0)
-          rtph264pay->delta_unit = FALSE;
-        else
-          /* This buffer contains a key frame but the adapter isn't empty. So
-           * we'll purge it first by sending a first packet and then the second
-           * one won't have the DELTA_UNIT flag. */
-          delayed_not_delta_unit = TRUE;
-      }
-
-      if (GST_BUFFER_IS_DISCONT (buffer)) {
-        if (gst_adapter_available (rtph264pay->adapter) == 0)
-          rtph264pay->discont = TRUE;
-        else
-          /* This buffer has the DISCONT flag but the adapter isn't empty. So
-           * we'll purge it first by sending a first packet and then the second
-           * one will have the DISCONT flag set. */
-          delayed_discont = TRUE;
-      }
-
-      marker = GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_MARKER);
-      gst_adapter_push (rtph264pay->adapter, buffer);
-      buffer = NULL;
-    }
-
-    /* We want to use the first TS used to construct the following NAL */
-    dts = gst_adapter_prev_dts (rtph264pay->adapter, NULL);
-    pts = gst_adapter_prev_pts (rtph264pay->adapter, NULL);
-
-    size = gst_adapter_available (rtph264pay->adapter);
-    /* Nothing to do here if the adapter is empty, e.g. on EOS */
-    if (size == 0)
-      return GST_FLOW_OK;
-    data = gst_adapter_map (rtph264pay->adapter, size);
-    GST_DEBUG_OBJECT (basepayload, "got %" G_GSIZE_FORMAT " bytes", size);
-  }
-
   ret = GST_FLOW_OK;
 
-  /* now loop over all NAL units and put them in a packet */
   if (avc) {
     GstBufferMemoryMap memory;
     gsize remaining_buffer_size;
     guint nal_length_size;
     gsize offset = 0;
+
+    /* In AVC mode, there is no adapter, so nothing to drain */
+    if (draining)
+      return GST_FLOW_OK;
 
     gst_buffer_memory_map (buffer, &memory);
     remaining_buffer_size = gst_buffer_get_size (buffer);
@@ -1522,6 +1494,43 @@ gst_rtp_h264_pay_handle_buffer (GstRTPBasePayload * basepayload,
   } else {
     guint next;
     gboolean update = FALSE;
+
+    if (buffer) {
+      if (!GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_DELTA_UNIT)) {
+        if (gst_adapter_available (rtph264pay->adapter) == 0)
+          rtph264pay->delta_unit = FALSE;
+        else
+          /* This buffer contains a key frame but the adapter isn't empty. So
+           * we'll purge it first by sending a first packet and then the second
+           * one won't have the DELTA_UNIT flag. */
+          delayed_not_delta_unit = TRUE;
+      }
+
+      if (GST_BUFFER_IS_DISCONT (buffer)) {
+        if (gst_adapter_available (rtph264pay->adapter) == 0)
+          rtph264pay->discont = TRUE;
+        else
+          /* This buffer has the DISCONT flag but the adapter isn't empty. So
+           * we'll purge it first by sending a first packet and then the second
+           * one will have the DISCONT flag set. */
+          delayed_discont = TRUE;
+      }
+
+      marker = GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_MARKER);
+      gst_adapter_push (rtph264pay->adapter, buffer);
+      buffer = NULL;
+    }
+
+    /* We want to use the first TS used to construct the following NAL */
+    dts = gst_adapter_prev_dts (rtph264pay->adapter, NULL);
+    pts = gst_adapter_prev_pts (rtph264pay->adapter, NULL);
+
+    size = gst_adapter_available (rtph264pay->adapter);
+    /* Nothing to do here if the adapter is empty, e.g. on EOS */
+    if (size == 0)
+      return GST_FLOW_OK;
+    data = gst_adapter_map (rtph264pay->adapter, size);
+    GST_DEBUG_OBJECT (basepayload, "got %" G_GSIZE_FORMAT " bytes", size);
 
     /* get offset of first start code */
     next = next_start_code (data, size);

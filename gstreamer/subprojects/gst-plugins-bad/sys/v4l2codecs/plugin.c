@@ -18,10 +18,33 @@
  * Boston, MA 02110-1301, USA.
  */
 
+/**
+ * plugin-v4l2codecs:
+ * @title: V4L2 Stateless codec
+ * @short_description: V4L2 plugin to support Statless codec drivers
+ *
+ * This plugin provides support for Video4Linux2 drivers implementing stateless
+ * video codecs. The plugin will generate elements based on the system
+ * capabilities. For this reason, this documentation may differ from output
+ * of running `gst-inspect-1.0` on your target.
+ *
+ * If you are having issues getting any elementis to be registered, you may want
+ * to verify that your user have adequate permissions to access media and video
+ * devices. These Linux devices are usually found in `/dev/media*` and
+ * `/dev/video*`.
+ *
+ * This documentation as been generated with the use of the environment variable
+ * `GST_V4L2_CODEC_GEN_DOC=1`. Using tis environment outside of the documentation
+ * generation will render your codecs unusable.
+ *
+ * Since: 1.18
+ */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
+#include "gstv4l2codecav1dec.h"
 #include "gstv4l2codecdevice.h"
 #include "gstv4l2codech264dec.h"
 #include "gstv4l2codech265dec.h"
@@ -80,7 +103,12 @@ register_video_decoder (GstPlugin * plugin, GstV4l2CodecDevice * device)
         gst_v4l2_codec_vp9_dec_register (plugin, decoder, device,
             GST_RANK_PRIMARY + 1);
         break;
-
+      case V4L2_PIX_FMT_AV1_FRAME:
+        GST_INFO_OBJECT (decoder, "Registering %s as AV1 Decoder",
+            device->name);
+        gst_v4l2_codec_av1_dec_register (plugin, decoder, device,
+            GST_RANK_PRIMARY + 1);
+        break;
       default:
         GST_FIXME_OBJECT (decoder, "%" GST_FOURCC_FORMAT " is not supported.",
             GST_FOURCC_ARGS (fmt));

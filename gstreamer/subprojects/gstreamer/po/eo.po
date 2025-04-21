@@ -1,15 +1,15 @@
 # Esperanto translation for gstreamer.
-# Copyright (C) 2011, 2021 Free Software Foundation, Inc.
+# Copyright (C) 2011, 2021, 2023 Free Software Foundation, Inc.
 # This file is distributed under the same license as the gstreamer package.
 # Kristjan SCHMIDT <kristjan.schmidt@googlemail.com>, 2011.
-# Felipe CASTRO <fefcas@gmail.com>, 2021.
+# Felipe CASTRO <fefcas@gmail.com>, 2021, 2023.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gstreamer 1.16.0\n"
+"Project-Id-Version: gstreamer 1.19.2\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
-"PO-Revision-Date: 2021-03-26 21:54-0300\n"
+"POT-Creation-Date: 2025-02-23 16:55+0000\n"
+"PO-Revision-Date: 2023-01-08 11:53-0300\n"
 "Last-Translator: Felipe Castro <fefcas@gmail.com>\n"
 "Language-Team: Esperanto <translation-team-eo@lists.sourceforge.net>\n"
 "Language: eo\n"
@@ -42,8 +42,8 @@ msgid ""
 "the individual categories. Example: GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 msgstr ""
 "Komo-apartita listo de paroj kategori_nomo:nivelo por difini specifajn "
-"nivelojn por la individuaj kategorioj. Ekzemplo: GST_AUTOPLUG:5,"
-"GST_ELEMENT_*:3"
+"nivelojn por la individuaj kategorioj. Ekzemplo: "
+"GST_AUTOPLUG:5,GST_ELEMENT_*:3"
 
 msgid "LIST"
 msgstr "LISTO"
@@ -60,9 +60,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Malaktivigi sencimigon"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Aktivigi detaleman diagnozon de ŝargado je kromaĵo"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Dupunkto-apartitaj vojoj enhavantaj kromaĵojn"
@@ -822,13 +819,19 @@ msgstr "privata-datumaro"
 msgid "Private data"
 msgstr "Privata datumaro"
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
 
 #, c-format
 msgid "Invalid URI: %s"
-msgstr ""
+msgstr "Malvalida URI: %s"
 
 #, c-format
 msgid "No URI handler for the %s protocol found"
@@ -861,20 +864,31 @@ msgstr "la ligo ne havas fonton [sink=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "la ligo ne havas konsumanton [source=%s@%p]"
 
+msgid "No such property."
+msgstr ""
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "neniu atributo \"%s\" en elemento \"%s\""
+
+#, c-format
+msgid "Element \"%s\" is not a GstPreset"
+msgstr "Elemento \"%s\" ne estas GstPreset"
+
+#, c-format
+msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "ne eblis difini 'preset' \"%s\" en elemento \"%s\""
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "neniu elemento \"%s\""
 
 #, c-format
 msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
 msgstr "ne eblis difini atributon \"%s\" en elemento \"%s\" kiel \"%s\""
 
 #, fuzzy, c-format
-msgid "Element \"%s\" is not a GstPreset"
-msgstr "Dosiero \"%s\" estas konektinterfaco (socket)."
-
-#, fuzzy, c-format
-msgid "could not set preset \"%s\" in element \"%s\""
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
 msgstr "ne eblis difini atributon \"%s\" en elemento \"%s\" kiel \"%s\""
 
 msgid "Delayed linking failed."
@@ -895,10 +909,6 @@ msgstr "ne eblis ligi %s al %s per Caps %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "ne eblis ligi %s al %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "neniu elemento \"%s\""
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1023,7 +1033,7 @@ msgid "eos-after and error-after can't both be defined."
 msgstr "eos-after kaj error-after ne povas esti difinataj samtempe."
 
 msgid "caps"
-msgstr "Caps"
+msgstr "caps"
 
 msgid "detected capabilities in stream"
 msgstr "detektitaj kapabloj en fluo"
@@ -1047,6 +1057,10 @@ msgstr "La fluo enhavas neniun datumaron."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "%sRealigitaj Interfacoj%s:\n"
 
+#, fuzzy, c-format
+msgid "%sElement Flags%s:\n"
+msgstr "%sRealigitaj Interfacoj%s:\n"
+
 msgid "readable"
 msgstr "legebla"
 
@@ -1059,9 +1073,11 @@ msgstr "evitinda"
 msgid "controllable"
 msgstr "regebla"
 
-#, fuzzy
 msgid "conditionally available"
-msgstr "regebla"
+msgstr "disponebla kondiĉe"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "ŝanĝebla nur en statoj NULA, PRETA, PAŬZITA aŭ LUDANTA"
@@ -1143,7 +1159,6 @@ msgstr ""
 msgid "Print supported URI schemes, with the elements that implement them"
 msgstr "Montri subtenatajn skemojn de URI, kun la elementoj kiuj realigas ilin"
 
-#, fuzzy
 msgid ""
 "Disable colors in output. You can also achieve the same by setting "
 "'GST_INSPECT_NO_COLORS' environment variable to any value."
@@ -1152,7 +1167,7 @@ msgstr ""
 "difino de iu ajn valoro por la medi-variablo 'GST_INSPECT_NO_COLORS'."
 
 msgid "Color output, even when not sending to a tty."
-msgstr ""
+msgstr "Kolora eligo, eĉ kiam ne sendanta al tty."
 
 #, c-format
 msgid "Could not load plugin file: %s\n"
@@ -1292,7 +1307,7 @@ msgstr "Eraro okazis dum atendo je EOS\n"
 
 #, c-format
 msgid "Use Windows high-resolution clock, precision: %u ms\n"
-msgstr ""
+msgstr "Uzu Vindozan alt-distingivan horloĝon, distingivo: %u ms\n"
 
 msgid "Output tags (also known as metadata)"
 msgstr "Eligi etikedojn (ankaŭ konataj kiel metadatumaro)"
@@ -1319,6 +1334,13 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr "ATRIBUTO-NOMO"
 
+msgid "Set the name of the program"
+msgstr ""
+
+#, fuzzy
+msgid "PROGRAM-NAME"
+msgstr "ATRIBUTO-NOMO"
+
 msgid "Do not install a fault handler"
 msgstr "Ne instali traktilon de misfunkcio"
 
@@ -1333,11 +1355,16 @@ msgid ""
 "the position will be printed when stdout is a TTY. To enable printing "
 "position when stdout is not a TTY, use \"force-position\" option"
 msgstr ""
+"Ne printi nunan pozicion de dukto. Se tiu ĉi opcio ne estas indikita, la "
+"pozicio estos printata kiam ĉefeligo estas TTY. Por ebligi printi la "
+"pozicion kiam ĉefeligo ne estas TTY, uzu la opcion \"force-position\""
 
 msgid ""
 "Allow printing current position of pipeline even if stdout is not a TTY. "
 "This option has no effect if the \"no-position\" option is specified"
 msgstr ""
+"Eligi printi nunan pozicion de dukto êc kiam ĉefeligo ne estas TTY. Tiu ĉi "
+"opcio ne funkcias se la opcio \"no-position\" estas aktiva"
 
 #, c-format
 msgid "ERROR: pipeline could not be constructed: %s.\n"
@@ -1356,9 +1383,8 @@ msgstr "ERARO: la elemento 'pipeline' ne estas trovita.\n"
 msgid "Setting pipeline to PAUSED ...\n"
 msgstr "Ni difinas ĉenstablo kiel PAŬZITA ...\n"
 
-#, fuzzy
 msgid "Failed to set pipeline to PAUSED.\n"
-msgstr "Ni difinas ĉenstablo kiel PAŬZITA ...\n"
+msgstr "Malsukcesis difini dukton kiel PAŬZITA.\n"
 
 msgid "Pipeline is live and does not need PREROLL ...\n"
 msgstr "Ĉenstablo vivas kaj ne bezonas ANTAŬPREPARO ...\n"
@@ -1374,6 +1400,9 @@ msgstr "Ni difinas ĉenstablon kiel NULA ...\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Ni liberigas ĉenstablon ...\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Aktivigi detaleman diagnozon de ŝargado je kromaĵo"
 
 #~ msgid "ERROR: Pipeline doesn't want to pause.\n"
 #~ msgstr "ERARO: ĉenstablo ne volas paŭzi.\n"

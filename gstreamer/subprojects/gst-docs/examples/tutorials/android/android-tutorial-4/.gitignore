@@ -1,4 +1,5 @@
+.cxx/
 .externalNativeBuild/
 assets/
-gst-build-*/
+gst-android-build/
 src/org/

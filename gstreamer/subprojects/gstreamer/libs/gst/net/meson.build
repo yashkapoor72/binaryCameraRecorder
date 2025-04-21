@@ -23,8 +23,17 @@ gst_net_headers = files(
 )
 install_headers(gst_net_headers, subdir : 'gstreamer-1.0/gst/net/')
 
+doc_sources = []
+foreach s: gst_net_sources + gst_net_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'net': pathsep.join(doc_sources)
+}
+
 gst_net_gen_sources = []
-gst_net = library('gstnet-@0@'.format(apiversion),
+gst_net = library('gstnet-@0@'.format(api_version),
   gst_net_sources,
   c_args : gst_c_args + ['-DBUILDING_GST_NET', '-DG_LOG_DOMAIN="GStreamer-Net"'],
   include_directories : [configinc, libsinc],
@@ -32,7 +41,7 @@ gst_net = library('gstnet-@0@'.format(apiversion),
   soversion : soversion,
   darwin_versions : osxversion,
   install : true,
-  dependencies : [gio_dep, gst_base_dep],
+  dependencies : [gio_dep, gst_base_dep, dl_dep, network_deps],
 )
 
 library_def = {'lib': gst_net}
@@ -50,7 +59,7 @@ if build_gir
   gir = {
     'sources' : gst_net_sources + gst_net_headers,
     'namespace' : 'GstNet',
-    'nsversion' : apiversion,
+    'nsversion' : api_version,
     'identifier_prefix' : 'Gst',
     'symbol_prefix' : 'gst',
     'export_packages' : pkg_name,
@@ -63,6 +72,7 @@ if build_gir
   library_def += {'gir': [gir]}
   if not static_build
     gst_net_gir = gnome.generate_gir(gst_net, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [gst_net_gir]}
     gst_net_gen_sources += [gst_net_gir]
   endif
 endif

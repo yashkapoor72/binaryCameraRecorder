@@ -20,7 +20,7 @@
 
 use anyhow::bail;
 use gst::prelude::*;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 mod janus;
 
@@ -36,6 +36,7 @@ struct AppWeak(Weak<AppInner>);
 #[derive(Debug)]
 struct AppInner {
     pipeline: gst::Pipeline,
+    bus_watch: Mutex<Option<gst::bus::BusWatchGuard>>,
 }
 
 // To be able to access the App's fields directly
@@ -61,7 +62,7 @@ impl App {
     }
 
     fn new() -> Result<Self, anyhow::Error> {
-        let pipeline = gst::parse_launch(
+        let pipeline = gst::parse::launch(
             "webrtcbin name=webrtcbin stun-server=stun://stun.l.google.com:19302 \
              videotestsrc pattern=ball ! videoconvert ! queue name=vqueue",
         )?;
@@ -71,18 +72,24 @@ impl App {
             .expect("Couldn't downcast pipeline");
 
         let bus = pipeline.bus().unwrap();
-        let app = App(Arc::new(AppInner { pipeline }));
+        let app = App(Arc::new(AppInner {
+            pipeline,
+            bus_watch: Mutex::default(),
+        }));
 
         let app_weak = app.downgrade();
-        bus.add_watch_local(move |_bus, msg| {
-            let app = upgrade_weak!(app_weak, glib::Continue(false));
+        let bus_watch = bus
+            .add_watch_local(move |_bus, msg| {
+                let app = upgrade_weak!(app_weak, glib::ControlFlow::Break);
 
-            if app.handle_pipeline_message(msg).is_err() {
-                return glib::Continue(false);
-            }
-            glib::Continue(true)
-        })
-        .expect("Unable to add bus watch");
+                if app.handle_pipeline_message(msg).is_err() {
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            })
+            .expect("Unable to add bus watch");
+        *app.0.bus_watch.lock().unwrap() = Some(bus_watch);
+
         Ok(app)
     }
 
@@ -96,10 +103,13 @@ impl App {
                     .map(|s| String::from(s.path_string()))
                     .unwrap_or_else(|| String::from("None")),
                 err.error(),
-                err.debug().unwrap_or_else(|| String::from("None")),
+                err.debug().unwrap_or_else(|| glib::GString::from("None")),
             ),
             MessageView::Warning(warning) => {
                 println!("Warning: \"{}\"", warning.debug().unwrap());
+            }
+            MessageView::Latency(_) => {
+                let _ = self.pipeline.recalculate_latency();
             }
             _ => (),
         }
@@ -139,7 +149,7 @@ impl Drop for AppInner {
 fn check_plugins() -> Result<(), anyhow::Error> {
     let needed = [
         "videotestsrc",
-        "videoconvert",
+        "videoconvertscale",
         "autodetect",
         "vpx",
         "webrtc",
@@ -158,7 +168,7 @@ fn check_plugins() -> Result<(), anyhow::Error> {
         .collect::<Vec<_>>();
 
     if !missing.is_empty() {
-        bail!("Missing plugins: {:?}", missing);
+        bail!("Missing plugins: {missing:?}");
     } else {
         Ok(())
     }

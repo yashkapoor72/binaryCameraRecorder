@@ -7,6 +7,24 @@ wasapi_sources = [
   'gstwasapidevice.c',
 ]
 
+wasapi_headers = [
+  'gstwasapisink.h',
+  'gstwasapisrc.h',
+  'gstmmdeviceenumerator.h',
+  'gstwasapidevice.h',
+  'gstwasapiutil.h',
+  'gstaudioclient3.h',
+]
+
+doc_sources = []
+foreach s: wasapi_sources + wasapi_headers
+  doc_sources += meson.current_source_dir() / s
+endforeach
+
+plugin_sources += {
+  'wasapi': pathsep.join(doc_sources)
+}
+
 if host_system != 'windows'
   if get_option('wasapi').disabled()
     subdir_done()
@@ -26,6 +44,18 @@ if ole32_dep.found() and ksuser_dep.found() and have_audioclient_h
   wasapi_args = ['-DCOBJMACROS']
   if cc.has_header_symbol('audioclient.h', 'AUDCLNT_STREAMOPTIONS_NONE')
     wasapi_args += ['-DHAVE_AUDCLNT_STREAMOPTIONS']
+  endif
+
+  # MinGW defines some of these GUIDs in headers, whereas with MSVC we're
+  # expected to define them in the code. Check which ones we need to provide.
+  if cc.get_id() != 'msvc'
+    if cc.has_header_symbol('audioclient.h', 'IID_IAudioClient')
+      wasapi_args += ['-DHAVE_AUDCLNT_GUIDS']
+    endif
+
+    if cc.has_header_symbol('audioclient.h', 'IID_IAudioClient3')
+      wasapi_args += ['-DHAVE_AUDCLNT3_GUID']
+    endif
   endif
 
   gstwasapi = library('gstwasapi',

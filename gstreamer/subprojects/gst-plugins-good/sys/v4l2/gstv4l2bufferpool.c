@@ -84,7 +84,8 @@ static void gst_v4l2_buffer_pool_complete_release_buffer (GstBufferPool * bpool,
     GstBuffer * buffer, gboolean queued);
 
 static gboolean
-gst_v4l2_is_buffer_valid (GstBuffer * buffer, GstV4l2MemoryGroup ** out_group)
+gst_v4l2_is_buffer_valid (GstBuffer * buffer, GstV4l2MemoryGroup ** out_group,
+    gboolean check_writable)
 {
   GstMemory *mem = gst_buffer_peek_memory (buffer, 0);
   gboolean valid = FALSE;
@@ -108,7 +109,7 @@ gst_v4l2_is_buffer_valid (GstBuffer * buffer, GstV4l2MemoryGroup ** out_group)
       if (group->mem[i] != gst_buffer_peek_memory (buffer, i))
         goto done;
 
-      if (!gst_memory_is_writable (group->mem[i]))
+      if (check_writable && !gst_memory_is_writable (group->mem[i]))
         goto done;
     }
 
@@ -127,7 +128,7 @@ gst_v4l2_buffer_pool_resize_buffer (GstBufferPool * bpool, GstBuffer * buffer)
   GstV4l2BufferPool *pool = GST_V4L2_BUFFER_POOL (bpool);
   GstV4l2MemoryGroup *group;
 
-  if (gst_v4l2_is_buffer_valid (buffer, &group)) {
+  if (gst_v4l2_is_buffer_valid (buffer, &group, TRUE)) {
     gst_v4l2_allocator_reset_group (pool->vallocator, group);
   } else {
     GST_BUFFER_FLAG_SET (buffer, GST_BUFFER_FLAG_TAG_MEMORY);
@@ -164,16 +165,18 @@ gst_v4l2_buffer_pool_copy_buffer (GstV4l2BufferPool * pool, GstBuffer * dest,
     gst_video_frame_unmap (&dest_frame);
   } else {
     GstMapInfo map;
+    gsize filled_size;
 
     GST_DEBUG_OBJECT (pool, "copy raw bytes");
 
     if (!gst_buffer_map (src, &map, GST_MAP_READ))
       goto invalid_buffer;
 
-    gst_buffer_fill (dest, 0, map.data, gst_buffer_get_size (src));
+    filled_size =
+        gst_buffer_fill (dest, 0, map.data, gst_buffer_get_size (src));
 
     gst_buffer_unmap (src, &map);
-    gst_buffer_resize (dest, 0, gst_buffer_get_size (src));
+    gst_buffer_resize (dest, 0, filled_size);
   }
 
   gst_buffer_copy_into (dest, src,
@@ -220,7 +223,7 @@ _unmap_userptr_frame (struct UserPtrData *data)
   if (data->buffer)
     gst_buffer_unref (data->buffer);
 
-  g_slice_free (struct UserPtrData, data);
+  g_free (data);
 }
 
 static GstFlowReturn
@@ -236,7 +239,7 @@ gst_v4l2_buffer_pool_import_userptr (GstV4l2BufferPool * pool,
   GST_LOG_OBJECT (pool, "importing userptr");
 
   /* get the group */
-  if (!gst_v4l2_is_buffer_valid (dest, &group))
+  if (!gst_v4l2_is_buffer_valid (dest, &group, TRUE))
     goto not_our_buffer;
 
   if (V4L2_TYPE_IS_OUTPUT (pool->obj->type))
@@ -244,7 +247,7 @@ gst_v4l2_buffer_pool_import_userptr (GstV4l2BufferPool * pool,
   else
     flags = GST_MAP_WRITE;
 
-  data = g_slice_new0 (struct UserPtrData);
+  data = g_new0 (struct UserPtrData, 1);
 
   if (finfo && (finfo->format != GST_VIDEO_FORMAT_UNKNOWN &&
           finfo->format != GST_VIDEO_FORMAT_ENCODED)) {
@@ -325,7 +328,7 @@ not_our_buffer:
 invalid_buffer:
   {
     GST_ERROR_OBJECT (pool, "could not map buffer");
-    g_slice_free (struct UserPtrData, data);
+    g_free (data);
     return GST_FLOW_ERROR;
   }
 non_contiguous_mem:
@@ -353,7 +356,7 @@ gst_v4l2_buffer_pool_import_dmabuf (GstV4l2BufferPool * pool,
 
   GST_LOG_OBJECT (pool, "importing dmabuf");
 
-  if (!gst_v4l2_is_buffer_valid (dest, &group))
+  if (!gst_v4l2_is_buffer_valid (dest, &group, TRUE))
     goto not_our_buffer;
 
   if (n_mem > GST_VIDEO_MAX_PLANES)
@@ -446,7 +449,7 @@ gst_v4l2_buffer_pool_alloc_buffer (GstBufferPool * bpool, GstBuffer ** buffer,
   GstVideoInfo *info;
 
   obj = pool->obj;
-  info = &obj->info;
+  info = &obj->info.vinfo;
 
   switch (obj->mode) {
     case GST_V4L2_IO_RW:
@@ -523,14 +526,18 @@ gst_v4l2_buffer_pool_set_config (GstBufferPool * bpool, GstStructure * config)
   gboolean updated = FALSE;
   gboolean ret;
 
-  pool->add_videometa =
-      gst_buffer_pool_config_has_option (config,
-      GST_BUFFER_POOL_OPTION_VIDEO_META);
-
   /* parse the config and keep around */
   if (!gst_buffer_pool_config_get_params (config, &caps, &size, &min_buffers,
           &max_buffers))
     goto wrong_config;
+
+  pool->add_videometa =
+      gst_buffer_pool_config_has_option (config,
+      GST_BUFFER_POOL_OPTION_VIDEO_META);
+
+  /* Always enable VideoMeta when we negotiate memory:DMABuf */
+  pool->have_dma_drm_caps = gst_video_is_dma_drm_caps (caps);
+  pool->add_videometa |= pool->have_dma_drm_caps;
 
   if (!gst_buffer_pool_config_get_allocator (config, &allocator, &params))
     goto wrong_config;
@@ -619,8 +626,8 @@ gst_v4l2_buffer_pool_set_config (GstBufferPool * bpool, GstStructure * config)
   }
 
   /* Always update the config to ensure the configured size matches */
-  gst_buffer_pool_config_set_params (config, caps, obj->info.size, min_buffers,
-      max_buffers);
+  gst_buffer_pool_config_set_params (config, caps, obj->info.vinfo.size,
+      min_buffers, max_buffers);
 
   /* keep a GstVideoInfo with defaults for the when we need to copy */
   gst_video_info_from_caps (&pool->caps_info, caps);
@@ -682,9 +689,11 @@ gst_v4l2_buffer_pool_streamon (GstV4l2BufferPool * pool)
         guint num_queued;
         guint i, n = 0;
 
+        GST_OBJECT_LOCK (pool);
         num_queued = g_atomic_int_get (&pool->num_queued);
         if (num_queued < pool->num_allocated)
           n = pool->num_allocated - num_queued;
+        GST_OBJECT_UNLOCK (pool);
 
         /* For captures, we need to enqueue buffers before we start streaming,
          * so the driver don't underflow immediately. As we have put then back
@@ -767,6 +776,17 @@ gst_v4l2_buffer_pool_streamoff (GstV4l2BufferPool * pool)
       g_atomic_int_add (&pool->num_queued, -1);
     }
   }
+}
+
+static void
+gst_v4l2_buffer_pool_group_released (GstV4l2BufferPool * pool,
+    GstV4l2MemoryGroup * group)
+{
+  gint index = group->buffer.index;
+
+  g_atomic_int_set (&pool->buffer_state[index], BUFFER_STATE_FREE);
+
+  gst_v4l2_buffer_pool_resurrect_buffer (pool);
 }
 
 static gboolean
@@ -932,7 +952,7 @@ gst_v4l2_buffer_pool_start (GstBufferPool * bpool)
 
     pool->group_released_handler =
         g_signal_connect_swapped (pool->vallocator, "group-released",
-        G_CALLBACK (gst_v4l2_buffer_pool_resurrect_buffer), pool);
+        G_CALLBACK (gst_v4l2_buffer_pool_group_released), pool);
     ret = gst_v4l2_buffer_pool_streamon (pool);
   }
 
@@ -1024,21 +1044,27 @@ gst_v4l2_buffer_pool_stop (GstBufferPool * bpool)
 }
 
 gboolean
-gst_v4l2_buffer_pool_orphan (GstBufferPool ** bpool)
+gst_v4l2_buffer_pool_orphan (GstV4l2Object * v4l2object)
 {
-  GstV4l2BufferPool *pool = GST_V4L2_BUFFER_POOL (*bpool);
+  GstBufferPool *bpool = gst_v4l2_object_get_buffer_pool (v4l2object);
+  GstV4l2BufferPool *pool;
   gboolean ret;
 
-  g_return_val_if_fail (pool->orphaned == FALSE, FALSE);
+  /* Nothing to do if there is no pool */
+  if (!bpool)
+    return TRUE;
 
-  if (!GST_V4L2_ALLOCATOR_CAN_ORPHAN_BUFS (pool->vallocator))
-    return FALSE;
+  pool = GST_V4L2_BUFFER_POOL (bpool);
 
-  if (g_getenv ("GST_V4L2_FORCE_DRAIN"))
+  if (pool->orphaned != FALSE
+      || !GST_V4L2_ALLOCATOR_CAN_ORPHAN_BUFS (pool->vallocator)
+      || g_getenv ("GST_V4L2_FORCE_DRAIN")) {
+    gst_object_unref (bpool);
     return FALSE;
+  }
 
   GST_DEBUG_OBJECT (pool, "orphaning pool");
-  gst_buffer_pool_set_active (*bpool, FALSE);
+  gst_buffer_pool_set_active (bpool, FALSE);
 
   /* We lock to prevent racing with a return buffer in QBuf, and has a
    * workaround of not being able to use the pool hidden activation lock. */
@@ -1052,9 +1078,16 @@ gst_v4l2_buffer_pool_orphan (GstBufferPool ** bpool)
   GST_OBJECT_UNLOCK (pool);
 
   if (ret) {
-    gst_object_unref (*bpool);
-    *bpool = NULL;
+    GstBufferPool *old_pool;
+    GST_OBJECT_LOCK (v4l2object->element);
+    old_pool = v4l2object->pool;
+    v4l2object->pool = NULL;
+    GST_OBJECT_UNLOCK (v4l2object->element);
+    if (old_pool)
+      gst_object_unref (old_pool);
   }
+
+  gst_object_unref (bpool);
 
   return ret;
 }
@@ -1066,7 +1099,7 @@ gst_v4l2_buffer_pool_flush_start (GstBufferPool * bpool)
 
   GST_DEBUG_OBJECT (pool, "start flushing");
 
-  gst_poll_set_flushing (pool->poll, TRUE);
+  gst_poll_set_flushing (pool->obj->poll, TRUE);
 
   GST_OBJECT_LOCK (pool);
   pool->empty = FALSE;
@@ -1087,13 +1120,12 @@ gst_v4l2_buffer_pool_flush_stop (GstBufferPool * bpool)
   if (pool->other_pool && gst_buffer_pool_is_active (pool->other_pool))
     gst_buffer_pool_set_flushing (pool->other_pool, FALSE);
 
-  gst_poll_set_flushing (pool->poll, FALSE);
+  gst_poll_set_flushing (pool->obj->poll, FALSE);
 }
 
 static GstFlowReturn
 gst_v4l2_buffer_pool_poll (GstV4l2BufferPool * pool, gboolean wait)
 {
-  gint ret;
   GstClockTime timeout;
 
   if (wait)
@@ -1108,7 +1140,7 @@ gst_v4l2_buffer_pool_poll (GstV4l2BufferPool * pool, gboolean wait)
 
     if (!wait && pool->empty) {
       GST_OBJECT_UNLOCK (pool);
-      goto no_buffers;
+      return GST_V4L2_FLOW_LAST_BUFFER;
     }
 
     while (pool->empty)
@@ -1117,87 +1149,14 @@ gst_v4l2_buffer_pool_poll (GstV4l2BufferPool * pool, gboolean wait)
     GST_OBJECT_UNLOCK (pool);
   }
 
-  if (!pool->can_poll_device) {
+  if (!pool->obj->can_poll_device) {
     if (wait)
-      goto done;
+      return GST_FLOW_OK;
     else
-      goto no_buffers;
+      return GST_V4L2_FLOW_LAST_BUFFER;
   }
 
-  GST_LOG_OBJECT (pool, "polling device");
-
-again:
-  ret = gst_poll_wait (pool->poll, timeout);
-  if (G_UNLIKELY (ret < 0)) {
-    switch (errno) {
-      case EBUSY:
-        goto stopped;
-      case EAGAIN:
-      case EINTR:
-        goto again;
-      case ENXIO:
-        GST_WARNING_OBJECT (pool,
-            "v4l2 device doesn't support polling. Disabling"
-            " using libv4l2 in this case may cause deadlocks");
-        pool->can_poll_device = FALSE;
-        goto done;
-      default:
-        goto select_error;
-    }
-  }
-
-  if (gst_poll_fd_has_error (pool->poll, &pool->pollfd))
-    goto select_error;
-
-  /* PRI is used to signal that events are available */
-  if (gst_poll_fd_has_pri (pool->poll, &pool->pollfd)) {
-    struct v4l2_event event = { 0, };
-
-    if (!gst_v4l2_dequeue_event (pool->obj, &event))
-      goto dqevent_failed;
-
-    if (event.type != V4L2_EVENT_SOURCE_CHANGE) {
-      GST_INFO_OBJECT (pool, "Received unhandled event, ignoring.");
-      goto again;
-    }
-
-    if ((event.u.src_change.changes & V4L2_EVENT_SRC_CH_RESOLUTION) == 0) {
-      GST_DEBUG_OBJECT (pool,
-          "Received non-resolution source-change, ignoring.");
-      goto again;
-    }
-
-    return GST_V4L2_FLOW_RESOLUTION_CHANGE;
-  }
-
-  if (ret == 0)
-    goto no_buffers;
-
-done:
-  return GST_FLOW_OK;
-
-  /* ERRORS */
-stopped:
-  {
-    GST_DEBUG_OBJECT (pool, "stop called");
-    return GST_FLOW_FLUSHING;
-  }
-select_error:
-  {
-    GST_ELEMENT_ERROR (pool->obj->element, RESOURCE, READ, (NULL),
-        ("poll error %d: %s (%d)", ret, g_strerror (errno), errno));
-    return GST_FLOW_ERROR;
-  }
-no_buffers:
-  {
-    return GST_V4L2_FLOW_LAST_BUFFER;
-  }
-dqevent_failed:
-  {
-    GST_ELEMENT_ERROR (pool->obj->element, RESOURCE, READ, (NULL),
-        ("dqevent error: %s (%d)", g_strerror (errno), errno));
-    return GST_FLOW_ERROR;
-  }
+  return gst_v4l2_object_poll (pool->obj, timeout);
 }
 
 static GstFlowReturn
@@ -1207,6 +1166,8 @@ gst_v4l2_buffer_pool_qbuf (GstV4l2BufferPool * pool, GstBuffer * buf,
   const GstV4l2Object *obj = pool->obj;
   gint old_buffer_state;
   gint index;
+
+  GST_OBJECT_LOCK (pool);
 
   index = group->buffer.index;
 
@@ -1243,8 +1204,6 @@ gst_v4l2_buffer_pool_qbuf (GstV4l2BufferPool * pool, GstBuffer * buf,
     }
   }
 
-  GST_OBJECT_LOCK (pool);
-
   /* If the pool was orphaned, don't try to queue any returned buffers.
    * This is done with the objet lock in order to synchronize with
    * orphaning. */
@@ -1266,6 +1225,7 @@ gst_v4l2_buffer_pool_qbuf (GstV4l2BufferPool * pool, GstBuffer * buf,
 already_queued:
   {
     GST_ERROR_OBJECT (pool, "the buffer %i was already queued", index);
+    GST_OBJECT_UNLOCK (pool);
     return GST_FLOW_ERROR;
   }
 was_orphaned:
@@ -1293,13 +1253,13 @@ static GstFlowReturn
 gst_v4l2_buffer_pool_dqbuf (GstV4l2BufferPool * pool, GstBuffer ** buffer,
     gboolean * outstanding, gboolean wait)
 {
+  GstBufferPool *bpool = GST_BUFFER_POOL_CAST (pool);
   GstFlowReturn res;
   GstBuffer *outbuf = NULL;
   GstV4l2Object *obj = pool->obj;
   GstClockTime timestamp;
   GstV4l2MemoryGroup *group;
-  GstVideoMeta *vmeta;
-  gsize size;
+  const GstVideoInfo *info = &obj->info.vinfo;
   gint i;
   gint old_buffer_state;
 
@@ -1319,7 +1279,7 @@ gst_v4l2_buffer_pool_dqbuf (GstV4l2BufferPool * pool, GstBuffer ** buffer,
   GST_LOG_OBJECT (pool, "dequeueing a buffer");
 
   res = gst_v4l2_allocator_dqbuf (pool->vallocator, &group);
-  if (res == GST_FLOW_EOS)
+  if (res == GST_V4L2_FLOW_LAST_BUFFER)
     goto eos;
   if (res != GST_FLOW_OK)
     goto dqbuf_failed;
@@ -1348,11 +1308,19 @@ gst_v4l2_buffer_pool_dqbuf (GstV4l2BufferPool * pool, GstBuffer ** buffer,
     GST_OBJECT_UNLOCK (pool);
   }
 
+  if (group->buffer.flags & V4L2_BUF_FLAG_LAST &&
+      group->planes[0].bytesused == 0) {
+    GST_DEBUG_OBJECT (pool, "Empty last buffer, signalling eos.");
+    gst_v4l2_buffer_pool_complete_release_buffer (bpool, outbuf, FALSE);
+    *buffer = NULL;
+    goto eos;
+  }
+
   timestamp = GST_TIMEVAL_TO_TIME (group->buffer.timestamp);
 
-  size = 0;
-  vmeta = gst_buffer_get_video_meta (outbuf);
   for (i = 0; i < group->n_mem; i++) {
+    const GstVideoFormatInfo *finfo = info->finfo;
+
     GST_LOG_OBJECT (pool,
         "dequeued buffer %p seq:%d (ix=%d), mem %p used %d, plane=%d, flags %08x, ts %"
         GST_TIME_FORMAT ", pool-queued=%d, buffer=%p, previous-state=%i",
@@ -1360,9 +1328,20 @@ gst_v4l2_buffer_pool_dqbuf (GstV4l2BufferPool * pool, GstBuffer ** buffer,
         group->planes[i].bytesused, i, group->buffer.flags,
         GST_TIME_ARGS (timestamp), pool->num_queued, outbuf, old_buffer_state);
 
-    if (vmeta) {
-      vmeta->offset[i] = size;
-      size += gst_memory_get_sizes (group->mem[i], NULL, NULL);
+    if (GST_VIDEO_INFO_FORMAT (&pool->caps_info) == GST_VIDEO_FORMAT_ENCODED)
+      break;
+
+    if (obj->type == V4L2_BUF_TYPE_VIDEO_CAPTURE ||
+        obj->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+      /* Ensure our offset matches the expected plane size, or image size if
+       * there is only one memory */
+      if (group->n_mem == 1) {
+        gst_memory_resize (group->mem[0], 0, info->size + info->offset[0]);
+        break;
+      }
+
+      if (!GST_VIDEO_FORMAT_INFO_IS_TILED (finfo))
+        gst_memory_resize (group->mem[i], 0, obj->plane_size[i]);
     }
   }
 
@@ -1439,7 +1418,7 @@ gst_v4l2_buffer_pool_dqbuf (GstV4l2BufferPool * pool, GstBuffer ** buffer,
       break;
   }
 
-  if (GST_VIDEO_INFO_FORMAT (&obj->info) == GST_VIDEO_FORMAT_ENCODED) {
+  if (!gst_v4l2_object_is_raw (obj)) {
     if ((group->buffer.flags & V4L2_BUF_FLAG_KEYFRAME) ||
         GST_V4L2_PIXELFORMAT (obj) == V4L2_PIX_FMT_MJPEG ||
         GST_V4L2_PIXELFORMAT (obj) == V4L2_PIX_FMT_JPEG ||
@@ -1469,7 +1448,7 @@ poll_failed:
   }
 eos:
   {
-    return GST_FLOW_EOS;
+    return GST_V4L2_FLOW_LAST_BUFFER;
   }
 dqbuf_failed:
   {
@@ -1563,7 +1542,7 @@ done:
   /* Mark buffer as outstanding */
   if (ret == GST_FLOW_OK) {
     GstV4l2MemoryGroup *group;
-    if (gst_v4l2_is_buffer_valid (*buffer, &group)) {
+    if (gst_v4l2_is_buffer_valid (*buffer, &group, TRUE)) {
       GST_LOG_OBJECT (pool, "mark buffer %u outstanding", group->buffer.index);
       g_atomic_int_or (&pool->buffer_state[group->buffer.index],
           BUFFER_STATE_OUTSTANDING);
@@ -1614,7 +1593,7 @@ gst_v4l2_buffer_pool_complete_release_buffer (GstBufferPool * bpool,
         case GST_V4L2_IO_DMABUF_IMPORT:
         {
           GstV4l2MemoryGroup *group;
-          if (gst_v4l2_is_buffer_valid (buffer, &group)) {
+          if (gst_v4l2_is_buffer_valid (buffer, &group, TRUE)) {
             GstFlowReturn ret = GST_FLOW_OK;
 
             gst_v4l2_allocator_reset_group (pool->vallocator, group);
@@ -1655,7 +1634,7 @@ gst_v4l2_buffer_pool_complete_release_buffer (GstBufferPool * bpool,
           GstV4l2MemoryGroup *group;
           guint index;
 
-          if (!gst_v4l2_is_buffer_valid (buffer, &group)) {
+          if (!gst_v4l2_is_buffer_valid (buffer, &group, TRUE)) {
             /* Simply release invalid/modified buffer, the allocator will
              * give it back later */
             GST_BUFFER_FLAG_SET (buffer, GST_BUFFER_FLAG_TAG_MEMORY);
@@ -1706,7 +1685,7 @@ gst_v4l2_buffer_pool_release_buffer (GstBufferPool * bpool, GstBuffer * buffer)
   GstV4l2MemoryGroup *group;
   gboolean queued = FALSE;
 
-  if (gst_v4l2_is_buffer_valid (buffer, &group)) {
+  if (gst_v4l2_is_buffer_valid (buffer, &group, TRUE)) {
     gint old_buffer_state =
         g_atomic_int_and (&pool->buffer_state[group->buffer.index],
         ~BUFFER_STATE_OUTSTANDING);
@@ -1746,8 +1725,6 @@ gst_v4l2_buffer_pool_finalize (GObject * object)
   if (pool->video_fd >= 0)
     pool->obj->close (pool->video_fd);
 
-  gst_poll_free (pool->poll);
-
   /* This can't be done in dispose method because we must not set pointer
    * to NULL as it is part of the v4l2object and dispose could be called
    * multiple times */
@@ -1763,8 +1740,6 @@ gst_v4l2_buffer_pool_finalize (GObject * object)
 static void
 gst_v4l2_buffer_pool_init (GstV4l2BufferPool * pool)
 {
-  pool->poll = gst_poll_new (TRUE);
-  pool->can_poll_device = TRUE;
   g_cond_init (&pool->empty_cond);
   pool->empty = TRUE;
   pool->orphaned = FALSE;
@@ -1827,17 +1802,8 @@ gst_v4l2_buffer_pool_new (GstV4l2Object * obj, GstCaps * caps)
   g_object_ref_sink (pool);
   g_free (name);
 
-  gst_poll_fd_init (&pool->pollfd);
-  pool->pollfd.fd = fd;
-  gst_poll_add_fd (pool->poll, &pool->pollfd);
-  if (V4L2_TYPE_IS_OUTPUT (obj->type))
-    gst_poll_fd_ctl_write (pool->poll, &pool->pollfd, TRUE);
-  else
-    gst_poll_fd_ctl_read (pool->poll, &pool->pollfd, TRUE);
-
   pool->video_fd = fd;
   pool->obj = obj;
-  pool->can_poll_device = TRUE;
 
   pool->vallocator = gst_v4l2_allocator_new (GST_OBJECT (pool), obj);
   if (pool->vallocator == NULL)
@@ -1846,7 +1812,7 @@ gst_v4l2_buffer_pool_new (GstV4l2Object * obj, GstCaps * caps)
   gst_object_ref (obj->element);
 
   config = gst_buffer_pool_get_config (GST_BUFFER_POOL_CAST (pool));
-  gst_buffer_pool_config_set_params (config, caps, obj->info.size, 0, 0);
+  gst_buffer_pool_config_set_params (config, caps, obj->info.vinfo.size, 0, 0);
   /* This will simply set a default config, but will not configure the pool
    * because min and max are not valid */
   gst_buffer_pool_set_config (GST_BUFFER_POOL_CAST (pool), config);
@@ -1876,7 +1842,7 @@ gst_v4l2_do_read (GstV4l2BufferPool * pool, GstBuffer * buf)
   GstMapInfo map;
   gint toread;
 
-  toread = obj->info.size;
+  toread = obj->info.vinfo.size;
 
   GST_LOG_OBJECT (pool, "reading %d bytes into buffer %p", toread, buf);
 
@@ -1993,8 +1959,9 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
             /* If we have no more buffer, and can allocate it time to do so */
             if (num_queued == 0) {
               if (GST_V4L2_ALLOCATOR_CAN_ALLOCATE (pool->vallocator, MMAP)) {
+                GST_DEBUG_OBJECT (pool, "Resurrect for empty queue");
                 ret = gst_v4l2_buffer_pool_resurrect_buffer (pool);
-                if (ret == GST_FLOW_OK)
+                if (ret == GST_FLOW_OK || ret == GST_FLOW_FLUSHING)
                   goto done;
               }
             }
@@ -2004,8 +1971,9 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
               GstBuffer *copy;
 
               if (GST_V4L2_ALLOCATOR_CAN_ALLOCATE (pool->vallocator, MMAP)) {
+                GST_DEBUG_OBJECT (pool, "Resurrect for threshold");
                 ret = gst_v4l2_buffer_pool_resurrect_buffer (pool);
-                if (ret == GST_FLOW_OK)
+                if (ret == GST_FLOW_OK || ret == GST_FLOW_FLUSHING)
                   goto done;
               }
 
@@ -2111,11 +2079,16 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
           GstV4l2MemoryGroup *group;
           gint index;
           gboolean outstanding;
+          gsize queued_size = 0;
+          gsize remaining_size = 0;
+          guint split_count = 1;
+          guint num_queued;
 
           if ((*buf)->pool != bpool)
             goto copying;
 
-          if (!gst_v4l2_is_buffer_valid (*buf, &group))
+          /* Output buffers don't have to be writable */
+          if (!gst_v4l2_is_buffer_valid (*buf, &group, FALSE))
             goto copying;
 
           index = group->buffer.index;
@@ -2152,7 +2125,7 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
             }
 
             /* retrieve the group */
-            gst_v4l2_is_buffer_valid (to_queue, &group);
+            gst_v4l2_is_buffer_valid (to_queue, &group, TRUE);
           }
 
           if ((ret =
@@ -2165,7 +2138,7 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
            * streaming now */
           if (!gst_v4l2_buffer_pool_streamon (pool)) {
             /* don't check return value because qbuf would have failed */
-            gst_v4l2_is_buffer_valid (to_queue, &group);
+            gst_v4l2_is_buffer_valid (to_queue, &group, TRUE);
 
             /* qbuf has stored to_queue buffer but we are not in
              * streaming state, so the flush logic won't be performed.
@@ -2184,9 +2157,16 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
             goto start_failed;
           }
 
+          /* Save the amount of data that has been submitted for encoded data */
+          if (GST_VIDEO_INFO_FORMAT (&pool->caps_info) ==
+              GST_VIDEO_FORMAT_ENCODED) {
+            queued_size = gst_buffer_get_size (to_queue);
+            remaining_size = gst_buffer_get_size (*buf) - queued_size;
+          }
+
           /* Remove our ref, we will still hold this buffer in acquire as needed,
            * otherwise the pool will think it is outstanding and will refuse to stop. */
-          gst_buffer_unref (to_queue);
+          gst_clear_buffer (&to_queue);
 
           /* release as many buffer as possible */
           while (gst_v4l2_buffer_pool_dqbuf (pool, &buffer, &outstanding,
@@ -2196,7 +2176,8 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
                   FALSE);
           }
 
-          if (g_atomic_int_get (&pool->num_queued) >= pool->min_latency) {
+          num_queued = g_atomic_int_get (&pool->num_queued);
+          if (num_queued >= pool->min_latency && num_queued > split_count) {
             /* all buffers are queued, try to dequeue one and release it back
              * into the pool so that _acquire can get to it again. */
             ret =
@@ -2206,6 +2187,15 @@ gst_v4l2_buffer_pool_process (GstV4l2BufferPool * pool, GstBuffer ** buf,
                * thread waiting for a buffer in _acquire(). */
               gst_v4l2_buffer_pool_complete_release_buffer (bpool, buffer,
                   FALSE);
+          }
+
+          /* For encoded data, just queue de remaining in the next available
+           * buffer. */
+          if (remaining_size) {
+            *buf = gst_buffer_make_writable (*buf);
+            gst_buffer_resize (*buf, queued_size, -1);
+            split_count++;
+            goto copying;
           }
           break;
         }
@@ -2237,7 +2227,7 @@ buffer_truncated:
   }
 eos:
   {
-    GST_DEBUG_OBJECT (pool, "end of stream reached");
+    GST_DEBUG_OBJECT (pool, "end of sequence reached");
     gst_buffer_unref (*buf);
     *buf = NULL;
     return GST_V4L2_FLOW_LAST_BUFFER;
@@ -2283,21 +2273,78 @@ void
 gst_v4l2_buffer_pool_copy_at_threshold (GstV4l2BufferPool * pool, gboolean copy)
 {
   GST_OBJECT_LOCK (pool);
-  pool->enable_copy_threshold = copy;
+  /* Ignore copy threashold when memory:DMABuf caps features is in used */
+  pool->enable_copy_threshold = copy && !pool->have_dma_drm_caps;
   GST_OBJECT_UNLOCK (pool);
 }
 
-gboolean
-gst_v4l2_buffer_pool_flush (GstBufferPool * bpool)
+static GstFlowReturn
+gst_v4l2_buffer_pool_flush_events (GstV4l2Object * v4l2object)
 {
-  GstV4l2BufferPool *pool = GST_V4L2_BUFFER_POOL (bpool);
-  gboolean ret = TRUE;
+  GstFlowReturn ret = GST_FLOW_OK;
+  gboolean event_found;
 
+  /* FIXME simplify this when we drop legacy support for driver without poll()
+   * support. When we do, we can switch the video_fd to non blocking, and just
+   * pop the events directly. */
+
+  do {
+    struct v4l2_event event = { 0, };
+    gint poll_ret;
+
+    event_found = FALSE;
+
+    gst_poll_set_flushing (v4l2object->poll, FALSE);
+
+    do {
+      /* GstPoll don't have 0ns timeout, but 1 will do */
+      poll_ret = gst_poll_wait (v4l2object->poll, 1);
+    } while (poll_ret == EAGAIN || poll_ret == EINTR);
+
+    if (gst_poll_fd_has_pri (v4l2object->poll, &v4l2object->pollfd)) {
+      if (!gst_v4l2_dequeue_event (v4l2object, &event))
+        return GST_FLOW_ERROR;
+
+      event_found = TRUE;
+
+      if (event.type == V4L2_EVENT_SOURCE_CHANGE &&
+          (event.u.src_change.changes & V4L2_EVENT_SRC_CH_RESOLUTION)) {
+        GST_DEBUG_OBJECT (v4l2object->dbg_obj,
+            "Can't streamon capture as the resolution have changed.");
+        ret = GST_V4L2_FLOW_RESOLUTION_CHANGE;
+      }
+    }
+  } while (event_found);
+
+  return ret;
+}
+
+GstFlowReturn
+gst_v4l2_buffer_pool_flush (GstV4l2Object * v4l2object)
+{
+  GstBufferPool *bpool = gst_v4l2_object_get_buffer_pool (v4l2object);
+  GstV4l2BufferPool *pool;
+  GstFlowReturn ret = GST_FLOW_OK;
+
+  if (!bpool)
+    return GST_FLOW_ERROR;
+
+  pool = GST_V4L2_BUFFER_POOL (bpool);
+
+  GST_OBJECT_LOCK (pool);
   gst_v4l2_buffer_pool_streamoff (pool);
+  GST_OBJECT_UNLOCK (pool);
 
-  if (!V4L2_TYPE_IS_OUTPUT (pool->obj->type))
-    ret = gst_v4l2_buffer_pool_streamon (pool);
+  if (!V4L2_TYPE_IS_OUTPUT (pool->obj->type)) {
+    ret = gst_v4l2_buffer_pool_flush_events (v4l2object);
 
+    /* If the format haven't change, avoid reallocation to go back to
+     * streaming */
+    if (ret == GST_FLOW_OK)
+      ret = gst_v4l2_buffer_pool_streamon (pool);
+  }
+
+  gst_object_unref (bpool);
   return ret;
 }
 
@@ -2313,13 +2360,5 @@ gst_v4l2_buffer_pool_flush (GstBufferPool * bpool)
 void
 gst_v4l2_buffer_pool_enable_resolution_change (GstV4l2BufferPool * pool)
 {
-  guint32 input_id = 0;
-
-  g_return_if_fail (!gst_buffer_pool_is_active (GST_BUFFER_POOL (pool)));
-
-  /* Make sure we subscribe for the current input */
-  gst_v4l2_get_input (pool->obj, &input_id);
-
-  if (gst_v4l2_subscribe_event (pool->obj, V4L2_EVENT_SOURCE_CHANGE, input_id))
-    gst_poll_fd_ctl_pri (pool->poll, &pool->pollfd, TRUE);
+  gst_v4l2_object_subscribe_event (pool->obj, V4L2_EVENT_SOURCE_CHANGE);
 }

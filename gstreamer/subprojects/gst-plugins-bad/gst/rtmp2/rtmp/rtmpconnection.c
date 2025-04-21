@@ -156,7 +156,7 @@ static Transaction *
 transaction_new (gdouble transaction_id, GstRtmpCommandCallback func,
     gpointer user_data)
 {
-  Transaction *data = g_slice_new (Transaction);
+  Transaction *data = g_new (Transaction, 1);
   data->transaction_id = transaction_id;
   data->func = func;
   data->user_data = user_data;
@@ -167,7 +167,7 @@ static void
 transaction_free (gpointer ptr)
 {
   Transaction *data = ptr;
-  g_slice_free (Transaction, data);
+  g_free (data);
 }
 
 typedef struct
@@ -182,7 +182,7 @@ static ExpectedCommand *
 expected_command_new (guint32 stream_id, const gchar * command_name,
     GstRtmpCommandCallback func, gpointer user_data)
 {
-  ExpectedCommand *data = g_slice_new (ExpectedCommand);
+  ExpectedCommand *data = g_new (ExpectedCommand, 1);
   data->stream_id = stream_id;
   data->command_name = g_strdup (command_name);
   data->func = func;
@@ -195,7 +195,7 @@ expected_command_free (gpointer ptr)
 {
   ExpectedCommand *data = ptr;
   g_free (data->command_name);
-  g_slice_free (ExpectedCommand, data);
+  g_free (data);
 }
 
 enum
@@ -1171,6 +1171,53 @@ gst_rtmp_connection_send_command (GstRtmpConnection * connection,
   payload = gst_amf_serialize_command_valist (transaction_id,
       command_name, argument, ap);
   va_end (ap);
+
+  data = g_bytes_unref_to_data (payload, &size);
+  buffer = gst_rtmp_message_new_wrapped (GST_RTMP_MESSAGE_TYPE_COMMAND_AMF0,
+      3, stream_id, data, size);
+
+  gst_rtmp_connection_queue_message (connection, buffer);
+  return transaction_id;
+}
+
+guint
+gst_rtmp_connection_send_command_with_args (GstRtmpConnection * connection,
+    GstRtmpCommandCallback response_command, gpointer user_data,
+    guint32 stream_id, const gchar * command_name,
+    gsize n_arguments, const GstAmfNode ** arguments)
+{
+
+  GstBuffer *buffer;
+  gdouble transaction_id = 0;
+  GBytes *payload;
+  guint8 *data;
+  gsize size;
+
+  g_return_val_if_fail (GST_IS_RTMP_CONNECTION (connection), 0);
+
+  if (connection->thread != g_thread_self ()) {
+    GST_ERROR_OBJECT (connection, "Called from wrong thread");
+  }
+
+  GST_DEBUG_OBJECT (connection,
+      "Sending command '%s' on stream id %" G_GUINT32_FORMAT,
+      command_name, stream_id);
+
+  if (response_command) {
+    Transaction *t;
+
+    transaction_id = ++connection->transaction_count;
+
+    GST_LOG_OBJECT (connection, "Registering %s for transid %.0f",
+        GST_DEBUG_FUNCPTR_NAME (response_command), transaction_id);
+
+    t = transaction_new (transaction_id, response_command, user_data);
+
+    connection->transactions = g_list_append (connection->transactions, t);
+  }
+
+  payload = gst_amf_serialize_command_with_args (transaction_id,
+      command_name, n_arguments, arguments);
 
   data = g_bytes_unref_to_data (payload, &size);
   buffer = gst_rtmp_message_new_wrapped (GST_RTMP_MESSAGE_TYPE_COMMAND_AMF0,

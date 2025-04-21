@@ -101,6 +101,7 @@
 #include <string.h>
 
 #include "gstappsrc.h"
+#include "gstapputils.h"
 
 typedef enum
 {
@@ -142,7 +143,7 @@ struct _GstAppSrcPrivate
 {
   GCond cond;
   GMutex mutex;
-  GstQueueArray *queue;
+  GstVecDeque *queue;
   GstAppSrcWaitStatus wait_status;
 
   GstCaps *last_caps;
@@ -154,6 +155,11 @@ struct _GstAppSrcPrivate
   /* queue up a segment event based on last_segment before
    * the next buffer of buffer list */
   gboolean pending_custom_segment;
+  /* events that have been delayed until either the caps is configured, ensuring
+     that no events are sent before CAPS, or buffers are being pushed. */
+  GstVecDeque *delayed_events;
+  /* if a buffer has been pushed yet */
+  gboolean pushed_buffer;
 
   /* the next buffer that will be queued needs a discont flag
    * because the previous one was dropped - GST_APP_LEAKY_TYPE_UPSTREAM */
@@ -173,11 +179,7 @@ struct _GstAppSrcPrivate
   gboolean flushing;
   gboolean started;
   gboolean is_eos;
-  guint64 queued_bytes, queued_buffers;
-  /* Used to calculate the current time level */
-  GstClockTime last_in_running_time, last_out_running_time;
-  /* Updated based on the above whenever they change */
-  GstClockTime queued_time;
+  GstQueueStatusInfo queue_status_info;
   guint64 offset;
   GstAppStreamType current_type;
 
@@ -742,8 +744,10 @@ gst_app_src_init (GstAppSrc * appsrc)
 
   g_mutex_init (&priv->mutex);
   g_cond_init (&priv->cond);
-  priv->queue = gst_queue_array_new (16);
+  priv->queue = gst_vec_deque_new (16);
+  priv->delayed_events = gst_vec_deque_new (16);
   priv->wait_status = NOONE_WAITING;
+  priv->pushed_buffer = FALSE;
 
   priv->size = DEFAULT_PROP_SIZE;
   priv->duration = DEFAULT_PROP_DURATION;
@@ -771,8 +775,8 @@ gst_app_src_flush_queued (GstAppSrc * src, gboolean retain_last_caps)
   GstAppSrcPrivate *priv = src->priv;
   GstCaps *requeue_caps = NULL;
 
-  while (!gst_queue_array_is_empty (priv->queue)) {
-    obj = gst_queue_array_pop_head (priv->queue);
+  while (!gst_vec_deque_is_empty (priv->queue)) {
+    obj = gst_vec_deque_pop_head (priv->queue);
     if (obj) {
       if (GST_IS_CAPS (obj) && retain_last_caps) {
         gst_caps_replace (&requeue_caps, GST_CAPS_CAST (obj));
@@ -782,14 +786,13 @@ gst_app_src_flush_queued (GstAppSrc * src, gboolean retain_last_caps)
   }
 
   if (requeue_caps) {
-    gst_queue_array_push_tail (priv->queue, requeue_caps);
+    gst_vec_deque_push_tail (priv->queue, requeue_caps);
   }
 
-  priv->queued_bytes = 0;
-  priv->queued_buffers = 0;
-  priv->queued_time = 0;
-  priv->last_in_running_time = GST_CLOCK_TIME_NONE;
-  priv->last_out_running_time = GST_CLOCK_TIME_NONE;
+  gst_vec_deque_clear (priv->delayed_events);
+  priv->pushed_buffer = FALSE;
+
+  gst_queue_status_info_reset (&priv->queue_status_info);
   priv->need_discont_upstream = FALSE;
   priv->need_discont_downstream = FALSE;
 }
@@ -831,7 +834,8 @@ gst_app_src_finalize (GObject * obj)
 
   g_mutex_clear (&priv->mutex);
   g_cond_clear (&priv->cond);
-  gst_queue_array_free (priv->queue);
+  gst_vec_deque_free (priv->queue);
+  gst_vec_deque_free (priv->delayed_events);
 
   g_free (priv->uri);
 
@@ -1021,13 +1025,15 @@ gst_app_src_send_event (GstElement * element, GstEvent * event)
     case GST_EVENT_FLUSH_STOP:
       g_mutex_lock (&priv->mutex);
       gst_app_src_flush_queued (appsrc, TRUE);
+      priv->is_eos = FALSE;
       g_mutex_unlock (&priv->mutex);
       break;
     default:
       if (GST_EVENT_IS_SERIALIZED (event)) {
         GST_DEBUG_OBJECT (appsrc, "queue event: %" GST_PTR_FORMAT, event);
         g_mutex_lock (&priv->mutex);
-        gst_queue_array_push_tail (priv->queue, event);
+
+        gst_vec_deque_push_tail (priv->queue, event);
 
         if ((priv->wait_status & STREAM_WAITING))
           g_cond_broadcast (&priv->cond);
@@ -1329,7 +1335,7 @@ gst_app_src_do_negotiate (GstBaseSrc * basesrc)
 {
   GstAppSrc *appsrc = GST_APP_SRC_CAST (basesrc);
   GstAppSrcPrivate *priv = appsrc->priv;
-  gboolean result;
+  gboolean result = TRUE;
   GstCaps *caps;
 
   GST_OBJECT_LOCK (basesrc);
@@ -1342,8 +1348,6 @@ gst_app_src_do_negotiate (GstBaseSrc * basesrc)
   if (caps) {
     result = gst_base_src_set_caps (basesrc, caps);
     gst_caps_unref (caps);
-  } else {
-    result = GST_BASE_SRC_CLASS (parent_class)->negotiate (basesrc);
   }
   g_mutex_lock (&priv->mutex);
 
@@ -1374,92 +1378,18 @@ gst_app_src_update_queued_pop (GstAppSrc * appsrc, GstMiniObject * item,
     gboolean update_offset)
 {
   GstAppSrcPrivate *priv = appsrc->priv;
-  guint buf_size = 0;
-  guint n_buffers = 0;
-  GstClockTime end_buffer_ts = GST_CLOCK_TIME_NONE;
+  guint64 old_queued_bytes = priv->queue_status_info.queued_bytes;
+  guint64 bytes_dequeued;
 
-  if (GST_IS_BUFFER (item)) {
-    GstBuffer *buf = GST_BUFFER_CAST (item);
-    buf_size = gst_buffer_get_size (buf);
-    n_buffers = 1;
+  gst_queue_status_info_pop (&priv->queue_status_info, item,
+      &priv->current_segment, &priv->last_segment, GST_OBJECT_CAST (appsrc));
 
-    end_buffer_ts = GST_BUFFER_DTS_OR_PTS (buf);
-    if (end_buffer_ts != GST_CLOCK_TIME_NONE
-        && GST_BUFFER_DURATION_IS_VALID (buf))
-      end_buffer_ts += GST_BUFFER_DURATION (buf);
-
-    GST_LOG_OBJECT (appsrc, "have buffer %p of size %u", buf, buf_size);
-  } else if (GST_IS_BUFFER_LIST (item)) {
-    GstBufferList *buffer_list = GST_BUFFER_LIST_CAST (item);
-    guint i;
-
-    n_buffers = gst_buffer_list_length (buffer_list);
-
-    for (i = 0; i < n_buffers; i++) {
-      GstBuffer *tmp = gst_buffer_list_get (buffer_list, i);
-      GstClockTime ts = GST_BUFFER_DTS_OR_PTS (tmp);
-
-      buf_size += gst_buffer_get_size (tmp);
-      /* Update to the last buffer's timestamp that is known */
-      if (ts != GST_CLOCK_TIME_NONE) {
-        end_buffer_ts = ts;
-        if (GST_BUFFER_DURATION_IS_VALID (tmp))
-          end_buffer_ts += GST_BUFFER_DURATION (tmp);
-      }
-    }
-  }
-
-  priv->queued_bytes -= buf_size;
-  priv->queued_buffers -= n_buffers;
-
-  /* Update time level if working on a TIME segment */
-  if ((priv->current_segment.format == GST_FORMAT_TIME
-          || (priv->current_segment.format == GST_FORMAT_UNDEFINED
-              && priv->last_segment.format == GST_FORMAT_TIME))
-      && end_buffer_ts != GST_CLOCK_TIME_NONE) {
-    const GstSegment *segment =
-        priv->current_segment.format ==
-        GST_FORMAT_TIME ? &priv->current_segment : &priv->last_segment;
-
-    /* Clip to the current segment boundaries */
-    if (segment->stop != -1 && end_buffer_ts > segment->stop)
-      end_buffer_ts = segment->stop;
-    else if (segment->start > end_buffer_ts)
-      end_buffer_ts = segment->start;
-
-    priv->last_out_running_time =
-        gst_segment_to_running_time (segment, GST_FORMAT_TIME, end_buffer_ts);
-
-    GST_TRACE_OBJECT (appsrc,
-        "Last in running time %" GST_TIME_FORMAT ", last out running time %"
-        GST_TIME_FORMAT, GST_TIME_ARGS (priv->last_in_running_time),
-        GST_TIME_ARGS (priv->last_out_running_time));
-
-    /* If timestamps on both sides are known, calculate the current
-     * fill level in time and consider the queue empty if the output
-     * running time is lower than the input one (i.e. some kind of reset
-     * has happened).
-     */
-    if (priv->last_out_running_time != GST_CLOCK_TIME_NONE
-        && priv->last_in_running_time != GST_CLOCK_TIME_NONE) {
-      if (priv->last_out_running_time > priv->last_in_running_time) {
-        priv->queued_time = 0;
-      } else {
-        priv->queued_time =
-            priv->last_in_running_time - priv->last_out_running_time;
-      }
-    }
-  }
-
-  GST_DEBUG_OBJECT (appsrc,
-      "Currently queued: %" G_GUINT64_FORMAT " bytes, %" G_GUINT64_FORMAT
-      " buffers, %" GST_TIME_FORMAT, priv->queued_bytes,
-      priv->queued_buffers, GST_TIME_ARGS (priv->queued_time));
+  bytes_dequeued = old_queued_bytes - priv->queue_status_info.queued_bytes;
 
   /* only update the offset when in random_access mode and when requested by
    * the caller, i.e. not when just dropping the item */
   if (update_offset && priv->stream_type == GST_APP_STREAM_TYPE_RANDOM_ACCESS)
-    priv->offset += buf_size;
+    priv->offset += bytes_dequeued;
 }
 
 /* Update the currently queued bytes/buffers/time information for the item
@@ -1469,96 +1399,59 @@ static void
 gst_app_src_update_queued_push (GstAppSrc * appsrc, GstMiniObject * item)
 {
   GstAppSrcPrivate *priv = appsrc->priv;
-  GstClockTime start_buffer_ts = GST_CLOCK_TIME_NONE;
-  GstClockTime end_buffer_ts = GST_CLOCK_TIME_NONE;
-  guint buf_size = 0;
-  guint n_buffers = 0;
+  gst_queue_status_info_push (&priv->queue_status_info, item,
+      &priv->last_segment, GST_OBJECT_CAST (appsrc));
+}
 
-  if (GST_IS_BUFFER (item)) {
-    GstBuffer *buf = GST_BUFFER_CAST (item);
-
-    buf_size = gst_buffer_get_size (buf);
-    n_buffers = 1;
-
-    start_buffer_ts = end_buffer_ts = GST_BUFFER_DTS_OR_PTS (buf);
-    if (end_buffer_ts != GST_CLOCK_TIME_NONE
-        && GST_BUFFER_DURATION_IS_VALID (buf))
-      end_buffer_ts += GST_BUFFER_DURATION (buf);
-  } else if (GST_IS_BUFFER_LIST (item)) {
-    GstBufferList *buffer_list = GST_BUFFER_LIST_CAST (item);
-    guint i;
-
-    n_buffers = gst_buffer_list_length (buffer_list);
-
-    for (i = 0; i < n_buffers; i++) {
-      GstBuffer *tmp = gst_buffer_list_get (buffer_list, i);
-      GstClockTime ts = GST_BUFFER_DTS_OR_PTS (tmp);
-
-      buf_size += gst_buffer_get_size (tmp);
-
-      if (ts != GST_CLOCK_TIME_NONE) {
-        if (start_buffer_ts == GST_CLOCK_TIME_NONE)
-          start_buffer_ts = ts;
-        end_buffer_ts = ts;
-        if (GST_BUFFER_DURATION_IS_VALID (tmp))
-          end_buffer_ts += GST_BUFFER_DURATION (tmp);
-      }
-    }
+/* check if @obj should be sent after the CAPS and SEGMENT events */
+static gboolean
+needs_segment (GstMiniObject * obj)
+{
+  if (GST_IS_CAPS (obj)) {
+    return FALSE;
+  } else if (GST_IS_EVENT (obj)) {
+    if (GST_EVENT_TYPE (obj) == GST_EVENT_SEGMENT)
+      return FALSE;
   }
 
-  priv->queued_bytes += buf_size;
-  priv->queued_buffers += n_buffers;
+  return TRUE;
+}
 
-  /* Update time level if working on a TIME segment */
-  if (priv->last_segment.format == GST_FORMAT_TIME
-      && end_buffer_ts != GST_CLOCK_TIME_NONE) {
-    /* Clip to the last segment boundaries */
-    if (priv->last_segment.stop != -1
-        && end_buffer_ts > priv->last_segment.stop)
-      end_buffer_ts = priv->last_segment.stop;
-    else if (priv->last_segment.start > end_buffer_ts)
-      end_buffer_ts = priv->last_segment.start;
+/* Called holding the priv->lock, and releases it temporarily */
+static void
+ensure_segment (GstAppSrc * appsrc)
+{
+  GstAppSrcPrivate *priv = appsrc->priv;
+  GstEvent *seg_event;
 
-    priv->last_in_running_time =
-        gst_segment_to_running_time (&priv->last_segment, GST_FORMAT_TIME,
-        end_buffer_ts);
+  seg_event = gst_pad_get_sticky_event (GST_BASE_SRC_PAD (appsrc),
+      GST_EVENT_SEGMENT, 0);
 
-    /* If this is the only buffer then we can directly update the queued time
-     * here. This is especially useful if this was the first buffer because
-     * otherwise we would have to wait until it is actually unqueued to know
-     * the queued duration */
-    if (priv->queued_buffers == 1) {
-      if (priv->last_segment.stop != -1
-          && start_buffer_ts > priv->last_segment.stop)
-        start_buffer_ts = priv->last_segment.stop;
-      else if (priv->last_segment.start > start_buffer_ts)
-        start_buffer_ts = priv->last_segment.start;
-
-      priv->last_out_running_time =
-          gst_segment_to_running_time (&priv->last_segment, GST_FORMAT_TIME,
-          start_buffer_ts);
-    }
-
-    GST_TRACE_OBJECT (appsrc,
-        "Last in running time %" GST_TIME_FORMAT ", last out running time %"
-        GST_TIME_FORMAT, GST_TIME_ARGS (priv->last_in_running_time),
-        GST_TIME_ARGS (priv->last_out_running_time));
-
-    if (priv->last_out_running_time != GST_CLOCK_TIME_NONE
-        && priv->last_in_running_time != GST_CLOCK_TIME_NONE) {
-      if (priv->last_out_running_time > priv->last_in_running_time) {
-        priv->queued_time = 0;
-      } else {
-        priv->queued_time =
-            priv->last_in_running_time - priv->last_out_running_time;
-      }
-    }
+  if (!seg_event) {
+    g_mutex_unlock (&priv->mutex);
+    GST_DEBUG_OBJECT (appsrc, "sending default segment");
+    gst_base_src_push_segment (GST_BASE_SRC_CAST (appsrc), &priv->last_segment);
+    g_mutex_lock (&priv->mutex);
+  } else {
+    gst_event_unref (seg_event);
   }
+}
 
-  GST_DEBUG_OBJECT (appsrc,
-      "Currently queued: %" G_GUINT64_FORMAT " bytes, %" G_GUINT64_FORMAT
-      " buffers, %" GST_TIME_FORMAT, priv->queued_bytes, priv->queued_buffers,
-      GST_TIME_ARGS (priv->queued_time));
+static void
+push_delayed_events (GstAppSrc * appsrc)
+{
+  GstAppSrcPrivate *priv = appsrc->priv;
+
+  while (!gst_vec_deque_is_empty (priv->delayed_events)) {
+    GstEvent *event;
+
+    event = gst_vec_deque_pop_head (priv->delayed_events);
+    GST_DEBUG_OBJECT (appsrc, "sending event: %" GST_PTR_FORMAT, event);
+
+    g_mutex_unlock (&priv->mutex);
+    gst_pad_push_event (GST_BASE_SRC_PAD (appsrc), GST_EVENT (event));
+    g_mutex_lock (&priv->mutex);
+  }
 }
 
 static GstFlowReturn
@@ -1624,12 +1517,19 @@ gst_app_src_create (GstBaseSrc * bsrc, guint64 offset, guint size,
       goto flushing;
 
     /* return data as long as we have some */
-    if (!gst_queue_array_is_empty (priv->queue)) {
-      GstMiniObject *obj = gst_queue_array_pop_head (priv->queue);
+    if (!gst_vec_deque_is_empty (priv->queue)) {
+      GstMiniObject *obj = gst_vec_deque_pop_head (priv->queue);
+
+      if (priv->current_caps && needs_segment (obj)) {
+        /* need to have sent a segment before sending `obj` */
+        ensure_segment (appsrc);
+      }
 
       if (GST_IS_CAPS (obj)) {
         GstCaps *next_caps = GST_CAPS (obj);
         gboolean caps_changed = TRUE;
+
+        GST_DEBUG_OBJECT (appsrc, "pop caps %" GST_PTR_FORMAT, next_caps);
 
         if (next_caps && priv->current_caps)
           caps_changed = !gst_caps_is_equal (next_caps, priv->current_caps);
@@ -1645,6 +1545,17 @@ gst_app_src_create (GstBaseSrc * bsrc, guint64 offset, guint size,
         if (caps_changed)
           gst_app_src_do_negotiate (bsrc);
 
+        /* sending delayed events which were waiting on the caps */
+        if (!gst_vec_deque_is_empty (priv->delayed_events)) {
+          /* need to send a segment before the events */
+          ensure_segment (appsrc);
+
+          GST_DEBUG_OBJECT (appsrc,
+              "sending delayed events after caps: %" GST_PTR_FORMAT, obj);
+
+          push_delayed_events (appsrc);
+        }
+
         /* Continue checks caps and queue */
         continue;
       }
@@ -1652,19 +1563,32 @@ gst_app_src_create (GstBaseSrc * bsrc, guint64 offset, guint size,
       if (GST_IS_BUFFER (obj)) {
         GstBuffer *buffer = GST_BUFFER (obj);
 
+        GST_DEBUG_OBJECT (appsrc, "pop buffer %" GST_PTR_FORMAT, buffer);
+
         /* Mark the buffer as DISCONT if we previously dropped a buffer
          * instead of outputting it */
         if (priv->need_discont_downstream) {
           buffer = gst_buffer_make_writable (buffer);
+          /* In case it reallocates the buffer */
+          obj = GST_MINI_OBJECT (buffer);
           GST_BUFFER_FLAG_SET (buffer, GST_BUFFER_FLAG_DISCONT);
           priv->need_discont_downstream = FALSE;
         }
 
+        if (!gst_vec_deque_is_empty (priv->delayed_events)) {
+          /* don't keep delaying events if a buffer has been pushed without CAPS */
+          GST_DEBUG_OBJECT (appsrc, "push delayed events before buffer");
+          push_delayed_events (appsrc);
+        }
+
+        priv->pushed_buffer = TRUE;
         *buf = buffer;
       } else if (GST_IS_BUFFER_LIST (obj)) {
         GstBufferList *buffer_list;
 
         buffer_list = GST_BUFFER_LIST (obj);
+        GST_DEBUG_OBJECT (appsrc, "pop buffer list %" GST_PTR_FORMAT,
+            buffer_list);
 
         /* Mark the first buffer of the buffer list as DISCONT if we
          * previously dropped a buffer instead of outputting it */
@@ -1672,12 +1596,21 @@ gst_app_src_create (GstBaseSrc * bsrc, guint64 offset, guint size,
           GstBuffer *buffer;
 
           buffer_list = gst_buffer_list_make_writable (buffer_list);
+          /* In case it reallocates the bufferlist */
+          obj = GST_MINI_OBJECT (buffer_list);
           buffer = gst_buffer_list_get_writable (buffer_list, 0);
           GST_BUFFER_FLAG_SET (buffer, GST_BUFFER_FLAG_DISCONT);
           priv->need_discont_downstream = FALSE;
         }
 
+        if (!gst_vec_deque_is_empty (priv->delayed_events)) {
+          /* don't keep delaying events if a buffer has been pushed without CAPS */
+          GST_DEBUG_OBJECT (appsrc, "push delayed events before buffer");
+          push_delayed_events (appsrc);
+        }
+
         gst_base_src_submit_buffer_list (bsrc, buffer_list);
+        priv->pushed_buffer = TRUE;
         *buf = NULL;
       } else if (GST_IS_EVENT (obj)) {
         GstEvent *event = GST_EVENT (obj);
@@ -1693,43 +1626,35 @@ gst_app_src_create (GstBaseSrc * bsrc, guint64 offset, guint size,
           if (!gst_segment_is_equal (&priv->current_segment, segment)) {
             GST_DEBUG_OBJECT (appsrc,
                 "Update new segment %" GST_PTR_FORMAT, event);
-            if (!gst_base_src_new_segment (bsrc, segment)) {
+
+            /* Release lock temporarily during event push */
+            g_mutex_unlock (&priv->mutex);
+            if (!gst_base_src_push_segment (bsrc, segment)) {
               GST_ERROR_OBJECT (appsrc,
                   "Couldn't set new segment %" GST_PTR_FORMAT, event);
               gst_event_unref (event);
+              g_mutex_lock (&priv->mutex);
               goto invalid_segment;
             }
+
+            g_mutex_lock (&priv->mutex);
             gst_segment_copy_into (segment, &priv->current_segment);
           }
 
           gst_event_unref (event);
         } else {
-          GstEvent *seg_event;
-          GstSegment last_segment = priv->last_segment;
-
           /* event is serialized with the buffers flow */
 
-          /* We are about to push an event, release out lock */
-          g_mutex_unlock (&priv->mutex);
-
-          seg_event =
-              gst_pad_get_sticky_event (GST_BASE_SRC_PAD (appsrc),
-              GST_EVENT_SEGMENT, 0);
-          if (!seg_event) {
-            seg_event = gst_event_new_segment (&last_segment);
-
+          if (!priv->current_caps && !priv->pushed_buffer) {
             GST_DEBUG_OBJECT (appsrc,
-                "received serialized event before first buffer, push default segment %"
-                GST_PTR_FORMAT, seg_event);
-
-            gst_pad_push_event (GST_BASE_SRC_PAD (appsrc), seg_event);
+                "did not send caps yet, delay event for now");
+            gst_vec_deque_push_tail (priv->delayed_events, event);
           } else {
-            gst_event_unref (seg_event);
+            /* We are about to push an event, release out lock */
+            g_mutex_unlock (&priv->mutex);
+            gst_pad_push_event (GST_BASE_SRC_PAD (appsrc), event);
+            g_mutex_lock (&priv->mutex);
           }
-
-          gst_pad_push_event (GST_BASE_SRC_PAD (appsrc), event);
-
-          g_mutex_lock (&priv->mutex);
         }
         continue;
       } else {
@@ -1745,11 +1670,11 @@ gst_app_src_create (GstBaseSrc * bsrc, guint64 offset, guint size,
       /* see if we go lower than the min-percent */
       if (priv->min_percent) {
         if ((priv->max_bytes
-                && priv->queued_bytes * 100 / priv->max_bytes <=
-                priv->min_percent) || (priv->max_buffers
-                && priv->queued_buffers * 100 / priv->max_buffers <=
-                priv->min_percent) || (priv->max_time
-                && priv->queued_time * 100 / priv->max_time <=
+                && priv->queue_status_info.queued_bytes * 100 /
+                priv->max_bytes <= priv->min_percent) || (priv->max_buffers
+                && priv->queue_status_info.queued_buffers * 100 /
+                priv->max_buffers <= priv->min_percent) || (priv->max_time
+                && priv->queue_status_info.queued_time * 100 / priv->max_time <=
                 priv->min_percent)) {
           /* ignore flushing state, we got a buffer and we will return it now.
            * Errors will be handled in the next round */
@@ -1770,7 +1695,7 @@ gst_app_src_create (GstBaseSrc * bsrc, guint64 offset, guint size,
        * signal) we can still be empty because the pushed buffer got flushed or
        * when the application pushes the requested buffer later, we support both
        * possibilities. */
-      if (!gst_queue_array_is_empty (priv->queue))
+      if (!gst_vec_deque_is_empty (priv->queue))
         continue;
 
       /* no buffer yet, maybe we are EOS, if not, block for more data. */
@@ -1855,10 +1780,10 @@ gst_app_src_set_caps (GstAppSrc * appsrc, const GstCaps * caps)
     new_caps = caps ? gst_caps_copy (caps) : NULL;
     GST_DEBUG_OBJECT (appsrc, "setting caps to %" GST_PTR_FORMAT, caps);
 
-    while ((t = gst_queue_array_peek_tail (priv->queue)) && GST_IS_CAPS (t)) {
-      gst_caps_unref (gst_queue_array_pop_tail (priv->queue));
+    while ((t = gst_vec_deque_peek_tail (priv->queue)) && GST_IS_CAPS (t)) {
+      gst_caps_unref (gst_vec_deque_pop_tail (priv->queue));
     }
-    gst_queue_array_push_tail (priv->queue, new_caps);
+    gst_vec_deque_push_tail (priv->queue, new_caps);
     gst_caps_replace (&priv->last_caps, new_caps);
 
     if ((priv->wait_status & STREAM_WAITING))
@@ -2053,6 +1978,46 @@ gst_app_src_get_stream_type (GstAppSrc * appsrc)
   return stream_type;
 }
 
+#define GST_APP_SRC_SET_PROPERTY(prop_name, value, ...)                         \
+G_STMT_START {                                                                  \
+  GstAppSrcPrivate *priv;                                                       \
+                                                                                \
+  g_return_if_fail (GST_IS_APP_SRC (appsrc));                                   \
+                                                                                \
+  priv = appsrc->priv;                                                          \
+                                                                                \
+  g_mutex_lock (&priv->mutex);                                                  \
+                                                                                \
+  if (value != priv->prop_name) {                                               \
+    GST_DEBUG_OBJECT (appsrc, __VA_ARGS__);                                     \
+    priv->prop_name = value;                                                    \
+    /* signal the change */                                                     \
+    g_cond_broadcast (&priv->cond);                                             \
+  }                                                                             \
+                                                                                \
+  g_mutex_unlock (&priv->mutex);                                                \
+                                                                                \
+} G_STMT_END
+
+#define GST_APP_SRC_GET_PROPERTY(type, prop_name, fallback, ...)                \
+G_STMT_START {                                                                  \
+  type result;                                                                  \
+  GstAppSrcPrivate *priv;                                                       \
+                                                                                \
+  g_return_val_if_fail (GST_IS_APP_SRC (appsrc), fallback);                     \
+                                                                                \
+  priv = appsrc->priv;                                                          \
+                                                                                \
+  g_mutex_lock (&priv->mutex);                                                  \
+                                                                                \
+  result = priv->prop_name;                                                     \
+  GST_DEBUG_OBJECT (appsrc, __VA_ARGS__);                                       \
+                                                                                \
+  g_mutex_unlock (&priv->mutex);                                                \
+                                                                                \
+  return result;                                                                \
+} G_STMT_END
+
 /**
  * gst_app_src_set_max_bytes:
  * @appsrc: a #GstAppSrc
@@ -2065,20 +2030,8 @@ gst_app_src_get_stream_type (GstAppSrc * appsrc)
 void
 gst_app_src_set_max_bytes (GstAppSrc * appsrc, guint64 max)
 {
-  GstAppSrcPrivate *priv;
-
-  g_return_if_fail (GST_IS_APP_SRC (appsrc));
-
-  priv = appsrc->priv;
-
-  g_mutex_lock (&priv->mutex);
-  if (max != priv->max_bytes) {
-    GST_DEBUG_OBJECT (appsrc, "setting max-bytes to %" G_GUINT64_FORMAT, max);
-    priv->max_bytes = max;
-    /* signal the change */
-    g_cond_broadcast (&priv->cond);
-  }
-  g_mutex_unlock (&priv->mutex);
+  GST_APP_SRC_SET_PROPERTY (max_bytes, max,
+      "setting max-bytes to %" G_GUINT64_FORMAT, max);
 }
 
 /**
@@ -2092,19 +2045,8 @@ gst_app_src_set_max_bytes (GstAppSrc * appsrc, guint64 max)
 guint64
 gst_app_src_get_max_bytes (GstAppSrc * appsrc)
 {
-  guint64 result;
-  GstAppSrcPrivate *priv;
-
-  g_return_val_if_fail (GST_IS_APP_SRC (appsrc), 0);
-
-  priv = appsrc->priv;
-
-  g_mutex_lock (&priv->mutex);
-  result = priv->max_bytes;
-  GST_DEBUG_OBJECT (appsrc, "getting max-bytes of %" G_GUINT64_FORMAT, result);
-  g_mutex_unlock (&priv->mutex);
-
-  return result;
+  GST_APP_SRC_GET_PROPERTY (guint64, max_bytes, 0,
+      "getting max-bytes of %" G_GUINT64_FORMAT, result);
 }
 
 /**
@@ -2120,20 +2062,8 @@ gst_app_src_get_max_bytes (GstAppSrc * appsrc)
 guint64
 gst_app_src_get_current_level_bytes (GstAppSrc * appsrc)
 {
-  guint64 queued;
-  GstAppSrcPrivate *priv;
-
-  g_return_val_if_fail (GST_IS_APP_SRC (appsrc), -1);
-
-  priv = appsrc->priv;
-
-  GST_OBJECT_LOCK (appsrc);
-  queued = priv->queued_bytes;
-  GST_DEBUG_OBJECT (appsrc, "current level bytes is %" G_GUINT64_FORMAT,
-      queued);
-  GST_OBJECT_UNLOCK (appsrc);
-
-  return queued;
+  GST_APP_SRC_GET_PROPERTY (guint64, queue_status_info.queued_bytes, -1,
+      "current level bytes is %" G_GUINT64_FORMAT, result);
 }
 
 /**
@@ -2150,20 +2080,8 @@ gst_app_src_get_current_level_bytes (GstAppSrc * appsrc)
 void
 gst_app_src_set_max_buffers (GstAppSrc * appsrc, guint64 max)
 {
-  GstAppSrcPrivate *priv;
-
-  g_return_if_fail (GST_IS_APP_SRC (appsrc));
-
-  priv = appsrc->priv;
-
-  g_mutex_lock (&priv->mutex);
-  if (max != priv->max_buffers) {
-    GST_DEBUG_OBJECT (appsrc, "setting max-buffers to %" G_GUINT64_FORMAT, max);
-    priv->max_buffers = max;
-    /* signal the change */
-    g_cond_broadcast (&priv->cond);
-  }
-  g_mutex_unlock (&priv->mutex);
+  GST_APP_SRC_SET_PROPERTY (max_buffers, max,
+      "setting max-buffers to %" G_GUINT64_FORMAT, max);
 }
 
 /**
@@ -2179,20 +2097,8 @@ gst_app_src_set_max_buffers (GstAppSrc * appsrc, guint64 max)
 guint64
 gst_app_src_get_max_buffers (GstAppSrc * appsrc)
 {
-  guint64 result;
-  GstAppSrcPrivate *priv;
-
-  g_return_val_if_fail (GST_IS_APP_SRC (appsrc), 0);
-
-  priv = appsrc->priv;
-
-  g_mutex_lock (&priv->mutex);
-  result = priv->max_buffers;
-  GST_DEBUG_OBJECT (appsrc, "getting max-buffers of %" G_GUINT64_FORMAT,
-      result);
-  g_mutex_unlock (&priv->mutex);
-
-  return result;
+  GST_APP_SRC_GET_PROPERTY (guint64, max_buffers, 0,
+      "getting max-buffers of %" G_GUINT64_FORMAT, result);
 }
 
 /**
@@ -2208,20 +2114,8 @@ gst_app_src_get_max_buffers (GstAppSrc * appsrc)
 guint64
 gst_app_src_get_current_level_buffers (GstAppSrc * appsrc)
 {
-  guint64 queued;
-  GstAppSrcPrivate *priv;
-
-  g_return_val_if_fail (GST_IS_APP_SRC (appsrc), -1);
-
-  priv = appsrc->priv;
-
-  GST_OBJECT_LOCK (appsrc);
-  queued = priv->queued_buffers;
-  GST_DEBUG_OBJECT (appsrc, "current level buffers is %" G_GUINT64_FORMAT,
-      queued);
-  GST_OBJECT_UNLOCK (appsrc);
-
-  return queued;
+  GST_APP_SRC_GET_PROPERTY (guint64, queue_status_info.queued_buffers, -1,
+      "current level buffers is %" G_GUINT64_FORMAT, result);
 }
 
 /**
@@ -2238,21 +2132,8 @@ gst_app_src_get_current_level_buffers (GstAppSrc * appsrc)
 void
 gst_app_src_set_max_time (GstAppSrc * appsrc, GstClockTime max)
 {
-  GstAppSrcPrivate *priv;
-
-  g_return_if_fail (GST_IS_APP_SRC (appsrc));
-
-  priv = appsrc->priv;
-
-  g_mutex_lock (&priv->mutex);
-  if (max != priv->max_time) {
-    GST_DEBUG_OBJECT (appsrc, "setting max-time to %" GST_TIME_FORMAT,
-        GST_TIME_ARGS (max));
-    priv->max_time = max;
-    /* signal the change */
-    g_cond_broadcast (&priv->cond);
-  }
-  g_mutex_unlock (&priv->mutex);
+  GST_APP_SRC_SET_PROPERTY (max_time, max,
+      "setting max-time to %" GST_TIME_FORMAT, GST_TIME_ARGS (max));
 }
 
 /**
@@ -2268,20 +2149,8 @@ gst_app_src_set_max_time (GstAppSrc * appsrc, GstClockTime max)
 GstClockTime
 gst_app_src_get_max_time (GstAppSrc * appsrc)
 {
-  GstClockTime result;
-  GstAppSrcPrivate *priv;
-
-  g_return_val_if_fail (GST_IS_APP_SRC (appsrc), 0);
-
-  priv = appsrc->priv;
-
-  g_mutex_lock (&priv->mutex);
-  result = priv->max_time;
-  GST_DEBUG_OBJECT (appsrc, "getting max-time of %" GST_TIME_FORMAT,
-      GST_TIME_ARGS (result));
-  g_mutex_unlock (&priv->mutex);
-
-  return result;
+  GST_APP_SRC_GET_PROPERTY (GstClockTime, max_time, 0,
+      "getting max-time of %" GST_TIME_FORMAT, GST_TIME_ARGS (result));
 }
 
 /**
@@ -2297,21 +2166,13 @@ gst_app_src_get_max_time (GstAppSrc * appsrc)
 GstClockTime
 gst_app_src_get_current_level_time (GstAppSrc * appsrc)
 {
-  gint64 queued;
-  GstAppSrcPrivate *priv;
-
-  g_return_val_if_fail (GST_IS_APP_SRC (appsrc), GST_CLOCK_TIME_NONE);
-
-  priv = appsrc->priv;
-
-  GST_OBJECT_LOCK (appsrc);
-  queued = priv->queued_time;
-  GST_DEBUG_OBJECT (appsrc, "current level time is %" GST_TIME_FORMAT,
-      GST_TIME_ARGS (queued));
-  GST_OBJECT_UNLOCK (appsrc);
-
-  return queued;
+  GST_APP_SRC_GET_PROPERTY (GstClockTime, queue_status_info.queued_time,
+      GST_CLOCK_TIME_NONE, "current level time is %" GST_TIME_FORMAT,
+      GST_TIME_ARGS (result));
 }
+
+#undef GST_APP_SRC_SET_PROPERTY
+#undef GST_APP_SRC_GET_PROPERTY
 
 static void
 gst_app_src_set_latencies (GstAppSrc * appsrc, gboolean do_min, guint64 min,
@@ -2548,16 +2409,16 @@ gst_app_src_push_internal (GstAppSrc * appsrc, GstBuffer * buffer,
     if (priv->is_eos)
       goto eos;
 
-    if ((priv->max_bytes && priv->queued_bytes >= priv->max_bytes) ||
-        (priv->max_buffers && priv->queued_buffers >= priv->max_buffers) ||
-        (priv->max_time && priv->queued_time >= priv->max_time)) {
+    if (gst_queue_status_info_is_full (&priv->queue_status_info,
+            priv->max_buffers, priv->max_bytes, priv->max_time)) {
       GST_DEBUG_OBJECT (appsrc,
           "queue filled (queued %" G_GUINT64_FORMAT " bytes, max %"
           G_GUINT64_FORMAT " bytes, " "queued %" G_GUINT64_FORMAT
           " buffers, max %" G_GUINT64_FORMAT " buffers, " "queued %"
           GST_TIME_FORMAT " time, max %" GST_TIME_FORMAT " time)",
-          priv->queued_bytes, priv->max_bytes, priv->queued_buffers,
-          priv->max_buffers, GST_TIME_ARGS (priv->queued_time),
+          priv->queue_status_info.queued_bytes, priv->max_bytes,
+          priv->queue_status_info.queued_buffers, priv->max_buffers,
+          GST_TIME_ARGS (priv->queue_status_info.queued_time),
           GST_TIME_ARGS (priv->max_time));
 
       if (first) {
@@ -2585,16 +2446,16 @@ gst_app_src_push_internal (GstAppSrc * appsrc, GstBuffer * buffer,
         priv->need_discont_upstream = TRUE;
         goto dropped;
       } else if (priv->leaky_type == GST_APP_LEAKY_TYPE_DOWNSTREAM) {
-        guint i, length = gst_queue_array_get_length (priv->queue);
+        guint i, length = gst_vec_deque_get_length (priv->queue);
         GstMiniObject *item = NULL;
 
         /* Find the oldest buffer or buffer list and drop it, then update the
          * limits. Dropping one is sufficient to go below the limits again.
          */
         for (i = 0; i < length; i++) {
-          item = gst_queue_array_peek_nth (priv->queue, i);
+          item = gst_vec_deque_peek_nth (priv->queue, i);
           if (GST_IS_BUFFER (item) || GST_IS_BUFFER_LIST (item)) {
-            gst_queue_array_drop_element (priv->queue, i);
+            gst_vec_deque_drop_element (priv->queue, i);
             break;
           }
           /* To not accidentally have an event after the loop */
@@ -2609,7 +2470,7 @@ gst_app_src_push_internal (GstAppSrc * appsrc, GstBuffer * buffer,
           break;
         }
 
-        GST_WARNING_OBJECT (appsrc, "Dropping old item %" GST_PTR_FORMAT, item);
+        GST_DEBUG_OBJECT (appsrc, "Dropping old item %" GST_PTR_FORMAT, item);
 
         gst_app_src_update_queued_pop (appsrc, item, FALSE);
         gst_mini_object_unref (item);
@@ -2645,7 +2506,7 @@ gst_app_src_push_internal (GstAppSrc * appsrc, GstBuffer * buffer,
     GstEvent *event = gst_event_new_segment (&priv->last_segment);
 
     GST_DEBUG_OBJECT (appsrc, "enqueue new segment %" GST_PTR_FORMAT, event);
-    gst_queue_array_push_tail (priv->queue, event);
+    gst_vec_deque_push_tail (priv->queue, event);
     priv->pending_custom_segment = FALSE;
   }
 
@@ -2668,7 +2529,7 @@ gst_app_src_push_internal (GstAppSrc * appsrc, GstBuffer * buffer,
 
     if (!steal_ref)
       gst_buffer_list_ref (buflist);
-    gst_queue_array_push_tail (priv->queue, buflist);
+    gst_vec_deque_push_tail (priv->queue, buflist);
   } else {
     /* Mark the buffer as DISCONT if we previously dropped a buffer instead of
      * queueing it */
@@ -2686,7 +2547,7 @@ gst_app_src_push_internal (GstAppSrc * appsrc, GstBuffer * buffer,
     GST_DEBUG_OBJECT (appsrc, "queueing buffer %p", buffer);
     if (!steal_ref)
       gst_buffer_ref (buffer);
-    gst_queue_array_push_tail (priv->queue, buffer);
+    gst_vec_deque_push_tail (priv->queue, buffer);
   }
 
   gst_app_src_update_queued_push (appsrc,
@@ -2734,7 +2595,7 @@ dropped:
         gst_buffer_unref (buffer);
     }
     g_mutex_unlock (&priv->mutex);
-    return GST_FLOW_EOS;
+    return GST_FLOW_OK;
   }
 }
 

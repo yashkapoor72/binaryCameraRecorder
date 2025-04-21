@@ -48,7 +48,8 @@ struct _GstSRTSink {
   GstBufferList *headers;
 
   GstSRTObject *srtobject;
-  GCancellable *cancellable;
+
+  gboolean streamconfig_sent;
 };
 
 struct _GstSRTSinkClass {

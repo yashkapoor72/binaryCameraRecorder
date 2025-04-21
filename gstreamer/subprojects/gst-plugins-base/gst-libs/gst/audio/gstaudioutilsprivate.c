@@ -43,17 +43,16 @@ __gst_audio_element_proxy_caps (GstElement * element, GstCaps * templ_caps,
   gint caps_size = gst_caps_get_size (caps);
 
   for (i = 0; i < templ_caps_size; i++) {
-    GQuark q_name =
-        gst_structure_get_name_id (gst_caps_get_structure (templ_caps, i));
+    const GstIdStr *name =
+        gst_structure_get_name_id_str (gst_caps_get_structure (templ_caps, i));
     GstCapsFeatures *features = gst_caps_get_features (templ_caps, i);
 
     for (j = 0; j < caps_size; j++) {
       const GstStructure *caps_s = gst_caps_get_structure (caps, j);
       const GValue *val;
       GstStructure *s;
-      GstCaps *tmp = gst_caps_new_empty ();
 
-      s = gst_structure_new_id_empty (q_name);
+      s = gst_structure_new_id_str_empty (name);
       if ((val = gst_structure_get_value (caps_s, "rate")))
         gst_structure_set_value (s, "rate", val);
       if ((val = gst_structure_get_value (caps_s, "channels")))
@@ -61,9 +60,8 @@ __gst_audio_element_proxy_caps (GstElement * element, GstCaps * templ_caps,
       if ((val = gst_structure_get_value (caps_s, "channels-mask")))
         gst_structure_set_value (s, "channels-mask", val);
 
-      gst_caps_append_structure_full (tmp, s,
+      result = gst_caps_merge_structure_full (result, s,
           gst_caps_features_copy (features));
-      result = gst_caps_merge (result, tmp);
     }
   }
 
@@ -128,13 +126,15 @@ __gst_audio_element_proxy_getcaps (GstElement * element, GstPad * sinkpad,
 
   filter_caps = __gst_audio_element_proxy_caps (element, templ_caps, allowed);
 
-  fcaps = gst_caps_intersect (filter_caps, templ_caps);
+  fcaps = gst_caps_intersect_full (filter_caps, templ_caps,
+      GST_CAPS_INTERSECT_FIRST);
   gst_caps_unref (filter_caps);
   gst_caps_unref (templ_caps);
 
   if (filter) {
     GST_LOG_OBJECT (element, "intersecting with %" GST_PTR_FORMAT, filter);
-    filter_caps = gst_caps_intersect (fcaps, filter);
+    filter_caps = gst_caps_intersect_full (fcaps, filter,
+        GST_CAPS_INTERSECT_FIRST);
     gst_caps_unref (fcaps);
     fcaps = filter_caps;
   }

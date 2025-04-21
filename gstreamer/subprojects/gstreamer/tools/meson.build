@@ -20,7 +20,7 @@ if gst_parse
 endif
 
 foreach tool : tools
-  exe_name = '@0@-@1@'.format(tool, apiversion)
+  exe_name = '@0@-@1@'.format(tool, api_version)
   src_file = '@0@.c'.format(tool)
   extra_deps = []
   extra_c_args = []
@@ -31,7 +31,7 @@ foreach tool : tools
   endif
 
   man_page = files('@0@-1.0.1'.format(tool))
-  if not get_option('tools').disabled()
+  if not get_option('tools').disabled() and not static_build
     executable(exe_name,
       src_file,
       install: true,

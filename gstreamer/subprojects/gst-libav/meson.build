@@ -1,6 +1,6 @@
 project('gst-libav', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
 
@@ -50,7 +50,7 @@ endforeach
 
 if dep.type_name() != 'internal'
   if not cc.compiles(check_ffmpeg_src, dependencies : libav_deps, name : 'libav is provided by FFmpeg')
-    error('Uncompatible libavcodec found')
+    error('Incompatible libavcodec found')
   endif
 endif
 
@@ -135,6 +135,8 @@ if cc.get_id() == 'msvc'
       '/we4098', # 'function' : void function returning a value
       '/we4101', # 'identifier' : unreferenced local variable
       '/we4189', # 'identifier' : local variable is initialized but not referenced
+      '/we4996', # 'identifier': was declared deprecated
+      '-D_CRT_SECURE_NO_WARNINGS', #  error C4996: 'identifier': This function or variable may be unsafe. Consider using identifier_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
     ])
   endif
   add_project_arguments(msvc_args, language: ['c', 'cpp'])
@@ -161,47 +163,61 @@ if cc.has_argument('-fno-strict-aliasing')
   add_project_arguments('-fno-strict-aliasing', language: 'c')
 endif
 
+# Disable compiler warnings for unused variables and args if gst debug system is disabled
 if gst_dep.type_name() == 'internal'
-    gst_proj = subproject('gstreamer')
-
-    if not gst_proj.get_variable('gst_debug')
-        message('GStreamer debug system is disabled')
-        add_project_arguments('-Wno-unused', language: 'c')
-    else
-        message('GStreamer debug system is enabled')
-    endif
+  gst_proj = subproject('gstreamer')
+  gst_debug_disabled = not gst_proj.get_variable('gst_debug')
 else
-    # We can't check that in the case of subprojects as we won't
-    # be able to build against an internal dependency (which is not built yet)
-    if not cc.compiles('''
-#include <gst/gstconfig.h>
-#ifdef GST_DISABLE_GST_DEBUG
-#error "debugging disabled, make compiler fail"
-#endif''' , dependencies: gst_dep)
-        message('GStreamer debug system is disabled')
-        add_project_arguments('-Wno-unused', language: 'c')
-    else
-        message('GStreamer debug system is enabled')
-    endif
+  # We can't check that in the case of subprojects as we won't
+  # be able to build against an internal dependency (which is not built yet)
+  gst_debug_disabled = cc.has_header_symbol('gst/gstconfig.h', 'GST_DISABLE_GST_DEBUG', dependencies: gst_dep)
 endif
 
+if gst_debug_disabled
+  message('GStreamer debug system is disabled')
+  if cc.get_argument_syntax() == 'msvc'
+    msvc_args = cc.get_supported_arguments([
+      '/wd4101', # 'identifier' : unreferenced local variable
+      '/wd4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: 'c')
+  elif cc.has_argument('-Wno-unused')
+    add_project_arguments(['-Wno-unused'], language: 'c')
+  endif
+else
+  if cc.get_argument_syntax() == 'msvc' and gst_version_is_dev
+    msvc_args = cc.get_supported_arguments([
+      '/we4101', # 'identifier' : unreferenced local variable
+      '/we4189', # 'identifier' : local variable is initialized but not referenced
+    ])
+    add_project_arguments(msvc_args, language: 'c')
+  endif
+  message('GStreamer debug system is enabled')
+endif
+
+# NOTE: Keep entries alphabetically sorted
 warning_flags = [
-  '-Wmissing-declarations',
-  '-Wmissing-prototypes',
-  '-Wold-style-definition',
-  '-Wredundant-decls',
-  '-Wundef',
-  '-Wwrite-strings',
+  '-Waddress',
+  '-Waggregate-return',
   '-Wformat',
   '-Wformat-nonliteral',
   '-Wformat-security',
+  '-Wimplicit-fallthrough=3',
   '-Winit-self',
+  '-Wmissing-declarations',
   '-Wmissing-include-dirs',
-  '-Waddress',
+  '-Wmissing-parameter-type',
+  '-Wmissing-prototypes',
   '-Wno-multichar',
-  '-Waggregate-return',
-  '-Wvla',
+  '-Wold-style-definition',
   '-Wpointer-arith',
+  '-Wredundant-decls',
+  '-Wredundant-decls',
+  '-Wshift-negative-value',
+  '-Wtype-limits',
+  '-Wundef',
+  '-Wvla',
+  '-Wwrite-strings',
 ]
 
 foreach extra_arg : warning_flags
@@ -221,6 +237,12 @@ if get_option('default_library') == 'shared'
 endif
 
 plugins = []
+plugin_sources = {}
+if host_machine.system() == 'windows'
+  pathsep = ';'
+else
+  pathsep = ':'
+endif
 subdir('ext/libav')
 subdir('docs')
 subdir('tests')
@@ -235,6 +257,8 @@ if gst_version_nano == 0
 endif
 
 configure_file(output: 'config.h', configuration: cdata)
+
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.24.0', meson.project_version())
 
 gst_plugins = []
 foreach plugin: plugins

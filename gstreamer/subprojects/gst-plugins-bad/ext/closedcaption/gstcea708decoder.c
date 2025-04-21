@@ -227,39 +227,43 @@ gst_cea708dec_process_dtvcc_packet (Cea708Dec * decoder, guint8 * dtvcc_buffer,
 
   parse_index += 1;
 
-  block_size = dtvcc_buffer[parse_index] & 0x1F;
-  service_number = (dtvcc_buffer[parse_index] & 0xE0) >> 5;
-  parse_index += 1;
-
-  if (service_number == 7) {
-    /* Get extended service number */
-    service_number = dtvcc_buffer[parse_index] & 0x3F;
+  while (parse_index < dtvcc_size) {
+    block_size = dtvcc_buffer[parse_index] & 0x1F;
+    service_number = (dtvcc_buffer[parse_index] & 0xE0) >> 5;
     parse_index += 1;
-  }
 
-  GST_LOG ("full_size:%" G_GSIZE_FORMAT
-      " size=%d seq=%d block_size=%d service_num=%d", dtvcc_size, pkt_size,
-      sequence_number, block_size, service_number);
-
-
-  /* Process desired_service cc data */
-  if (decoder->desired_service == service_number) {
-    for (i = 0; i < block_size; i++) {
-      /* The Dtvcc buffer contains a stream of commands, command parameters,
-       * and characters which are the actual captions. Process commands and
-       * store captions in simulated 708 windows: */
-      gst_cea708dec_process_dtvcc_byte (decoder, dtvcc_buffer, parse_index + i);
+    if (service_number == 7) {
+      /* Get extended service number */
+      service_number = dtvcc_buffer[parse_index] & 0x3F;
+      parse_index += 1;
     }
 
-    for (window_id = 0; window_id < 8; window_id++) {
-      window = decoder->cc_windows[window_id];
-      GST_LOG ("window #%02d deleted:%d visible:%d updated:%d", window_id,
-          window->deleted, window->visible, window->updated);
-      if (!window->updated) {
-        continue;
+    GST_LOG ("full_size:%" G_GSIZE_FORMAT
+        " size=%d seq=%d block_size=%d service_num=%d", dtvcc_size, pkt_size,
+        sequence_number, block_size, service_number);
+
+    /* Process desired_service cc data */
+    if (decoder->desired_service == service_number) {
+      for (i = 0; i < block_size; i++) {
+        /* The Dtvcc buffer contains a stream of commands, command parameters,
+         * and characters which are the actual captions. Process commands and
+         * store captions in simulated 708 windows: */
+        gst_cea708dec_process_dtvcc_byte (decoder, dtvcc_buffer,
+            parse_index + i);
       }
-      need_render = TRUE;
+
+      for (window_id = 0; window_id < 8; window_id++) {
+        window = decoder->cc_windows[window_id];
+        GST_LOG ("window #%02d deleted:%d visible:%d updated:%d", window_id,
+            window->deleted, window->visible, window->updated);
+        if (!window->updated) {
+          continue;
+        }
+        need_render = TRUE;
+      }
     }
+
+    parse_index += block_size;
   }
 
   return need_render;
@@ -279,20 +283,20 @@ gst_cea708dec_process_dtvcc_byte (Cea708Dec * decoder,
   }
   GST_DEBUG ("processing 0x%02X", c);
 
-  if (c >= 0x00 && c <= 0x1F) { /* C0 */
+  if (c <= 0x1F) {              /* C0 */
     if (c == 0x03) {            /* ETX */
       gst_cea708dec_process_command (decoder, dtvcc_buffer, index);
     } else if (c == 0x00 || c == 0x08 || c == 0x0C || c == 0x0D || c == 0x0E) {
       gst_cea708dec_window_add_char (decoder, c);
     } else if (c == 0x10) {     /* EXT1 */
       guint8 next_c = dtvcc_buffer[index + 1];
-      if (next_c >= 0x00 && next_c <= 0x1F) {   /* C2 */
+      if (next_c <= 0x1F) {     /* C2 */
         gst_cea708dec_process_c2 (decoder, dtvcc_buffer, index + 1);
       } else if (next_c >= 0x20 && next_c <= 0x7F) {    /* G2 */
         gst_cea708dec_process_g2 (decoder, dtvcc_buffer, index + 1);
       } else if (next_c >= 0x80 && next_c <= 0x9F) {    /* C3 */
         gst_cea708dec_process_c3 (decoder, dtvcc_buffer, index + 1);
-      } else if (next_c >= 0xA0 && next_c <= 0xFF) {    /* G3 */
+      } else if (next_c >= 0xA0) {      /* G3 */
         gst_cea708dec_process_g3 (decoder, dtvcc_buffer, index + 1);
       }
     } else if (c > 0x10 && c < 0x18) {
@@ -311,7 +315,7 @@ gst_cea708dec_process_dtvcc_byte (Cea708Dec * decoder,
     }
   } else if ((c >= 0x80) && (c <= 0x9F)) {      /* C1 */
     gst_cea708dec_process_command (decoder, dtvcc_buffer, index);
-  } else if ((c >= 0xA0) && (c <= 0xFF)) {      /* G1 */
+  } else if ((c >= 0xA0)) {     /* G1 */
     gst_cea708dec_window_add_char (decoder, c);
   }
 }
@@ -983,13 +987,13 @@ static void
 gst_cea708dec_show_pango_window (Cea708Dec * decoder, guint window_id)
 {
   cea708Window *window = decoder->cc_windows[window_id];
-  guint16 row, col;
+  gint16 row, col;
   gboolean display = FALSE;     /* = TRUE when text lines should be written */
   gchar line_buffer[LINEBUFFER_SIZE];
   gchar outchar_utf8[CC_UTF8_MAX_LENGTH + 1] = { 0 };
   guint8 utf8_char_length;
-  guint16 i, j;
-  guint16 right_index;          /* within a single line of window text, the
+  gint16 i, j;
+  gint16 right_index;           /* within a single line of window text, the
                                  * index of the rightmost non-blank character */
   guint16 index;
   guint len = 0;
@@ -1653,8 +1657,8 @@ static void
 gst_cea708dec_window_add_char (Cea708Dec * decoder, gunichar c)
 {
   cea708Window *window = decoder->cc_windows[decoder->current_window];
-  guint16 pen_row;
-  guint16 pen_col;
+  gint16 pen_row;
+  gint16 pen_col;
 
   /* Add one character to the current window, using current pen location.
    * Wrap pen location if necessary */
@@ -1768,7 +1772,7 @@ static void
 gst_cea708dec_process_c2 (Cea708Dec * decoder, guint8 * dtvcc_buffer, int index)
 {
   guint8 c = dtvcc_buffer[index];
-  if (c >= 0x00 && c <= 0x07) {
+  if (c <= 0x07) {
     decoder->output_ignore = 1;
   } else if (c >= 0x08 && c <= 0x0F) {
     decoder->output_ignore = 2;

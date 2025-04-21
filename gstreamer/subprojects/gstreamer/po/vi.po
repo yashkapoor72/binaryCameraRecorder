@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gstreamer 1.12.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2021-10-25 01:01+0100\n"
+"POT-Creation-Date: 2024-11-03 17:36+0000\n"
 "PO-Revision-Date: 2017-05-05 06:45+0700\n"
 "Last-Translator: Trần Ngọc Quân <vnwildman@gmail.com>\n"
 "Language-Team: Vietnamese <translation-team-vi@lists.sourceforge.net>\n"
@@ -61,9 +61,6 @@ msgstr ""
 
 msgid "Disable debugging"
 msgstr "Tắt gỡ lỗi"
-
-msgid "Enable verbose plugin loading diagnostics"
-msgstr "Bật chẩn đoán chi tiết việc nạp phần bổ sung"
 
 msgid "Colon-separated paths containing plugins"
 msgstr "Các đường dẫn định giới bằng dấu hai chấm mà chứa phần bổ sung"
@@ -834,6 +831,12 @@ msgstr "dữ-liệu-riêng"
 msgid "Private data"
 msgstr "Dữ liệu riêng"
 
+msgid "container-specific-track-id"
+msgstr ""
+
+msgid "Container-specific Track ID"
+msgstr ""
+
 #. separator between two strings
 msgid ", "
 msgstr ", "
@@ -873,13 +876,12 @@ msgstr "liên kết không có nguồn [sink=%s@%p]"
 msgid "link has no sink [source=%s@%p]"
 msgstr "liên kết không có sink [nguồn=%s@%p]"
 
+msgid "No such property."
+msgstr ""
+
 #, c-format
 msgid "no property \"%s\" in element \"%s\""
 msgstr "không có thuộc tính “%s” trong phần tử “%s”"
-
-#, c-format
-msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
-msgstr "không thể đặt thuộc tính “%s” trong phần tử “%s” thành “%s”"
 
 #, fuzzy, c-format
 msgid "Element \"%s\" is not a GstPreset"
@@ -887,6 +889,18 @@ msgstr "Tập tin “%s” là ổ cắm mạng."
 
 #, fuzzy, c-format
 msgid "could not set preset \"%s\" in element \"%s\""
+msgstr "không thể đặt thuộc tính “%s” trong phần tử “%s” thành “%s”"
+
+#, c-format
+msgid "no element \"%s\""
+msgstr "không có phần tử “%s”"
+
+#, c-format
+msgid "could not set property \"%s\" in element \"%s\" to \"%s\""
+msgstr "không thể đặt thuộc tính “%s” trong phần tử “%s” thành “%s”"
+
+#, fuzzy, c-format
+msgid "could not set property \"%s\" in child of element \"%s\" to \"%s\""
 msgstr "không thể đặt thuộc tính “%s” trong phần tử “%s” thành “%s”"
 
 msgid "Delayed linking failed."
@@ -909,10 +923,6 @@ msgstr "không thể liên kết %s đến %s với caps %s"
 #, c-format
 msgid "could not link %s to %s"
 msgstr "không thể liên kết %s đến %s"
-
-#, c-format
-msgid "no element \"%s\""
-msgstr "không có phần tử “%s”"
 
 #, c-format
 msgid "unexpected reference \"%s\" - ignoring"
@@ -1064,6 +1074,10 @@ msgstr "Luồng không chứa dữ liệu."
 msgid "%sImplemented Interfaces%s:\n"
 msgstr "Giao diện đã thực hiện:\n"
 
+#, c-format
+msgid "%sElement Flags%s:\n"
+msgstr ""
+
 msgid "readable"
 msgstr "được đọc"
 
@@ -1079,6 +1093,9 @@ msgstr "điều khiển được"
 #, fuzzy
 msgid "conditionally available"
 msgstr "điều khiển được"
+
+msgid "can be set only at object construction time"
+msgstr ""
 
 msgid "changeable in NULL, READY, PAUSED or PLAYING state"
 msgstr "có thể thay đổi được trong trạng thái NULL, READY, PAUSED hay PLAYING"
@@ -1331,6 +1348,13 @@ msgstr ""
 msgid "PROPERTY-NAME"
 msgstr "TÊN-THUỘC-TÍNH"
 
+msgid "Set the name of the program"
+msgstr ""
+
+#, fuzzy
+msgid "PROGRAM-NAME"
+msgstr "TÊN-THUỘC-TÍNH"
+
 msgid "Do not install a fault handler"
 msgstr "Không cài đặt bộ quản lý lỗi"
 
@@ -1386,6 +1410,9 @@ msgstr "Đang đặt đường ống thành VÔ_GIÁ_TRỊ …\n"
 
 msgid "Freeing pipeline ...\n"
 msgstr "Đang giải phóng đường ống …\n"
+
+#~ msgid "Enable verbose plugin loading diagnostics"
+#~ msgstr "Bật chẩn đoán chi tiết việc nạp phần bổ sung"
 
 #~ msgid "ERROR: Pipeline doesn't want to pause.\n"
 #~ msgstr "LỖI: đường ống không tạm dừng được.\n"

@@ -587,22 +587,10 @@ static GstPadProbeReturn pad_event_cb (GstPad * pad, GstPadProbeInfo * info,
 static void gst_decode_bin_dispose (GObject * object);
 static void gst_decode_bin_finalize (GObject * object);
 
-/* Register some quarks here for the stream topology message */
-static GQuark topology_structure_name = 0;
-static GQuark topology_caps = 0;
-static GQuark topology_next = 0;
-static GQuark topology_pad = 0;
-static GQuark topology_element_srcpad = 0;
-
 GType gst_decode_bin_get_type (void);
 G_DEFINE_TYPE (GstDecodeBin, gst_decode_bin, GST_TYPE_BIN);
 #define _do_init \
     GST_DEBUG_CATEGORY_INIT (gst_decode_bin_debug, "decodebin", 0, "decoder bin");\
-    topology_structure_name = g_quark_from_static_string ("stream-topology"); \
-    topology_caps = g_quark_from_static_string ("caps");\
-    topology_next = g_quark_from_static_string ("next");\
-    topology_pad = g_quark_from_static_string ("pad");\
-    topology_element_srcpad = g_quark_from_static_string ("element-srcpad");\
     playback_element_init (plugin);\
 
 GST_ELEMENT_REGISTER_DEFINE_WITH_CODE (decodebin, "decodebin", GST_RANK_NONE,
@@ -1282,6 +1270,73 @@ gst_decode_bin_get_subs_encoding (GstDecodeBin * dbin)
 }
 
 static void
+gst_decode_bin_set_demux_connection_speed (GstDecodeBin * dbin,
+    GstElement * element)
+{
+  guint64 speed = 0;
+  gboolean wrong_type = FALSE;
+  GParamSpec *pspec;
+
+  GST_OBJECT_LOCK (dbin);
+  speed = dbin->connection_speed / 1000;
+  GST_OBJECT_UNLOCK (dbin);
+
+  if ((pspec = g_object_class_find_property (G_OBJECT_GET_CLASS (element),
+              "connection-speed"))) {
+    if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_UINT) {
+      GParamSpecUInt *pspecuint = G_PARAM_SPEC_UINT (pspec);
+
+      speed = CLAMP (speed, pspecuint->minimum, pspecuint->maximum);
+    } else if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_INT) {
+      GParamSpecInt *pspecint = G_PARAM_SPEC_INT (pspec);
+
+      speed = CLAMP (speed, pspecint->minimum, pspecint->maximum);
+    } else if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_UINT64) {
+      GParamSpecUInt64 *pspecuint = G_PARAM_SPEC_UINT64 (pspec);
+
+      speed = CLAMP (speed, pspecuint->minimum, pspecuint->maximum);
+    } else if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_INT64) {
+      GParamSpecInt64 *pspecint = G_PARAM_SPEC_INT64 (pspec);
+
+      speed = CLAMP (speed, pspecint->minimum, pspecint->maximum);
+    } else {
+      GST_WARNING_OBJECT (dbin,
+          "The connection speed property %" G_GUINT64_FORMAT " of type %s"
+          " is not useful not setting it", speed,
+          g_type_name (G_PARAM_SPEC_TYPE (pspec)));
+      wrong_type = TRUE;
+    }
+
+    if (!wrong_type) {
+      GST_DEBUG_OBJECT (dbin, "setting connection-speed=%" G_GUINT64_FORMAT
+          " to demuxer element", speed);
+
+      g_object_set (element, "connection-speed", speed, NULL);
+    }
+  }
+}
+
+static void
+gst_decode_bin_update_connection_speed (GstDecodeBin * dbin)
+{
+  GstElement *demuxer = NULL;
+
+  if (!dbin->decode_chain)
+    return;
+
+  CHAIN_MUTEX_LOCK (dbin->decode_chain);
+  if (dbin->decode_chain->adaptive_demuxer) {
+    GstDecodeElement *delem = dbin->decode_chain->elements->data;
+    demuxer = gst_object_ref (delem->element);
+  }
+  CHAIN_MUTEX_UNLOCK (dbin->decode_chain);
+  if (demuxer) {
+    gst_decode_bin_set_demux_connection_speed (dbin, demuxer);
+    gst_object_unref (demuxer);
+  }
+}
+
+static void
 gst_decode_bin_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec)
 {
@@ -1330,6 +1385,7 @@ gst_decode_bin_set_property (GObject * object, guint prop_id,
       GST_OBJECT_LOCK (dbin);
       dbin->connection_speed = g_value_get_uint64 (value) * 1000;
       GST_OBJECT_UNLOCK (dbin);
+      gst_decode_bin_update_connection_speed (dbin);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1803,7 +1859,7 @@ analyze_new_pad (GstDecodeBin * dbin, GstElement * src, GstPad * pad,
       capsfilter = delem->capsfilter =
           gst_element_factory_make ("capsfilter", NULL);
     } else {
-      delem = g_slice_new0 (GstDecodeElement);
+      delem = g_new0 (GstDecodeElement, 1);
       capsfilter = delem->element =
           gst_element_factory_make ("capsfilter", NULL);
       delem->capsfilter = NULL;
@@ -1936,7 +1992,7 @@ setup_caps_delay:
     CHAIN_MUTEX_LOCK (chain);
     GST_LOG_OBJECT (dbin, "Chain %p has now %d dynamic pads", chain,
         g_list_length (chain->pending_pads));
-    ppad = g_slice_new0 (GstPendingPad);
+    ppad = g_new0 (GstPendingPad, 1);
     ppad->pad = gst_object_ref (pad);
     ppad->chain = chain;
     ppad->event_probe_id =
@@ -2403,7 +2459,7 @@ connect_pad (GstDecodeBin * dbin, GstElement * src, GstDecodePad * dpad,
     GST_LOG_OBJECT (dbin, "linked on pad %s:%s", GST_DEBUG_PAD_NAME (pad));
 
     CHAIN_MUTEX_LOCK (chain);
-    delem = g_slice_new0 (GstDecodeElement);
+    delem = g_new0 (GstDecodeElement, 1);
     delem->element = gst_object_ref (element);
     delem->capsfilter = NULL;
     chain->elements = g_list_prepend (chain->elements, delem);
@@ -2451,44 +2507,7 @@ connect_pad (GstDecodeBin * dbin, GstElement * src, GstDecodePad * dpad,
 
     /* Set connection-speed property if needed */
     if (chain->demuxer) {
-      GParamSpec *pspec;
-
-      if ((pspec = g_object_class_find_property (G_OBJECT_GET_CLASS (element),
-                  "connection-speed"))) {
-        guint64 speed = dbin->connection_speed / 1000;
-        gboolean wrong_type = FALSE;
-
-        if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_UINT) {
-          GParamSpecUInt *pspecuint = G_PARAM_SPEC_UINT (pspec);
-
-          speed = CLAMP (speed, pspecuint->minimum, pspecuint->maximum);
-        } else if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_INT) {
-          GParamSpecInt *pspecint = G_PARAM_SPEC_INT (pspec);
-
-          speed = CLAMP (speed, pspecint->minimum, pspecint->maximum);
-        } else if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_UINT64) {
-          GParamSpecUInt64 *pspecuint = G_PARAM_SPEC_UINT64 (pspec);
-
-          speed = CLAMP (speed, pspecuint->minimum, pspecuint->maximum);
-        } else if (G_PARAM_SPEC_TYPE (pspec) == G_TYPE_PARAM_INT64) {
-          GParamSpecInt64 *pspecint = G_PARAM_SPEC_INT64 (pspec);
-
-          speed = CLAMP (speed, pspecint->minimum, pspecint->maximum);
-        } else {
-          GST_WARNING_OBJECT (dbin,
-              "The connection speed property %" G_GUINT64_FORMAT " of type %s"
-              " is not useful not setting it", speed,
-              g_type_name (G_PARAM_SPEC_TYPE (pspec)));
-          wrong_type = TRUE;
-        }
-
-        if (!wrong_type) {
-          GST_DEBUG_OBJECT (dbin, "setting connection-speed=%" G_GUINT64_FORMAT
-              " to demuxer element", speed);
-
-          g_object_set (element, "connection-speed", speed, NULL);
-        }
-      }
+      gst_decode_bin_set_demux_connection_speed (dbin, element);
     }
 
     /* try to configure the subtitle encoding property when we can */
@@ -2620,7 +2639,7 @@ connect_pad (GstDecodeBin * dbin, GstElement * src, GstDecodePad * dpad,
         gst_element_set_state (tmp, GST_STATE_NULL);
 
         gst_object_unref (tmp);
-        g_slice_free (GstDecodeElement, dtmp);
+        g_free (dtmp);
 
         chain->elements = g_list_delete_link (chain->elements, chain->elements);
       } while (tmp != element);
@@ -3364,7 +3383,7 @@ gst_decode_chain_unref (GstDecodeChain * chain)
 {
   if (g_atomic_int_dec_and_test (&chain->refs)) {
     g_mutex_clear (&chain->lock);
-    g_slice_free (GstDecodeChain, chain);
+    g_free (chain);
   }
 }
 
@@ -3463,7 +3482,7 @@ gst_decode_chain_free_internal (GstDecodeChain * chain, gboolean hide)
       gst_object_unref (element);
       l->data = NULL;
 
-      g_slice_free (GstDecodeElement, delem);
+      g_free (delem);
     }
   }
   if (!hide) {
@@ -3542,7 +3561,7 @@ static GstDecodeChain *
 gst_decode_chain_new (GstDecodeBin * dbin, GstDecodeGroup * parent,
     GstPad * pad)
 {
-  GstDecodeChain *chain = g_slice_new0 (GstDecodeChain);
+  GstDecodeChain *chain = g_new0 (GstDecodeChain, 1);
 
   GST_DEBUG_OBJECT (dbin, "Creating new chain %p with parent group %p", chain,
       parent);
@@ -3666,7 +3685,7 @@ gst_decode_group_free_internal (GstDecodeGroup * group, gboolean hide)
   GST_DEBUG_OBJECT (group->dbin, "%s group %p", (hide ? "Hid" : "Freed"),
       group);
   if (!hide)
-    g_slice_free (GstDecodeGroup, group);
+    g_free (group);
 }
 
 /* gst_decode_group_free:
@@ -3846,7 +3865,7 @@ decodebin_set_queue_size_full (GstDecodeBin * dbin, GstElement * multiqueue,
 static GstDecodeGroup *
 gst_decode_group_new (GstDecodeBin * dbin, GstDecodeChain * parent)
 {
-  GstDecodeGroup *group = g_slice_new0 (GstDecodeGroup);
+  GstDecodeGroup *group = g_new0 (GstDecodeGroup, 1);
   GstElement *mq;
   gboolean seekable;
 
@@ -3889,7 +3908,7 @@ missing_multiqueue:
         gst_missing_element_message_new (GST_ELEMENT_CAST (dbin),
             "multiqueue"));
     GST_ELEMENT_ERROR (dbin, CORE, MISSING_PLUGIN, (NULL), ("no multiqueue!"));
-    g_slice_free (GstDecodeGroup, group);
+    g_free (group);
     return NULL;
   }
 }
@@ -4534,28 +4553,26 @@ gst_decode_chain_get_topology (GstDecodeChain * chain)
     return NULL;
   }
 
-  u = gst_structure_new_id_empty (topology_structure_name);
+  u = gst_structure_new_static_str_empty ("stream-topology");
 
   /* Now at the last element */
   if ((chain->elements || !chain->active_group) &&
       (chain->endpad || chain->deadend)) {
     GstPad *srcpad;
 
-    s = gst_structure_new_id_empty (topology_structure_name);
-    gst_structure_id_set (u, topology_caps, GST_TYPE_CAPS, chain->endcaps,
-        NULL);
+    s = gst_structure_new_static_str_empty ("stream-topology");
+    gst_structure_set (u, "caps", GST_TYPE_CAPS, chain->endcaps, NULL);
 
     if (chain->endpad) {
-      gst_structure_id_set (u, topology_pad, GST_TYPE_PAD, chain->endpad, NULL);
+      gst_structure_set (u, "pad", GST_TYPE_PAD, chain->endpad, NULL);
 
       srcpad = gst_ghost_pad_get_target (GST_GHOST_PAD_CAST (chain->endpad));
-      gst_structure_id_set (u, topology_element_srcpad, GST_TYPE_PAD,
-          srcpad, NULL);
+      gst_structure_set (u, "element-srcpad", GST_TYPE_PAD, srcpad, NULL);
 
       gst_object_unref (srcpad);
     }
 
-    gst_structure_id_set (s, topology_next, GST_TYPE_STRUCTURE, u, NULL);
+    gst_structure_set (s, "next", GST_TYPE_STRUCTURE, u, NULL);
     gst_structure_free (u);
     u = s;
   } else if (chain->active_group) {
@@ -4573,7 +4590,7 @@ gst_decode_chain_get_topology (GstDecodeChain * chain)
         gst_structure_free (s);
       }
     }
-    gst_structure_id_set_value (u, topology_next, &list);
+    gst_structure_set_value (u, "next", &list);
     g_value_unset (&list);
     g_value_unset (&item);
   }
@@ -4596,18 +4613,17 @@ gst_decode_chain_get_topology (GstDecodeChain * chain)
     caps = _gst_element_get_linked_caps (elem_next, elem, capsfilter, &srcpad);
 
     if (caps) {
-      s = gst_structure_new_id_empty (topology_structure_name);
-      gst_structure_id_set (u, topology_caps, GST_TYPE_CAPS, caps, NULL);
+      s = gst_structure_new_static_str_empty ("stream-topology");
+      gst_structure_set (u, "caps", GST_TYPE_CAPS, caps, NULL);
       gst_caps_unref (caps);
 
-      gst_structure_id_set (s, topology_next, GST_TYPE_STRUCTURE, u, NULL);
+      gst_structure_set (s, "next", GST_TYPE_STRUCTURE, u, NULL);
       gst_structure_free (u);
       u = s;
     }
 
     if (srcpad) {
-      gst_structure_id_set (u, topology_element_srcpad, GST_TYPE_PAD, srcpad,
-          NULL);
+      gst_structure_set (u, "element-srcpad", GST_TYPE_PAD, srcpad, NULL);
       gst_object_unref (srcpad);
     }
   }
@@ -4618,9 +4634,8 @@ gst_decode_chain_get_topology (GstDecodeChain * chain)
     GST_WARNING_OBJECT (chain->pad, "Couldn't get the caps of decode chain");
     return u;
   }
-  gst_structure_id_set (u, topology_caps, GST_TYPE_CAPS, caps, NULL);
-  gst_structure_id_set (u, topology_element_srcpad, GST_TYPE_PAD, chain->pad,
-      NULL);
+  gst_structure_set (u, "caps", GST_TYPE_CAPS, caps, NULL);
+  gst_structure_set (u, "element-srcpad", GST_TYPE_PAD, chain->pad, NULL);
   gst_caps_unref (caps);
 
   return u;
@@ -4675,6 +4690,7 @@ retry:
   if (G_UNLIKELY (dbin->shutdown)) {
     GST_WARNING_OBJECT (dbin, "Currently, shutting down, aborting exposing");
     DYN_UNLOCK (dbin);
+    g_string_free (missing_plugin_details, TRUE);
     return FALSE;
   }
   DYN_UNLOCK (dbin);
@@ -5231,7 +5247,7 @@ gst_pending_pad_free (GstPendingPad * ppad)
   if (ppad->notify_caps_id)
     g_signal_handler_disconnect (ppad->pad, ppad->notify_caps_id);
   gst_object_unref (ppad->pad);
-  g_slice_free (GstPendingPad, ppad);
+  g_free (ppad);
 }
 
 /*****

@@ -174,6 +174,16 @@ got_buf (GstElement * fakesink, GstBuffer * buf, GstPad * pad, GList ** p_bufs)
 }
 
 static void
+statistics_check (GstElement * audiorate)
+{
+  guint64 in, out, add, drop;
+
+  g_object_get (audiorate, "in", &in, "out", &out, "add", &add,
+      "drop", &drop, NULL);
+  fail_unless_equals_uint64 (out - in, add - drop);
+}
+
+static void
 do_perfect_stream_test (guint rate, const gchar * format,
     gdouble drop_probability, gdouble inject_probability)
 {
@@ -286,6 +296,7 @@ do_perfect_stream_test (guint rate, const gchar * format,
     next_time = GST_BUFFER_TIMESTAMP (buf) + GST_BUFFER_DURATION (buf);
     next_offset = GST_BUFFER_OFFSET_END (buf);
   }
+  statistics_check (audiorate);
 
   gst_message_unref (msg);
   gst_element_set_state (pipe, GST_STATE_NULL);
@@ -440,6 +451,8 @@ GST_START_TEST (test_large_discont)
    * buffers, because the gap is > 1 second (but less than 2 seconds) */
   fail_unless_equals_int (g_list_length (buffers), 4);
 
+  statistics_check (audiorate);
+
   gst_element_set_state (audiorate, GST_STATE_NULL);
   gst_caps_unref (caps);
 
@@ -499,7 +512,7 @@ GST_START_TEST (test_rate_change_down)
   GstElement *audiorate;
   GstCaps *caps1, *caps2;
   int i = 0;
-  gint64 drop, in, out;
+  gint64 drop;
   GstBus *bus;
 
   caps1 = gst_caps_from_string (FIRST_CAPS);
@@ -547,7 +560,7 @@ GST_START_TEST (test_rate_change_down)
   gst_object_unref (bus);
 
   audiorate = gst_bin_get_by_name (GST_BIN (pipeline), "audiorate");
-  g_object_get (audiorate, "drop", &drop, "out", &out, "in", &in, NULL);
+  g_object_get (audiorate, "drop", &drop, NULL);
   gst_object_unref (audiorate);
 
   fail_unless_equals_int64 (drop, 0);
@@ -555,11 +568,111 @@ GST_START_TEST (test_rate_change_down)
   g_list_foreach (rbufs, (GFunc) gst_mini_object_unref, NULL);
   g_list_free (rbufs);
 
+  statistics_check (audiorate);
+
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gst_object_unref (pipeline);
 
   gst_caps_unref (caps1);
   gst_caps_unref (caps2);
+}
+
+GST_END_TEST;
+
+static GstPadProbeReturn
+segment_update_probe_cb (GstPad * pad,
+    GstPadProbeInfo * info, gpointer user_data)
+{
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  GList **events = user_data;
+
+  *events = g_list_append (*events, gst_event_ref (event));
+  return GST_PAD_PROBE_OK;
+}
+
+GST_START_TEST (test_segment_update)
+{
+  GstElement *audiorate;
+  GstCaps *caps;
+  GstPad *srcpad, *sinkpad;
+  GstBuffer *buf;
+
+  audiorate = gst_check_setup_element ("audiorate");
+  caps = gst_caps_new_simple ("audio/x-raw",
+      "format", G_TYPE_STRING, GST_AUDIO_NE (F32),
+      "layout", G_TYPE_STRING, "interleaved",
+      "channels", G_TYPE_INT, 1, "rate", G_TYPE_INT, 44100, NULL);
+  srcpad = gst_check_setup_src_pad (audiorate, &srctemplate);
+  sinkpad = gst_check_setup_sink_pad (audiorate, &sinktemplate);
+
+  gst_pad_set_active (srcpad, TRUE);
+  gst_check_setup_events (srcpad, audiorate, caps, GST_FORMAT_TIME);
+  gst_pad_set_active (sinkpad, TRUE);
+  fail_unless (gst_element_set_state (audiorate,
+          GST_STATE_PLAYING) == GST_STATE_CHANGE_SUCCESS,
+      "failed to set audiorate playing");
+
+  /* Initial segment is [0, -1], first buffer has PTS=0 */
+  GstClockTime pts = 0;
+  gsize frame_size = sizeof (gfloat) * 1;
+  buf = gst_buffer_new_and_alloc (frame_size);
+  GST_BUFFER_TIMESTAMP (buf) = pts;
+  gst_pad_push (srcpad, buf);
+  fail_unless_equals_int (g_list_length (buffers), 1);
+  fail_unless_equals_int64 (GST_BUFFER_PTS (buffers->data), pts);
+  gst_check_drop_buffers ();
+
+  GList *events = NULL;
+  gst_pad_add_probe (srcpad,
+      GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+      (GstPadProbeCallback) segment_update_probe_cb, &events, NULL);
+
+  /* Set segment base time to 2nd frame's PTS */
+  GstSegment seg;
+  gst_segment_init (&seg, GST_FORMAT_TIME);
+  seg.base = GST_FRAMES_TO_CLOCK_TIME (1, 44100);
+  gst_pad_push_event (srcpad, gst_event_new_segment (&seg));
+  fail_unless_equals_int (g_list_length (events), 1);
+  g_clear_list (&events, (GDestroyNotify) gst_event_unref);
+
+  /* PTS=0 is correct because of the segment base time */
+  pts = 0;
+  buf = gst_buffer_new_and_alloc (frame_size);
+  GST_BUFFER_TIMESTAMP (buf) = pts;
+  gst_pad_push (srcpad, buf);
+  fail_unless_equals_int (g_list_length (buffers), 1);
+  fail_unless_equals_int64 (GST_BUFFER_PTS (buffers->data), pts);
+  gst_check_drop_buffers ();
+
+  /* Push [0, -1] segment again with base time back to 0 */
+  gst_segment_init (&seg, GST_FORMAT_TIME);
+  gst_pad_push_event (srcpad, gst_event_new_segment (&seg));
+  fail_unless_equals_int (g_list_length (events), 1);
+  g_clear_list (&events, (GDestroyNotify) gst_event_unref);
+
+  /* PTS of 3rd frame because base time is back to 0.
+   * +1 because of rounding error.
+   * audiorate used to output a buffer with PTS back to segment.start instead of
+   * continuing from its current position. */
+  pts = GST_FRAMES_TO_CLOCK_TIME (2, 44100) + 1;
+  buf = gst_buffer_new_and_alloc (frame_size);
+  GST_BUFFER_TIMESTAMP (buf) = pts;
+  gst_pad_push (srcpad, buf);
+  fail_unless_equals_int (g_list_length (buffers), 1);
+  fail_unless_equals_int64 (GST_BUFFER_PTS (buffers->data), pts);
+  gst_check_drop_buffers ();
+
+  statistics_check (audiorate);
+
+  gst_element_set_state (audiorate, GST_STATE_NULL);
+  gst_caps_unref (caps);
+
+  g_clear_list (&events, (GDestroyNotify) gst_event_unref);
+  gst_check_drop_buffers ();
+  gst_check_teardown_sink_pad (audiorate);
+  gst_check_teardown_src_pad (audiorate);
+
+  gst_object_unref (audiorate);
 }
 
 GST_END_TEST;
@@ -581,6 +694,7 @@ audiorate_suite (void)
   tcase_add_test (tc_chain, test_perfect_stream_drop45_inject25);
   tcase_add_test (tc_chain, test_large_discont);
   tcase_add_test (tc_chain, test_rate_change_down);
+  tcase_add_test (tc_chain, test_segment_update);
 
   return s;
 }

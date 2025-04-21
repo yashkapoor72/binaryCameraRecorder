@@ -102,7 +102,7 @@ static const GstAudioChannelPosition channel_positions[8][8] = {
 static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("audio/x-flac")
+    GST_STATIC_CAPS ("audio/x-flac, framed=true")
     );
 
 enum
@@ -484,7 +484,7 @@ static gboolean
 add_cuesheet (const GstToc * toc, guint sample_rate,
     FLAC__StreamMetadata * cuesheet)
 {
-  gint8 track_num = 0;
+  guint8 track_num = 0;
   gint64 start, stop;
   gchar *isrc = NULL;
   const gchar *is_legal;
@@ -687,7 +687,89 @@ gst_flac_enc_set_metadata (GstFlacEnc * flacenc, GstAudioInfo * info,
       gst_buffer_unmap (buffer, &map);
 
       GST_LOG_OBJECT (flacenc, "Setting picture type %d", image_type);
-      flacenc->meta[entries]->data.picture.type = image_type;
+      switch (image_type) {
+        case GST_TAG_IMAGE_TYPE_NONE:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_OTHER;
+          break;
+        case GST_TAG_IMAGE_TYPE_FRONT_COVER:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_FRONT_COVER;
+          break;
+        case GST_TAG_IMAGE_TYPE_BACK_COVER:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_BACK_COVER;
+          break;
+        case GST_TAG_IMAGE_TYPE_LEAFLET_PAGE:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_LEAFLET_PAGE;
+          break;
+        case GST_TAG_IMAGE_TYPE_MEDIUM:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_MEDIA;
+          break;
+        case GST_TAG_IMAGE_TYPE_LEAD_ARTIST:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_LEAD_ARTIST;
+          break;
+        case GST_TAG_IMAGE_TYPE_ARTIST:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_ARTIST;
+          break;
+        case GST_TAG_IMAGE_TYPE_CONDUCTOR:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_CONDUCTOR;
+          break;
+        case GST_TAG_IMAGE_TYPE_BAND_ORCHESTRA:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_BAND;
+          break;
+        case GST_TAG_IMAGE_TYPE_COMPOSER:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_COMPOSER;
+          break;
+        case GST_TAG_IMAGE_TYPE_LYRICIST:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_LYRICIST;
+          break;
+        case GST_TAG_IMAGE_TYPE_RECORDING_LOCATION:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_RECORDING_LOCATION;
+          break;
+        case GST_TAG_IMAGE_TYPE_DURING_RECORDING:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_DURING_RECORDING;
+          break;
+        case GST_TAG_IMAGE_TYPE_DURING_PERFORMANCE:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_DURING_PERFORMANCE;
+          break;
+        case GST_TAG_IMAGE_TYPE_VIDEO_CAPTURE:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_VIDEO_SCREEN_CAPTURE;
+          break;
+        case GST_TAG_IMAGE_TYPE_FISH:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_FISH;
+          break;
+        case GST_TAG_IMAGE_TYPE_ILLUSTRATION:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_ILLUSTRATION;
+          break;
+        case GST_TAG_IMAGE_TYPE_BAND_ARTIST_LOGO:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_BAND_LOGOTYPE;
+          break;
+        case GST_TAG_IMAGE_TYPE_PUBLISHER_STUDIO_LOGO:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_PUBLISHER_LOGOTYPE;
+          break;
+        case GST_TAG_IMAGE_TYPE_UNDEFINED:
+        default:
+          flacenc->meta[entries]->data.picture.type =
+              FLAC__STREAM_METADATA_PICTURE_TYPE_UNDEFINED;
+          break;
+      }
 
       if (width > 0 && height > 0) {
         flacenc->meta[entries]->data.picture.width = width;
@@ -1076,6 +1158,7 @@ gst_flac_enc_process_stream_headers (GstFlacEnc * enc)
       gst_audio_encoder_get_audio_info (GST_AUDIO_ENCODER (enc));
 
   caps = gst_caps_new_simple ("audio/x-flac",
+      "framed", G_TYPE_BOOLEAN, TRUE,
       "channels", G_TYPE_INT, GST_AUDIO_INFO_CHANNELS (info),
       "rate", G_TYPE_INT, GST_AUDIO_INFO_RATE (info), NULL);
 

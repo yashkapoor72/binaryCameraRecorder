@@ -50,10 +50,6 @@
 static GRegex *_variables_regex = NULL;
 static GstStructure *global_vars = NULL;
 
-static GQuark debug_quark = 0;
-static GQuark lineno_quark = 0;
-static GQuark filename_quark = 0;
-
 typedef struct
 {
   const gchar *str;
@@ -563,17 +559,6 @@ skip_spaces (gchar * c)
   return c;
 }
 
-static void
-setup_quarks (void)
-{
-  if (filename_quark)
-    return;
-
-  filename_quark = g_quark_from_static_string ("__filename__");
-  lineno_quark = g_quark_from_static_string ("__lineno__");
-  debug_quark = g_quark_from_static_string ("__debug__");
-}
-
 gboolean
 gst_validate_has_colored_output (void)
 {
@@ -739,17 +724,30 @@ _file_get_structures (GFile * file, gchar ** err,
           GList *tmpstructures;
           gchar **include_dirs = NULL;
 
-          if (!get_include_paths_func
-              && g_str_has_suffix (location, GST_VALIDATE_SCENARIO_SUFFIX)) {
+          if (get_include_paths_func)
+            include_dirs = get_include_paths_func (filename);
+
+          if (g_str_has_suffix (location, GST_VALIDATE_SCENARIO_SUFFIX)) {
             GST_INFO
                 ("Trying to include a scenario, take into account scenario include dir");
 
-            get_include_paths_func = (GstValidateGetIncludePathsFunc)
-                gst_validate_scenario_get_include_paths;
+            gchar **extra_includes =
+                gst_validate_scenario_get_include_paths (filename);
+            if (extra_includes) {
+              gint i = 0;
+              gint existing_len =
+                  include_dirs ? g_strv_length (include_dirs) : 0;
+              gint extra_len = g_strv_length (extra_includes);
+              include_dirs =
+                  g_realloc_n (include_dirs, existing_len + extra_len + 1,
+                  sizeof (gchar *));
+              for (i = 0; extra_includes[i] != NULL; i++) {
+                include_dirs[existing_len + i] = extra_includes[i];
+              }
+              include_dirs[existing_len + i] = NULL;
+              g_free (extra_includes);
+            }
           }
-
-          if (get_include_paths_func)
-            include_dirs = get_include_paths_func (filename);
 
           if (!include_dirs) {
             GFile *dir = g_file_get_parent (file);
@@ -809,11 +807,10 @@ _file_get_structures (GFile * file, gchar ** err,
         }
         gst_structure_free (structure);
       } else {
-        setup_quarks ();
-        gst_structure_id_set (structure,
-            lineno_quark, G_TYPE_INT, current_lineno,
-            filename_quark, G_TYPE_STRING, filename,
-            debug_quark, G_TYPE_STRING, debug_line->str, NULL);
+        gst_structure_set_static_str (structure,
+            "__lineno__", G_TYPE_INT, current_lineno,
+            "__filename__", G_TYPE_STRING, filename,
+            "__debug__", G_TYPE_STRING, debug_line->str, NULL);
         structures = g_list_append (structures, structure);
       }
     }
@@ -1032,10 +1029,20 @@ gst_validate_utils_get_clocktime (GstStructure * structure, const gchar * name,
   return TRUE;
 }
 
+/**
+ * gst_validate_object_set_property_full:
+ * @reporter: The #GstValidateReporter to use to report errors
+ * @object: The #GObject to set the property on
+ * @property: The name of the property to set
+ * @value: The value to set the property to
+ * @flags: The #GstValidateObjectSetPropertyFlags to use
+ *
+ * Since: 1.24
+ */
 GstValidateActionReturn
-gst_validate_object_set_property (GstValidateReporter * reporter,
+gst_validate_object_set_property_full (GstValidateReporter * reporter,
     GObject * object, const gchar * property,
-    const GValue * value, gboolean optional)
+    const GValue * value, GstValidateObjectSetPropertyFlags flags)
 {
   GParamSpec *paramspec;
   GObjectClass *klass = G_OBJECT_GET_CLASS (object);
@@ -1044,7 +1051,7 @@ gst_validate_object_set_property (GstValidateReporter * reporter,
 
   paramspec = g_object_class_find_property (klass, property);
   if (paramspec == NULL) {
-    if (optional)
+    if (!!(flags & GST_VALIDATE_OBJECT_SET_PROPERTY_FLAGS_OPTIONAL))
       return TRUE;
     GST_ERROR ("Target doesn't have property %s", property);
     return FALSE;
@@ -1078,16 +1085,18 @@ gst_validate_object_set_property (GstValidateReporter * reporter,
   g_value_init (&nvalue, paramspec->value_type);
   g_object_get_property (object, property, &nvalue);
 
-  if (gst_value_compare (&cvalue, &nvalue) != GST_VALUE_EQUAL) {
-    gchar *nvalstr = gst_value_serialize (&nvalue);
-    gchar *cvalstr = gst_value_serialize (&cvalue);
-    GST_VALIDATE_REPORT (reporter, SCENARIO_ACTION_EXECUTION_ERROR,
-        "Setting value %" GST_PTR_FORMAT "::%s failed, expected value: %s"
-        " value after setting %s", object, property, cvalstr, nvalstr);
+  if (!(flags & GST_VALIDATE_OBJECT_SET_PROPERTY_FLAGS_NO_VALUE_CHECK)) {
+    if (gst_value_compare (&cvalue, &nvalue) != GST_VALUE_EQUAL) {
+      gchar *nvalstr = gst_value_serialize (&nvalue);
+      gchar *cvalstr = gst_value_serialize (&cvalue);
+      GST_VALIDATE_REPORT (reporter, SCENARIO_ACTION_EXECUTION_ERROR,
+          "Setting value %" GST_PTR_FORMAT "::%s failed, expected value: %s"
+          " value after setting %s", object, property, cvalstr, nvalstr);
 
-    res = GST_VALIDATE_EXECUTE_ACTION_ERROR_REPORTED;
-    g_free (nvalstr);
-    g_free (cvalstr);
+      res = GST_VALIDATE_EXECUTE_ACTION_ERROR_REPORTED;
+      g_free (nvalstr);
+      g_free (cvalstr);
+    }
   }
 
   g_value_reset (&cvalue);
@@ -1095,7 +1104,7 @@ gst_validate_object_set_property (GstValidateReporter * reporter,
   return res;
 }
 
-#ifdef G_OS_UNIX
+#if defined (G_OS_UNIX) && !defined (__APPLE__)
 static void
 fault_restore (void)
 {
@@ -1104,6 +1113,7 @@ fault_restore (void)
   memset (&action, 0, sizeof (action));
   action.sa_handler = SIG_DFL;
 
+  sigaction (SIGINT, &action, NULL);
   sigaction (SIGSEGV, &action, NULL);
   sigaction (SIGQUIT, &action, NULL);
 }
@@ -1158,12 +1168,12 @@ fault_setup (void)
   sigaction (SIGSEGV, &action, NULL);
   sigaction (SIGQUIT, &action, NULL);
 }
-#endif /* G_OS_UNIX */
+#endif /* G_OS_UNIX && !__APPLE__ */
 
 void
 gst_validate_spin_on_fault_signals (void)
 {
-#ifdef G_OS_UNIX
+#if defined (G_OS_UNIX) && !defined (__APPLE__)
   fault_setup ();
 #endif
 }
@@ -1254,6 +1264,10 @@ gst_validate_replace_variables_in_string (gpointer source,
       }
 
       if (!var_value) {
+        g_free (varname);
+        g_free (pvarname);
+        g_free (string);
+        g_clear_pointer (&match_info, g_match_info_free);
         if (!(flags & GST_VALIDATE_STRUCTURE_RESOLVE_VARIABLES_NO_FAILURE)) {
           gst_validate_error_structure (source,
               "Trying to use undefined variable `%s`.\n"
@@ -1263,6 +1277,7 @@ gst_validate_replace_variables_in_string (gpointer source,
               varname, gst_structure_to_string (local_vars),
               (flags & GST_VALIDATE_STRUCTURE_RESOLVE_VARIABLES_LOCAL_ONLY) ?
               ": unused" : gst_structure_to_string (global_vars));
+
         }
 
         return NULL;
@@ -1337,11 +1352,25 @@ done:
   g_clear_pointer (&match_info, g_match_info_free);
 }
 
-static gboolean
-_structure_set_variables (GQuark field_id, GValue * value, ReplaceData * data)
+gboolean
+gst_validate_structure_file_field_is_metadata (const GstIdStr * fieldname)
 {
-  if (field_id == filename_quark || field_id == debug_quark
-      || field_id == debug_quark)
+  static const gchar *skip_fields[] = {
+    "__filename__",
+    "__lineno__",
+    "__debug__",
+    NULL,
+  };
+
+  return fieldname
+      && g_strv_contains (skip_fields, gst_id_str_as_str (fieldname));
+}
+
+static gboolean
+_structure_set_variables (const GstIdStr * fieldname, GValue * value,
+    ReplaceData * data)
+{
+  if (gst_validate_structure_file_field_is_metadata (fieldname))
     return TRUE;
 
   if (GST_VALUE_HOLDS_LIST (value)) {
@@ -1350,6 +1379,19 @@ _structure_set_variables (GQuark field_id, GValue * value, ReplaceData * data)
     for (i = 0; i < gst_value_list_get_size (value); i++)
       _structure_set_variables (0, (GValue *) gst_value_list_get_value (value,
               i), data);
+
+    return TRUE;
+  }
+
+
+  if (GST_VALUE_HOLDS_STRUCTURE (value)) {
+    GstStructure *s = gst_structure_copy (gst_value_get_structure (value));
+
+    gst_validate_structure_resolve_variables (data->source,
+        s, data->local_vars, data->flags);
+
+    gst_value_set_structure (value, s);
+    gst_structure_free (s);
 
     return TRUE;
   }
@@ -1384,14 +1426,15 @@ gst_validate_structure_resolve_variables (gpointer source,
 {
   ReplaceData d = { source ? source : structure, local_variables, flags };
 
-  gst_structure_filter_and_map_in_place (structure,
-      (GstStructureFilterMapFunc) _structure_set_variables, &d);
+  gst_structure_filter_and_map_in_place_id_str (structure,
+      (GstStructureFilterMapIdStrFunc) _structure_set_variables, &d);
 }
 
 static gboolean
-_set_vars_func (GQuark field_id, const GValue * value, GstStructure * vars)
+_set_vars_func (const GstIdStr * fieldname, const GValue * value,
+    GstStructure * vars)
 {
-  gst_structure_id_set_value (vars, field_id, value);
+  gst_structure_id_str_set_value (vars, fieldname, value);
 
   return TRUE;
 }
@@ -1431,8 +1474,8 @@ gst_validate_set_globals (GstStructure * structure)
   if (!structure)
     return;
 
-  gst_structure_foreach (structure,
-      (GstStructureForeachFunc) _set_vars_func, global_vars);
+  gst_structure_foreach_id_str (structure,
+      (GstStructureForeachIdStrFunc) _set_vars_func, global_vars);
 }
 
 /**
@@ -1500,7 +1543,7 @@ gst_validate_structure_set_variables_from_struct_file (GstStructure * vars,
   gchar *t, *config_name_dir;
   gchar *validateflow, *expectations_dir, *actual_result_dir;
   const gchar *logdir;
-  gboolean local = ! !vars;
+  gboolean local = !!vars;
 
   if (!struct_file)
     return;
@@ -1591,4 +1634,13 @@ gst_validate_fail_on_missing_plugin (void)
       return fail_on_missing_plugin;
   }
   return FALSE;
+}
+
+GstValidateActionReturn
+gst_validate_object_set_property (GstValidateReporter * reporter,
+    GObject * object,
+    const gchar * property, const GValue * value, gboolean optional)
+{
+  return gst_validate_object_set_property_full (reporter, object, property,
+      value, optional ? GST_VALIDATE_OBJECT_SET_PROPERTY_FLAGS_OPTIONAL : 0);
 }

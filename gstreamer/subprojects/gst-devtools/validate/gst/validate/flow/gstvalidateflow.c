@@ -87,6 +87,7 @@ struct _ValidateFlowOverride
   GstStructure *logged_fields;
 
   gchar **logged_event_types;
+  gchar **logged_upstream_event_types;
   gchar **ignored_event_types;
 
   gchar *expectations_file_path;
@@ -192,7 +193,8 @@ validate_flow_override_event_handler (GstValidateOverride * override,
       flow->logged_fields,
       flow->ignored_fields,
       (const gchar * const *) flow->ignored_event_types,
-      (const gchar * const *) flow->logged_event_types);
+      (const gchar * const *) flow->logged_event_types,
+      (const gchar * const *) flow->logged_upstream_event_types);
 
   if (event_string) {
     validate_flow_override_printf (flow, "event %s\n", event_string);
@@ -294,6 +296,8 @@ validate_flow_override_new (GstStructure * config)
 
   flow->logged_event_types =
       gst_validate_utils_get_strv (config, "logged-event-types");
+  flow->logged_upstream_event_types =
+      gst_validate_utils_get_strv (config, "logged-upstream-event-types");
   flow->ignored_event_types =
       gst_validate_utils_get_strv (config, "ignored-event-types");
 
@@ -457,8 +461,11 @@ run_diff (const gchar * expected_file, const gchar * actual_file)
       "--", expected_file, actual_file, NULL);
   gchar *stdout_text = NULL;
 
-  g_subprocess_communicate_utf8 (process, NULL, NULL, &stdout_text, NULL,
-      &error);
+  if (!error) {
+    g_subprocess_communicate_utf8 (process, NULL, NULL, &stdout_text, NULL,
+        &error);
+  }
+
   if (!error) {
     gboolean colored = gst_validate_has_colored_output ();
     GSubprocess *process2;
@@ -475,8 +482,11 @@ run_diff (const gchar * expected_file, const gchar * actual_file)
           "diff", "--paging", "never", "--color", colored ? "always" : "never",
           fname, NULL);
 
-      g_subprocess_communicate_utf8 (process2, NULL, NULL, &tmpstdout, NULL,
-          &error);
+      if (!error) {
+        g_subprocess_communicate_utf8 (process2, NULL, NULL, &tmpstdout, NULL,
+            &error);
+      }
+
       if (!error) {
         g_free (stdout_text);
         stdout_text = tmpstdout;
@@ -525,12 +535,12 @@ show_mismatch_error (ValidateFlowOverride * flow, gchar ** lines_expected,
   const gchar *line_expected = _line_to_show (lines_expected, line_index);
   const gchar *line_actual = _line_to_show (lines_actual, line_index);
 
+  run_diff (flow->expectations_file_path, flow->actual_results_file_path);
   GST_VALIDATE_REPORT (flow, VALIDATE_FLOW_MISMATCH,
       "Mismatch error in pad %s, line %" G_GSIZE_FORMAT
       ". Expected:\n%s\nActual:\n%s\n", flow->pad_name, line_index + 1,
       line_expected, line_actual);
 
-  run_diff (flow->expectations_file_path, flow->actual_results_file_path);
 }
 
 static void
@@ -619,6 +629,7 @@ validate_flow_override_finalize (GObject * object)
     fclose (flow->output_file);
   g_strfreev (flow->caps_properties);
   g_strfreev (flow->logged_event_types);
+  g_strfreev (flow->logged_upstream_event_types);
   g_strfreev (flow->ignored_event_types);
   if (flow->ignored_fields)
     gst_structure_free (flow->ignored_fields);
@@ -648,7 +659,7 @@ _execute_checkpoint (GstValidateScenario * scenario, GstValidateAction * action)
 }
 
 gboolean
-gst_validate_flow_init ()
+gst_validate_flow_init (void)
 {
   GList *tmp;
   gint default_generate = -1;

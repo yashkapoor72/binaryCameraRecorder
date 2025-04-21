@@ -271,7 +271,7 @@ static gboolean gst_adaptive_demux_has_next_period (GstAdaptiveDemux * demux);
 static void gst_adaptive_demux_advance_period (GstAdaptiveDemux * demux);
 
 static void gst_adaptive_demux_stream_free (GstAdaptiveDemuxStream * stream);
-static GstFlowReturn
+static gboolean
 gst_adaptive_demux_stream_push_event (GstAdaptiveDemuxStream * stream,
     GstEvent * event);
 
@@ -1917,7 +1917,7 @@ gst_adaptive_demux_src_event (GstPad * pad, GstObject * parent,
       gst_event_parse_qos (event, NULL, NULL, &diff, &timestamp);
       /* Only take into account lateness if late */
       if (diff > 0)
-        earliest_time = timestamp + 2 * diff;
+        earliest_time = timestamp + MIN (2 * diff, GST_SECOND);
       else
         earliest_time = timestamp;
 

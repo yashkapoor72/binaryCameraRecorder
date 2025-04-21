@@ -43,6 +43,7 @@
 
 #define gst_v4l2_allocator_parent_class parent_class
 G_DEFINE_TYPE (GstV4l2Allocator, gst_v4l2_allocator, GST_TYPE_ALLOCATOR);
+G_DEFINE_POINTER_TYPE (GstV4l2MemoryGroup, gst_v4l2_memory_group);
 
 GST_DEBUG_CATEGORY_STATIC (v4l2allocator_debug);
 #define GST_CAT_DEFAULT v4l2allocator_debug
@@ -154,7 +155,7 @@ _v4l2mem_new (GstMemoryFlags flags, GstAllocator * allocator,
 {
   GstV4l2Memory *mem;
 
-  mem = g_slice_new0 (GstV4l2Memory);
+  mem = g_new0 (GstV4l2Memory, 1);
   gst_memory_init (GST_MEMORY_CAST (mem),
       flags, allocator, parent, maxsize, align, offset, size);
 
@@ -236,7 +237,7 @@ gst_v4l2_memory_group_free (GstV4l2MemoryGroup * group)
       gst_memory_unref (mem);
   }
 
-  g_slice_free (GstV4l2MemoryGroup, group);
+  g_free (group);
 }
 
 static GstV4l2MemoryGroup *
@@ -248,7 +249,7 @@ gst_v4l2_memory_group_new (GstV4l2Allocator * allocator, guint32 index)
   GstV4l2MemoryGroup *group;
   gsize img_size, buf_size;
 
-  group = g_slice_new0 (GstV4l2MemoryGroup);
+  group = g_new0 (GstV4l2MemoryGroup, 1);
 
   group->buffer.type = format->type;
   group->buffer.index = index;
@@ -268,8 +269,15 @@ gst_v4l2_memory_group_new (GstV4l2Allocator * allocator, guint32 index)
     GST_ERROR_OBJECT (allocator, "Buffer index returned by VIDIOC_QUERYBUF "
         "didn't match, this indicate the presence of a bug in your driver or "
         "libv4l2");
-    g_slice_free (GstV4l2MemoryGroup, group);
+    g_free (group);
     return NULL;
+  }
+
+  if (IS_QUEUED (group->buffer)) {
+    GST_WARNING_OBJECT (allocator,
+        "Driver pretends buffer %d is queued even if freshly created, "
+        "this indicates a bug in the driver.", group->buffer.index);
+    UNSET_QUEUED (group->buffer);
   }
 
   /* Check that provided size matches the format we have negotiation. Failing
@@ -357,7 +365,6 @@ gst_v4l2_allocator_release (GstV4l2Allocator * allocator, GstV4l2Memory * mem)
 
   switch (allocator->memory) {
     case V4L2_MEMORY_DMABUF:
-      close (mem->dmafd);
       mem->dmafd = -1;
       break;
     case V4L2_MEMORY_USERPTR:
@@ -371,11 +378,12 @@ gst_v4l2_allocator_release (GstV4l2Allocator * allocator, GstV4l2Memory * mem)
   if (g_atomic_int_dec_and_test (&group->mems_allocated)) {
     GST_LOG_OBJECT (allocator, "buffer %u released", group->buffer.index);
     gst_atomic_queue_push (allocator->free_queue, group);
-    g_signal_emit (allocator, gst_v4l2_allocator_signals[GROUP_RELEASED], 0);
+    g_signal_emit (allocator, gst_v4l2_allocator_signals[GROUP_RELEASED], 0,
+        group);
   }
 
   /* Keep last, allocator may be freed after this call */
-  g_object_unref (allocator);
+  gst_object_unref (allocator);
 }
 
 static void
@@ -396,12 +404,11 @@ gst_v4l2_allocator_free (GstAllocator * gallocator, GstMemory * gmem)
         obj->munmap (mem->data, group->planes[mem->plane].length);
     }
 
-    /* This apply for both mmap with expbuf, and dmabuf imported memory */
-    if (mem->dmafd >= 0)
+    if (allocator->memory == V4L2_MEMORY_MMAP && mem->dmafd >= 0)
       close (mem->dmafd);
   }
 
-  g_slice_free (GstV4l2Memory, mem);
+  g_free (mem);
 }
 
 static void
@@ -452,7 +459,7 @@ gst_v4l2_allocator_class_init (GstV4l2AllocatorClass * klass)
 
   gst_v4l2_allocator_signals[GROUP_RELEASED] = g_signal_new ("group-released",
       G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
-      G_TYPE_NONE, 0);
+      G_TYPE_NONE, 1, GST_TYPE_V4L2_MEMORY_GROUP);
 
   GST_DEBUG_CATEGORY_INIT (v4l2allocator_debug, "v4l2allocator", 0,
       "V4L2 Allocator");
@@ -1399,7 +1406,7 @@ gst_v4l2_allocator_dqbuf (GstV4l2Allocator * allocator,
 error:
   if (errno == EPIPE) {
     GST_DEBUG_OBJECT (allocator, "broken pipe signals last buffer");
-    return GST_FLOW_EOS;
+    return GST_V4L2_FLOW_LAST_BUFFER;
   }
 
   GST_ERROR_OBJECT (allocator, "failed dequeuing a %s buffer: %s",

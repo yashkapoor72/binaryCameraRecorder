@@ -38,19 +38,6 @@
 #include <gst/base/gstbasetransform.h>
 G_BEGIN_DECLS
 
-#define GST_TYPE_MSDKVPP \
-  (gst_msdkvpp_get_type())
-#define GST_MSDKVPP(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_MSDKVPP,GstMsdkVPP))
-#define GST_MSDKVPP_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_MSDKVPP,GstMsdkVPPClass))
-#define GST_MSDKVPP_GET_CLASS(obj) \
-  (G_TYPE_INSTANCE_GET_CLASS((obj),GST_TYPE_MSDKVPP,GstMsdkVPPClass))
-#define GST_IS_MSDKVPP(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_MSDKVPP))
-#define GST_IS_MSDKVPP_CLASS(klass) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_MSDKVPP))
-
 #define MAX_EXTRA_PARAMS                 8
 
 typedef struct _GstMsdkVPP GstMsdkVPP;
@@ -69,6 +56,8 @@ typedef enum {
   GST_MSDK_FLAG_SCALING_MODE = 1 << 9,
   GST_MSDK_FLAG_FRC          = 1 << 10,
   GST_MSDK_FLAG_VIDEO_DIRECTION = 1 << 11,
+  GST_MSDK_FLAG_TONE_MAPPING = 1 << 12,
+  GST_MSDK_FLAG_INTERPOLATION_METHOD = 1 << 13
 } GstMsdkVppFlags;
 
 struct _GstMsdkVPP
@@ -101,6 +90,11 @@ struct _GstMsdkVPP
   gboolean add_video_meta;
   gboolean need_vpp;
   guint flags;
+  /* To check if sinkcaps have HDR SEIs*/
+  gboolean have_mdcv;
+  gboolean have_cll;
+  guint64 sink_modifier;
+  guint64 src_modifier;
 
   /* element properties */
   gboolean hardware;
@@ -116,6 +110,9 @@ struct _GstMsdkVPP
   guint detail;
   guint mirroring;
   guint scaling_mode;
+#if (MFX_VERSION >= 1033)
+  guint interpolation_method;
+#endif
   gboolean keep_aspect;
   guint frc_algm;
   guint video_direction;
@@ -123,6 +120,7 @@ struct _GstMsdkVPP
   guint crop_right;
   guint crop_top;
   guint crop_bottom;
+  gboolean hdr_tone_mapping;
 
   GstClockTime buffer_duration;
 
@@ -137,13 +135,23 @@ struct _GstMsdkVPP
   mfxExtVPPScaling mfx_scaling;
   mfxExtVPPFrameRateConversion mfx_frc;
 
+  GstVideoMasteringDisplayInfo mdcv_info;
+  GstVideoContentLightLevel cll_info;
+
   /* Extended buffers */
   mfxExtBuffer *extra_params[MAX_EXTRA_PARAMS];
   guint num_extra_params;
 
+  mfxExtVideoSignalInfo in_vsi;
+  mfxExtVideoSignalInfo out_vsi;
+  mfxExtMasteringDisplayColourVolume mdcv;
+  mfxExtContentLightLevelInfo cll;
+
   mfxFrameAllocRequest request[2];
   GList* locked_in_surfaces;
   GList* locked_out_surfaces;
+
+  mfxVersion version;
 };
 
 struct _GstMsdkVPPClass
@@ -151,7 +159,10 @@ struct _GstMsdkVPPClass
   GstBaseTransformClass parent_class;
 };
 
-GType gst_msdkvpp_get_type (void);
+gboolean
+gst_msdkvpp_register (GstPlugin * plugin,
+    GstMsdkContext * context, GstCaps * sink_caps,
+    GstCaps * src_caps, guint rank);
 
 G_END_DECLS
 

@@ -112,7 +112,7 @@ gst_vulkan_queue_get_device (GstVulkanQueue * queue)
 /**
  * gst_vulkan_queue_create_command_pool:
  * @queue: a #GstVulkanQueue
- * @error: (optional): a #GError
+ * @error: (out) (optional): a #GError
  *
  * Returns: (transfer full): a new #GstVulkanCommandPool or %NULL
  *
@@ -157,7 +157,7 @@ error:
 /**
  * gst_context_set_vulkan_queue:
  * @context: a #GstContext
- * @queue: a #GstVulkanQueue
+ * @queue: (transfer none) (nullable): a #GstVulkanQueue
  *
  * Sets @queue on @context
  *
@@ -184,7 +184,7 @@ gst_context_set_vulkan_queue (GstContext * context, GstVulkanQueue * queue)
 /**
  * gst_context_get_vulkan_queue:
  * @context: a #GstContext
- * @queue: resulting #GstVulkanQueue
+ * @queue: (out) (optional) (nullable) (transfer full): resulting #GstVulkanQueue
  *
  * Returns: Whether @queue was in @context
  *

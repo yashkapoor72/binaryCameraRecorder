@@ -40,9 +40,13 @@ struct _GstMpg123AudioDec
   GstAudioInfo next_audioinfo;
   gboolean has_next_audioinfo;
 
+#if MPG123_API_VERSION >= 48
+  gint64 frame_offset;
+#else
   off_t frame_offset;
+#endif
 
-  GstQueueArray *audio_clip_info_queue;
+  GstVecDeque *audio_clip_info_queue;
 };
 
 GST_ELEMENT_REGISTER_DECLARE (mpg123audiodec);

@@ -69,7 +69,7 @@ struct _GstFFMpegMuxClass
 {
   GstElementClass parent_class;
 
-  AVOutputFormat *in_plugin;
+  const AVOutputFormat *in_plugin;
 };
 
 #define GST_TYPE_FFMPEGMUX \
@@ -103,7 +103,8 @@ static void gst_ffmpegmux_init (GstFFMpegMux * ffmpegmux,
     GstFFMpegMuxClass * g_class);
 static void gst_ffmpegmux_finalize (GObject * object);
 
-static gboolean gst_ffmpegmux_setcaps (GstPad * pad, GstCaps * caps);
+static gboolean gst_ffmpegmux_setcaps (GstPad * pad, GstObject * parent,
+    GstCaps * caps);
 static GstPad *gst_ffmpegmux_request_new_pad (GstElement * element,
     GstPadTemplate * templ, const gchar * name, const GstCaps * caps);
 static GstFlowReturn gst_ffmpegmux_collected (GstCollectPads * pads,
@@ -191,7 +192,7 @@ gst_ffmpegmux_base_init (gpointer g_class)
   GstFFMpegMuxClass *klass = (GstFFMpegMuxClass *) g_class;
   GstElementClass *element_class = GST_ELEMENT_CLASS (g_class);
   GstPadTemplate *videosinktempl, *audiosinktempl, *srctempl;
-  AVOutputFormat *in_plugin;
+  const AVOutputFormat *in_plugin;
   GstCaps *srccaps, *audiosinkcaps, *videosinkcaps;
   enum AVCodecID *video_ids = NULL, *audio_ids = NULL;
   gchar *longname, *description, *name;
@@ -331,7 +332,7 @@ gst_ffmpegmux_init (GstFFMpegMux * ffmpegmux, GstFFMpegMuxClass * g_class)
       (GstCollectPadsFunction) gst_ffmpegmux_collected, ffmpegmux);
 
   ffmpegmux->context = avformat_alloc_context ();
-  ffmpegmux->context->oformat = oclass->in_plugin;
+  ffmpegmux->context->oformat = (struct AVOutputFormat *) oclass->in_plugin;
   ffmpegmux->context->nb_streams = 0;
   ffmpegmux->opened = FALSE;
 
@@ -460,19 +461,10 @@ gst_ffmpegmux_request_new_pad (GstElement * element,
   return pad;
 }
 
-/**
- * gst_ffmpegmux_setcaps
- * @pad: #GstPad
- * @caps: New caps.
- *
- * Set caps to pad.
- *
- * Returns: #TRUE on success.
- */
 static gboolean
-gst_ffmpegmux_setcaps (GstPad * pad, GstCaps * caps)
+gst_ffmpegmux_setcaps (GstPad * pad, GstObject * parent, GstCaps * caps)
 {
-  GstFFMpegMux *ffmpegmux = (GstFFMpegMux *) (gst_pad_get_parent (pad));
+  GstFFMpegMux *ffmpegmux = (GstFFMpegMux *) parent;
   GstFFMpegMuxPad *collect_pad;
   AVStream *st;
   AVCodecContext tmp;
@@ -494,6 +486,9 @@ gst_ffmpegmux_setcaps (GstPad * pad, GstCaps * caps)
   /* copy over the aspect ratios, ffmpeg expects the stream aspect to match the
    * codec aspect. */
   st->sample_aspect_ratio = st->codecpar->sample_aspect_ratio;
+  /* copy over the frame rate to be used in the container format. */
+  st->time_base.num = tmp.time_base.num;
+  st->time_base.den = tmp.time_base.den;
 
   GST_LOG_OBJECT (pad, "accepted caps %" GST_PTR_FORMAT, caps);
   return TRUE;
@@ -526,7 +521,7 @@ gst_ffmpegmux_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
     case GST_EVENT_CAPS:{
       GstCaps *caps;
       gst_event_parse_caps (event, &caps);
-      if (!(res = gst_ffmpegmux_setcaps (pad, caps)))
+      if (!(res = gst_ffmpegmux_setcaps (pad, parent, caps)))
         goto beach;
       break;
     }
@@ -801,6 +796,7 @@ gst_ffmpegmux_change_state (GstElement * element, GstStateChange transition)
       if (ffmpegmux->opened) {
         ffmpegmux->opened = FALSE;
         gst_ffmpegdata_close (ffmpegmux->context->pb);
+        ffmpegmux->context->pb = NULL;
       }
       break;
     case GST_STATE_CHANGE_READY_TO_NULL:
@@ -876,6 +872,7 @@ gst_ffmpegmux_register (GstPlugin * plugin)
   GType type;
   const AVOutputFormat *in_plugin;
   void *i = 0;
+  enum AVCodecID *video_ids = NULL, *audio_ids = NULL;
 
   GST_LOG ("Registering muxers");
 
@@ -927,6 +924,12 @@ gst_ffmpegmux_register (GstPlugin * plugin)
         GST_LOG ("Ignoring raw muxer %s", in_plugin->name);
         continue;
       }
+    }
+
+    if (!gst_ffmpeg_formatid_get_codecids (in_plugin->name, &video_ids,
+            &audio_ids, in_plugin)) {
+      GST_LOG ("Ignoring muxer %s because no sink caps", in_plugin->name);
+      continue;
     }
 
     if (gst_ffmpegmux_get_replacement (in_plugin->name))

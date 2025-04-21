@@ -33,14 +33,15 @@ gst_is_wl_display_handle_need_context_message (GstMessage * msg)
 
   if (GST_MESSAGE_TYPE (msg) == GST_MESSAGE_NEED_CONTEXT &&
       gst_message_parse_context_type (msg, &type)) {
-    return !g_strcmp0 (type, GST_WL_DISPLAY_HANDLE_CONTEXT_TYPE);
+    return !g_strcmp0 (type, GST_WL_DISPLAY_HANDLE_CONTEXT_TYPE) ||
+        !g_strcmp0 (type, GST_WL_DISPLAY_HANDLE_LEGACY_CONTEXT_TYPE);
   }
 
   return FALSE;
 }
 
 GstContext *
-gst_wl_display_handle_context_new (struct wl_display * display)
+gst_wl_display_handle_context_new (struct wl_display *display)
 {
   GstContext *context =
       gst_context_new (GST_WL_DISPLAY_HANDLE_CONTEXT_TYPE, TRUE);
@@ -60,6 +61,7 @@ gst_wl_display_handle_context_get_handle (GstContext * context)
   s = gst_context_get_structure (context);
   if (gst_structure_get (s, "display", G_TYPE_POINTER, &display, NULL))
     return display;
+  /* backward compatibility */
   if (gst_structure_get (s, "handle", G_TYPE_POINTER, &display, NULL))
     return display;
   return NULL;

@@ -33,7 +33,7 @@
 #define DEFAULT_PASSWORD NULL
 #define DEFAULT_AUTHMOD  GST_RTMP_AUTHMOD_AUTO
 #define DEFAULT_TIMEOUT 5
-#define DEFAULT_FLASH_VERSION "LNX 10,0,32,18"
+#define DEFAULT_FLASH_VERSION NULL
 
 G_DEFINE_INTERFACE (GstRtmpLocationHandler, gst_rtmp_location_handler, 0);
 
@@ -194,7 +194,7 @@ uri_handler_set_uri (GstURIHandler * handler, const gchar * string,
   gst_uri_normalize (uri);
 
   scheme = gst_rtmp_scheme_from_uri (uri);
-  if (scheme < 0) {
+  if (scheme == GST_RTMP_SCHEME_ERROR) {
     g_set_error (error, GST_URI_ERROR, GST_URI_ERROR_BAD_REFERENCE,
         "URI has bad scheme: %s", string);
     goto out;

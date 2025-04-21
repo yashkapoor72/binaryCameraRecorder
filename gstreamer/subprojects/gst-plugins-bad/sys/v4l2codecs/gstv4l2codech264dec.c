@@ -17,9 +17,28 @@
  * Boston, MA 02110-1301, USA.
  */
 
+/**
+ * SECTION:element-v4l2slh264dec
+ * @title: v4l2slh264dec
+ * @short_description: V4L2 Stateless H.264 video decoder
+ *
+ * decodes H.264 bitstreams as DMABuf using Linux V4L2 Stateless API.
+ *
+ * ## Example launch line
+ * ```
+ * gst-launch-1.0 filesrc location=some.mov ! parsebin ! v4l2slh264dec ! autovideosink
+ * ```
+ *
+ * Since: 1.20
+ */
+
+
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
+
+#define GST_USE_UNSTABLE_API
+#include <gst/codecs/gsth264decoder.h>
 
 #include "gstv4l2codecallocator.h"
 #include "gstv4l2codech264dec.h"
@@ -36,6 +55,8 @@
 GST_DEBUG_CATEGORY_STATIC (v4l2_h264dec_debug);
 #define GST_CAT_DEFAULT v4l2_h264dec_debug
 
+#define GST_V4L2_CODEC_H264_DEC(obj) ((GstV4l2CodecH264Dec *) obj);
+
 enum
 {
   PROP_0,
@@ -50,17 +71,31 @@ GST_STATIC_PAD_TEMPLATE (GST_VIDEO_DECODER_SINK_NAME,
         "alignment=(string) au")
     );
 
-static GstStaticPadTemplate src_template =
-GST_STATIC_PAD_TEMPLATE (GST_VIDEO_DECODER_SRC_NAME,
-    GST_PAD_SRC, GST_PAD_ALWAYS,
-    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE (GST_V4L2_DEFAULT_VIDEO_FORMATS)));
+#define SRC_CAPS \
+    GST_VIDEO_DMA_DRM_CAPS_MAKE " ; " \
+    GST_VIDEO_CAPS_MAKE (GST_V4L2_DEFAULT_VIDEO_FORMATS)
+
+#define SRC_CAPS_NO_DRM \
+    GST_VIDEO_CAPS_MAKE (GST_V4L2_DEFAULT_VIDEO_FORMATS)
+
+static GstStaticCaps static_src_caps = GST_STATIC_CAPS (SRC_CAPS);
+static GstStaticCaps static_src_caps_no_drm = GST_STATIC_CAPS (SRC_CAPS_NO_DRM);
+
+typedef struct _GstV4l2CodecH264Dec GstV4l2CodecH264Dec;
+typedef struct _GstV4l2CodecH264DecClass GstV4l2CodecH264DecClass;
+
+struct _GstV4l2CodecH264DecClass
+{
+  GstH264DecoderClass parent_class;
+  GstV4l2CodecDevice *device;
+};
 
 struct _GstV4l2CodecH264Dec
 {
   GstH264Decoder parent;
   GstV4l2Decoder *decoder;
   GstVideoCodecState *output_state;
-  GstVideoInfo vinfo;
+  GstVideoInfoDmaDrm vinfo_drm;
   gint display_width;
   gint display_height;
   gint coded_width;
@@ -95,10 +130,7 @@ struct _GstV4l2CodecH264Dec
   GstMapInfo bitstream_map;
 };
 
-G_DEFINE_ABSTRACT_TYPE (GstV4l2CodecH264Dec, gst_v4l2_codec_h264_dec,
-    GST_TYPE_H264_DECODER);
-
-#define parent_class gst_v4l2_codec_h264_dec_parent_class
+static GstElementClass *parent_class = NULL;
 
 static gboolean
 is_frame_based (GstV4l2CodecH264Dec * self)
@@ -319,7 +351,8 @@ gst_v4l2_codec_h264_dec_negotiate (GstVideoDecoder * decoder)
     },
   };
   /* *INDENT-ON* */
-  GstCaps *filter, *caps;
+  GstCaps *peer_caps, *filter, *caps;
+  GstStaticCaps *static_filter;
 
   /* Ignore downstream renegotiation request. */
   if (self->streaming)
@@ -345,7 +378,13 @@ gst_v4l2_codec_h264_dec_negotiate (GstVideoDecoder * decoder)
     return FALSE;
   }
 
-  filter = gst_v4l2_decoder_enum_src_formats (self->decoder);
+  /* If the peer has ANY caps only advertise system memory caps */
+  peer_caps = gst_pad_peer_query_caps (decoder->srcpad, NULL);
+  static_filter =
+      gst_caps_is_any (peer_caps) ? &static_src_caps_no_drm : &static_src_caps;
+  gst_caps_unref (peer_caps);
+
+  filter = gst_v4l2_decoder_enum_src_formats (self->decoder, static_filter);
   if (!filter) {
     GST_ELEMENT_ERROR (self, CORE, NEGOTIATION,
         ("No supported decoder output formats"), (NULL));
@@ -357,29 +396,30 @@ gst_v4l2_codec_h264_dec_negotiate (GstVideoDecoder * decoder)
   gst_caps_unref (filter);
   GST_DEBUG_OBJECT (self, "Peer supported formats: %" GST_PTR_FORMAT, caps);
 
-  if (!gst_v4l2_decoder_select_src_format (self->decoder, caps, &self->vinfo)) {
+  if (!gst_v4l2_decoder_select_src_format (self->decoder, caps,
+          &self->vinfo_drm)) {
     GST_ELEMENT_ERROR (self, CORE, NEGOTIATION,
-        ("Unsupported bitdepth/chroma format"),
-        ("No support for %ux%u %ubit chroma IDC %i", self->coded_width,
-            self->coded_height, self->bitdepth, self->chroma_format_idc));
+        ("Unsupported pixel format"),
+        ("No support for %ux%u format %s", self->display_width,
+            self->display_height,
+            gst_video_format_to_string (GST_VIDEO_INFO_FORMAT (&self->
+                    vinfo_drm.vinfo))));
     gst_caps_unref (caps);
     return FALSE;
   }
   gst_caps_unref (caps);
 
+done:
   if (self->output_state)
     gst_video_codec_state_unref (self->output_state);
 
-done:
   self->output_state =
-      gst_video_decoder_set_output_state (GST_VIDEO_DECODER (self),
-      self->vinfo.finfo->format, self->display_width,
-      self->display_height, h264dec->input_state);
+      gst_v4l2_decoder_set_output_state (GST_VIDEO_DECODER (self),
+      &self->vinfo_drm, self->display_width, self->display_height,
+      h264dec->input_state);
 
   if (self->interlaced)
     self->output_state->info.interlace_mode = GST_VIDEO_INTERLACE_MODE_MIXED;
-
-  self->output_state->caps = gst_video_info_to_caps (&self->output_state->info);
 
   if (GST_VIDEO_DECODER_CLASS (parent_class)->negotiate (decoder)) {
     if (self->streaming)
@@ -412,18 +452,32 @@ gst_v4l2_codec_h264_dec_decide_allocation (GstVideoDecoder * decoder,
     GstQuery * query)
 {
   GstV4l2CodecH264Dec *self = GST_V4L2_CODEC_H264_DEC (decoder);
+  GstCaps *caps = NULL;
   guint min = 0, num_bitstream;
 
   /* If we are streaming here, then it means there is nothing allocation
    * related in the new state and allocation can be ignored */
   if (self->streaming)
-    return TRUE;
+    goto no_internal_changes;
+
+  g_clear_object (&self->src_pool);
+  g_clear_object (&self->src_allocator);
+  g_clear_object (&self->sink_allocator);
 
   self->has_videometa = gst_query_find_allocation_meta (query,
       GST_VIDEO_META_API_TYPE, NULL);
 
-  g_clear_object (&self->src_pool);
-  g_clear_object (&self->src_allocator);
+  gst_query_parse_allocation (query, &caps, NULL);
+  if (!caps) {
+    GST_ERROR_OBJECT (self, "No valid caps");
+    return FALSE;
+  }
+
+  if (gst_video_is_dma_drm_caps (caps) && !self->has_videometa) {
+    GST_ERROR_OBJECT (self,
+        "DMABuf caps negotiated without the mandatory support of VideoMeta");
+    return FALSE;
+  }
 
   if (gst_query_get_n_allocation_pools (query) > 0)
     gst_query_parse_nth_allocation_pool (query, 0, NULL, NULL, &min, NULL);
@@ -450,8 +504,10 @@ gst_v4l2_codec_h264_dec_decide_allocation (GstVideoDecoder * decoder,
     return FALSE;
   }
 
-  self->src_pool = gst_v4l2_codec_pool_new (self->src_allocator, &self->vinfo);
+  self->src_pool =
+      gst_v4l2_codec_pool_new (self->src_allocator, &self->vinfo_drm);
 
+no_internal_changes:
   /* Our buffer pool is internal, we will let the base class create a video
    * pool, and use it if we are running out of buffers or if downstream does
    * not support GstVideoMeta */
@@ -627,7 +683,7 @@ gst_v4l2_codec_h264_dec_fill_decoder_params (GstV4l2CodecH264Dec * self,
        * The reference is multiplied by 1000 because it's was set as micro
        * seconds and this TS is nanosecond.
        */
-      .reference_ts = (guint64) ref_pic->system_frame_number * 1000,
+      .reference_ts = GST_CODEC_PICTURE_TS_NS (ref_pic),
       .frame_num = frame_num,
       .pic_num = pic_num,
       .flags = V4L2_H264_DPB_ENTRY_FLAG_VALID
@@ -735,15 +791,11 @@ gst_v4l2_codec_h264_dec_fill_slice_params (GstV4l2CodecH264Dec * self,
     GstH264Slice * slice)
 {
   gint n = self->num_slices++;
-  gsize slice_size = slice->nalu.size;
   struct v4l2_ctrl_h264_slice_params *params;
 
   /* Ensure array is large enough */
   if (self->slice_params->len < self->num_slices)
     g_array_set_size (self->slice_params, self->slice_params->len * 2);
-
-  if (needs_start_codes (self))
-    slice_size += 3;
 
   /* *INDENT-OFF* */
   params = &g_array_index (self->slice_params, struct v4l2_ctrl_h264_slice_params, n);
@@ -782,7 +834,7 @@ lookup_dpb_index (struct v4l2_h264_dpb_entry dpb[16], GstH264Picture * ref_pic)
   if (ref_pic->second_field && ref_pic->other_field)
     ref_pic = ref_pic->other_field;
 
-  ref_ts = (guint64) ref_pic->system_frame_number * 1000;
+  ref_ts = (guint64) GST_CODEC_PICTURE_FRAME_NUMBER (ref_pic) * 1000;
   for (i = 0; i < 16; i++) {
     if (dpb[i].flags & V4L2_H264_DPB_ENTRY_FLAG_ACTIVE
         && dpb[i].reference_ts == ref_ts)
@@ -857,7 +909,7 @@ gst_v4l2_codec_h264_dec_new_sequence (GstH264Decoder * decoder,
   gboolean negotiation_needed = FALSE;
   gboolean interlaced;
 
-  if (self->vinfo.finfo->format == GST_VIDEO_FORMAT_UNKNOWN)
+  if (self->vinfo_drm.vinfo.finfo->format == GST_VIDEO_FORMAT_UNKNOWN)
     negotiation_needed = TRUE;
 
   /* TODO check if CREATE_BUFS is supported, and simply grow the pool */
@@ -921,12 +973,13 @@ gst_v4l2_codec_h264_dec_new_sequence (GstH264Decoder * decoder,
     GstVideoInfo ref_vinfo;
     gint i;
 
-    gst_video_info_set_format (&ref_vinfo, GST_VIDEO_INFO_FORMAT (&self->vinfo),
-        self->display_width, self->display_height);
+    gst_video_info_set_format (&ref_vinfo,
+        GST_VIDEO_INFO_FORMAT (&self->vinfo_drm.vinfo), self->display_width,
+        self->display_height);
 
-    for (i = 0; i < GST_VIDEO_INFO_N_PLANES (&self->vinfo); i++) {
-      if (self->vinfo.stride[i] != ref_vinfo.stride[i] ||
-          self->vinfo.offset[i] != ref_vinfo.offset[i]) {
+    for (i = 0; i < GST_VIDEO_INFO_N_PLANES (&self->vinfo_drm.vinfo); i++) {
+      if (self->vinfo_drm.vinfo.stride[i] != ref_vinfo.stride[i] ||
+          self->vinfo_drm.vinfo.offset[i] != ref_vinfo.offset[i]) {
         GST_WARNING_OBJECT (self,
             "GstVideoMeta support required, copying frames.");
         self->copy_frames = TRUE;
@@ -1013,14 +1066,15 @@ gst_v4l2_codec_h264_dec_copy_output_buffer (GstV4l2CodecH264Dec * self,
   GstVideoInfo dest_vinfo;
   GstBuffer *buffer;
 
-  gst_video_info_set_format (&dest_vinfo, GST_VIDEO_INFO_FORMAT (&self->vinfo),
-      self->display_width, self->display_height);
+  gst_video_info_set_format (&dest_vinfo,
+      GST_VIDEO_INFO_FORMAT (&self->vinfo_drm.vinfo), self->display_width,
+      self->display_height);
 
   buffer = gst_video_decoder_allocate_output_buffer (GST_VIDEO_DECODER (self));
   if (!buffer)
     goto fail;
 
-  if (!gst_video_frame_map (&src_frame, &self->vinfo,
+  if (!gst_video_frame_map (&src_frame, &self->vinfo_drm.vinfo,
           codec_frame->output_buffer, GST_MAP_READ))
     goto fail;
 
@@ -1059,21 +1113,23 @@ gst_v4l2_codec_h264_dec_output_picture (GstH264Decoder * decoder,
   GstV4l2CodecH264Dec *self = GST_V4L2_CODEC_H264_DEC (decoder);
   GstVideoDecoder *vdec = GST_VIDEO_DECODER (decoder);
   GstV4l2Request *request = gst_h264_picture_get_user_data (picture);
+  GstCodecPicture *codec_picture = GST_CODEC_PICTURE (picture);
   gint ret;
 
-  if (picture->discont_state) {
+  if (codec_picture->discont_state) {
     if (!gst_video_decoder_negotiate (vdec)) {
       GST_ERROR_OBJECT (vdec, "Could not re-negotiate with updated state");
       return FALSE;
     }
   }
 
-  GST_DEBUG_OBJECT (self, "Output picture %u", picture->system_frame_number);
+  GST_DEBUG_OBJECT (self, "Output picture %u",
+      codec_picture->system_frame_number);
 
   ret = gst_v4l2_request_set_done (request);
   if (ret == 0) {
     GST_ELEMENT_ERROR (self, STREAM, DECODE,
-        ("Decoding frame %u took too long", picture->system_frame_number),
+        ("Decoding frame %u took too long", codec_picture->system_frame_number),
         (NULL));
     goto error;
   } else if (ret < 0) {
@@ -1085,7 +1141,8 @@ gst_v4l2_codec_h264_dec_output_picture (GstH264Decoder * decoder,
 
   if (gst_v4l2_request_failed (request)) {
     GST_ELEMENT_ERROR (self, STREAM, DECODE,
-        ("Failed to decode frame %u", picture->system_frame_number), (NULL));
+        ("Failed to decode frame %u", codec_picture->system_frame_number),
+        (NULL));
     goto error;
   }
 
@@ -1178,16 +1235,17 @@ gst_v4l2_codec_h264_dec_submit_bitstream (GstV4l2CodecH264Dec * self,
         self->bitstream);
   } else {
     GstVideoCodecFrame *frame;
+    guint32 system_frame_number = GST_CODEC_PICTURE_FRAME_NUMBER (picture);
 
     frame = gst_video_decoder_get_frame (GST_VIDEO_DECODER (self),
-        picture->system_frame_number);
+        system_frame_number);
     g_return_val_if_fail (frame, FALSE);
 
     if (!gst_v4l2_codec_h264_dec_ensure_output_buffer (self, frame))
       goto done;
 
     request = gst_v4l2_decoder_alloc_request (self->decoder,
-        picture->system_frame_number, self->bitstream, frame->output_buffer);
+        system_frame_number, self->bitstream, frame->output_buffer);
 
     gst_video_codec_frame_unref (frame);
   }
@@ -1471,16 +1529,11 @@ gst_v4l2_codec_h264_dec_get_property (GObject * object, guint prop_id,
 }
 
 static void
-gst_v4l2_codec_h264_dec_init (GstV4l2CodecH264Dec * self)
-{
-}
-
-static void
-gst_v4l2_codec_h264_dec_subinit (GstV4l2CodecH264Dec * self,
+gst_v4l2_codec_h264_dec_init (GstV4l2CodecH264Dec * self,
     GstV4l2CodecH264DecClass * klass)
 {
   self->decoder = gst_v4l2_decoder_new (klass->device);
-  gst_video_info_init (&self->vinfo);
+  gst_video_info_dma_drm_init (&self->vinfo_drm);
   self->slice_params = g_array_sized_new (FALSE, TRUE,
       sizeof (struct v4l2_ctrl_h264_slice_params), 4);
   g_array_set_size (self->slice_params, 4);
@@ -1498,12 +1551,7 @@ gst_v4l2_codec_h264_dec_dispose (GObject * object)
 }
 
 static void
-gst_v4l2_codec_h264_dec_class_init (GstV4l2CodecH264DecClass * klass)
-{
-}
-
-static void
-gst_v4l2_codec_h264_dec_subclass_init (GstV4l2CodecH264DecClass * klass,
+gst_v4l2_codec_h264_dec_class_init (GstV4l2CodecH264DecClass * klass,
     GstV4l2CodecDevice * device)
 {
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
@@ -1521,8 +1569,13 @@ gst_v4l2_codec_h264_dec_subclass_init (GstV4l2CodecH264DecClass * klass,
       "A V4L2 based H.264 video decoder",
       "Nicolas Dufresne <nicolas.dufresne@collabora.com>");
 
+  parent_class = g_type_class_peek_parent (klass);
+
   gst_element_class_add_static_pad_template (element_class, &sink_template);
-  gst_element_class_add_static_pad_template (element_class, &src_template);
+  gst_element_class_add_pad_template (element_class,
+      gst_pad_template_new ("src", GST_PAD_SRC, GST_PAD_ALWAYS,
+          device->src_caps));
+
   element_class->change_state =
       GST_DEBUG_FUNCPTR (gst_v4l2_codec_h264_dec_change_state);
 
@@ -1560,22 +1613,40 @@ void
 gst_v4l2_codec_h264_dec_register (GstPlugin * plugin, GstV4l2Decoder * decoder,
     GstV4l2CodecDevice * device, guint rank)
 {
-  GstCaps *src_caps;
+  GTypeInfo type_info = {
+    .class_size = sizeof (GstV4l2CodecH264DecClass),
+    .class_init = (GClassInitFunc) gst_v4l2_codec_h264_dec_class_init,
+    .class_data = gst_mini_object_ref (GST_MINI_OBJECT (device)),
+    .instance_size = sizeof (GstV4l2CodecH264Dec),
+    .instance_init = (GInstanceInitFunc) gst_v4l2_codec_h264_dec_init,
+  };
+  GstCaps *src_caps = NULL;
   guint version;
 
   GST_DEBUG_CATEGORY_INIT (v4l2_h264dec_debug, "v4l2codecs-h264dec", 0,
       "V4L2 stateless h264 decoder");
 
+  if (gst_v4l2_decoder_in_doc_mode (decoder)) {
+    device->src_caps = gst_static_caps_get (&static_src_caps);
+    goto register_element;
+  }
+
   if (!gst_v4l2_decoder_set_sink_fmt (decoder, V4L2_PIX_FMT_H264_SLICE,
           320, 240, 8))
     return;
-  src_caps = gst_v4l2_decoder_enum_src_formats (decoder);
+
+  /* Make sure that decoder support stateless H264 */
+  src_caps = gst_v4l2_decoder_enum_src_formats (decoder, &static_src_caps);
 
   if (gst_caps_is_empty (src_caps)) {
     GST_WARNING ("Not registering H264 decoder since it produces no "
         "supported format");
     goto done;
   }
+
+  /* Get all supported pixel formats for H264 */
+  device->src_caps =
+      gst_v4l2_decoder_enum_all_src_formats (decoder, &static_src_caps);
 
   version = gst_v4l2_decoder_get_version (decoder);
   if (version < V4L2_MIN_KERNEL_VERSION)
@@ -1588,13 +1659,11 @@ gst_v4l2_codec_h264_dec_register (GstPlugin * plugin, GstV4l2Decoder * decoder,
     goto done;
   }
 
-  gst_v4l2_decoder_register (plugin,
-      GST_TYPE_V4L2_CODEC_H264_DEC,
-      (GClassInitFunc) gst_v4l2_codec_h264_dec_subclass_init,
-      gst_mini_object_ref (GST_MINI_OBJECT (device)),
-      (GInstanceInitFunc) gst_v4l2_codec_h264_dec_subinit,
+register_element:
+  gst_v4l2_decoder_register (plugin, GST_TYPE_H264_DECODER, &type_info,
       "v4l2sl%sh264dec", device, rank, NULL);
 
 done:
-  gst_caps_unref (src_caps);
+  if (src_caps)
+    gst_caps_unref (src_caps);
 }

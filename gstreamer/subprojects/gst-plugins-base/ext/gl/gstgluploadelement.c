@@ -58,10 +58,11 @@ gst_gl_upload_element_prepare_output_buffer (GstBaseTransform * bt,
 static GstFlowReturn gst_gl_upload_element_transform (GstBaseTransform * bt,
     GstBuffer * buffer, GstBuffer * outbuf);
 static gboolean gst_gl_upload_element_stop (GstBaseTransform * bt);
+static GstCaps *gst_gl_upload_element_fixate_caps (GstBaseTransform * bt,
+    GstPadDirection direction, GstCaps * caps, GstCaps * othercaps);
 static GstStateChangeReturn
 gst_gl_upload_element_change_state (GstElement * element,
     GstStateChange transition);
-
 
 static GstStaticPadTemplate gst_gl_upload_element_src_pad_template =
 GST_STATIC_PAD_TEMPLATE ("src",
@@ -110,6 +111,7 @@ gst_gl_upload_element_class_init (GstGLUploadElementClass * klass)
   bt_class->prepare_output_buffer = gst_gl_upload_element_prepare_output_buffer;
   bt_class->transform = gst_gl_upload_element_transform;
   bt_class->stop = gst_gl_upload_element_stop;
+  bt_class->fixate_caps = gst_gl_upload_element_fixate_caps;
 
   element_class->change_state = gst_gl_upload_element_change_state;
 
@@ -294,7 +296,7 @@ again:
     GstPad *sinkpad = GST_BASE_TRANSFORM_SINK_PAD (bt);
     GstCaps *incaps = gst_pad_get_current_caps (sinkpad);
     GST_DEBUG_OBJECT (bt,
-        "Failed to upload with curren caps -- reconfiguring.");
+        "Failed to upload with current caps -- reconfiguring.");
     /* Note: gst_base_transform_reconfigure_src() cannot be used here.
      * Reconfiguring must be synchronous to avoid dropping the current
      * buffer */
@@ -329,6 +331,15 @@ gst_gl_upload_element_transform (GstBaseTransform * bt, GstBuffer * buffer,
     GstBuffer * outbuf)
 {
   return GST_FLOW_OK;
+}
+
+static GstCaps *
+gst_gl_upload_element_fixate_caps (GstBaseTransform * bt,
+    GstPadDirection direction, GstCaps * caps, GstCaps * othercaps)
+{
+  GstGLUploadElement *upload = GST_GL_UPLOAD_ELEMENT (bt);
+
+  return gst_gl_upload_fixate_caps (upload->upload, direction, caps, othercaps);
 }
 
 static GstStateChangeReturn

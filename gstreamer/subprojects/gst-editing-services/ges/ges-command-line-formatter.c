@@ -170,7 +170,7 @@ static GESCommandLineOption options[] = {
       {
         "inpoint", "i", GST_TYPE_CLOCK_TIME, NULL,
         "Implies that the effect has 'internal content'"
-        "(see [ges_track_element_set_has_internal_source](ges_track_element_set_has_internal_source))",
+        " (see [ges_track_element_set_has_internal_source](ges_track_element_set_has_internal_source)).",
       },
       {
         "name", "n", 0, "child-name",
@@ -276,16 +276,16 @@ static GESCommandLineOption options[] = {
     .synopsis="<property name>",
     .description="Adds keyframes for the specified property in the form:\n\n",
     .examples="    ges-launch-1.0 +test-clip blue d=1.0 +keyframes posx 0=0 1.0=1280 t=direct-absolute +k posy 0=0 1.0=720 t=direct-absolute\n\n"
-              "This add a testclip that will disappear in the bottom right corner",
+              "This adds a testclip that will appear in the bottom right corner",
     .properties={
       {"property-name", 0, 0, NULL, NULL},
       {
         "binding-type", "t", 0, NULL,
-        "The type of binding to use, eg. 'direct-absolute', 'direct'"
+        "The type of binding to use, eg. 'direct-absolute', 'direct'."
       },
       {
         "interpolation-mode", "m", 0, NULL,
-        "The GstInterpolationMode to user."
+        "The GstInterpolationMode to use."
       },
       {
         "...", 0, 0, NULL,
@@ -301,12 +301,12 @@ static GESCommandLineOption options[] = {
     .synopsis="<property name> <value>",
     .description="Set a property on the last added element."
                  " Any child property that exists on the previously added element"
-                 " can be used as <property name>"
-                 "By default, set-<property-name> will lookup the property on the last added"
-                  "object.",
+                 " can be used as <property name>."
+                 " By default, set-<property-name> will lookup the property on the last added"
+                 " object.",
     .examples="    ges-launch-1.0 +clip /path/to/media set-alpha 0.3\n\n"
               "This will set the alpha property on \"media\" then play it back, assuming \"media\""
-              "contains a video stream.\n\n"
+              " contains a video stream.\n\n"
               "    ges-launch-1.0 +clip /path/to/media +effect \"agingtv\" set-dusts false\n\n"
               "This will set the \"dusts\" property of the agingtv to false and play the\n"
               "timeline back.",
@@ -416,7 +416,7 @@ _cleanup_fields (const Property * field_names, GstStructure * structure,
       exists = TRUE;
 
       if (gst_structure_has_field (structure, field_names[i].long_name)) {
-        gchar *str_info = gst_structure_serialize (structure, 0);
+        gchar *str_info = gst_structure_serialize_full (structure, 0);
 
         *error =
             g_error_new (GES_ERROR, 0,
@@ -1134,6 +1134,9 @@ ges_command_line_formatter_get_timeline_uri (GESTimeline * timeline)
         g_string_append (res, " +clip ");
 
         _sanitize_argument (ges_uri_clip_get_uri (GES_URI_CLIP (clip)), res);
+        option = &options[CLIP];
+      } else if (GES_IS_TRANSITION_CLIP (clip)) {
+        g_string_append (res, " +transition");
         option = &options[CLIP];
       } else {
         g_warning ("Unhandled clip type: %s", G_OBJECT_TYPE_NAME (clip));

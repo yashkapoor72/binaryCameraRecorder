@@ -1,15 +1,16 @@
 project('gstreamer-full', 'c',
-  version : '1.21.2.1',
-  meson_version : '>= 0.62.0',
+  version : '1.27.0.1',
+  meson_version : '>= 1.4',
   default_options : ['buildtype=debugoptimized',
                      # Needed due to https://github.com/mesonbuild/meson/issues/1889,
                      # but this can cause problems in the future. Remove it
                      # when it's no longer necessary.
                      'cpp_std=c++14'])
 
-apiversion = '1.0'
+api_version = '1.0'
 gst_version = '>= @0@'.format(meson.project_version())
 
+host_system = host_machine.system()
 build_system = build_machine.system()
 cc = meson.get_compiler('c')
 
@@ -30,8 +31,25 @@ if cmdres.returncode() != 0
   error('Do not run `ninja reconfigure` or `meson` for gst-build inside the development environment, you will run into problems')
 endif
 
-# Install gst-indent pre-commit hook
-run_command(python3, '-c', 'import shutil; shutil.copy("scripts/git-hooks/multi-pre-commit.hook", ".git/hooks/pre-commit")', check: false)
+# pre-commit hooks are not interactive so we use gitlint's hook to check commit messages
+gitlint_req = '>= 0.18'
+gitlint = find_program('gitlint', version: gitlint_req, required: false)
+if gitlint.found()
+  gitlint_status = run_command(gitlint, 'install-hook', check: false)
+  if gitlint_status.returncode() != 0
+    warning(gitlint_status.stderr().strip())
+  endif
+else
+  warning('gitlint not found or too old, please install it with your package manager or `python3 -m pip install gitlint` to enable the commit message hook')
+endif
+
+pre_commit_req = '>= 3.6.0'
+pre_commit = find_program('pre-commit', version: pre_commit_req, required: false)
+if pre_commit.found()
+  run_command(pre_commit, 'install', '-f', check: true)
+else
+  warning('pre-commit not found or too old, please install it with your package manager or `python3 -m pip install pre-commit`')
+endif
 
 # On macOS, you have to run "Install Certificates.command" otherwise Python
 # doesn't have access to the latest SSL CA Certificates, and Meson will fail to
@@ -76,40 +94,74 @@ if not meson.is_subproject() and cc.get_id() == 'msvc'
       language: ['c', 'cpp'])
 endif
 
-building_full = get_option('default_library') == 'static'
-tools_option = []
-if building_full and not get_option('tools').disabled()
-  # Do not build subprojects tools when we build them against gst-full
-  tools_option = ['tools=disabled']
+building_full = get_option('default_library') == 'static' and not get_option('gst-full').disabled()
+building_full_static = false
+building_full_options = []
+if building_full
+  building_full_options = ['gstreamer-static-full=false']
+  building_full_static = get_option('gst-full-target-type') == 'static_library'
+  if building_full_static
+    building_full_options = ['gstreamer-static-full=true']
+  endif
 endif
+
+libnice_options = []
+if get_option('webrtc').enabled()
+  libnice_options += ['gstreamer=enabled']
+endif
+
+gtk_options = [
+  'build-demos=false',
+  'build-examples=false',
+  'build-testsuite=false',
+  'build-tests=false',
+]
+if host_system == 'windows'
+  gtk_options += ['vulkan=disabled']
+elif host_system == 'darwin'
+  gtk_options += ['x11-backend=false']
+endif
+
+# Disable gst-python if we've disabled introspection
+gst_python_option = get_option('python').disable_if(get_option('introspection').disabled())
 
 # Ordered list of subprojects (dict has no ordering guarantees)
 subprojects = [
-  ['gstreamer', {'build-hotdoc': true, 'subproject_options': tools_option}],
+  ['gstreamer', {'build-hotdoc': true, 'subproject_options': building_full_options}],
   ['gst-plugins-base', {'option': get_option('base'), 'build-hotdoc': true}],
   ['gst-plugins-good', {'option': get_option('good'), 'build-hotdoc': true}],
-  ['libnice', { 'option': get_option('libnice'), 'match_gst_version': false}],
+  ['libnice', { 'option': get_option('libnice'), 'match_gst_version': false, 'subproject_options': libnice_options}],
   ['gst-plugins-bad', { 'option': get_option('bad'), 'build-hotdoc': true}],
   ['gst-plugins-ugly', { 'option': get_option('ugly'), 'build-hotdoc': true}],
   ['gst-libav', { 'option': get_option('libav'), 'build-hotdoc': true}],
   ['gst-rtsp-server', { 'option': get_option('rtsp_server'), 'build-hotdoc': true}],
-  ['gst-devtools', { 'option': get_option('devtools'), 'build-hotdoc': true, 'subproject_options': tools_option}],
+  ['gst-devtools', { 'option': get_option('devtools'), 'build-hotdoc': true}],
   ['gst-integration-testsuites', { 'option': get_option('devtools') }],
-  ['gst-editing-services', { 'option': get_option('ges'), 'build-hotdoc': true, 'subproject_options': tools_option}],
+  ['gst-editing-services', { 'option': get_option('ges'), 'build-hotdoc': true}],
   ['gstreamer-vaapi', { 'option': get_option('vaapi'), 'build-hotdoc': true}],
-  ['gst-omx', { 'option': get_option('omx'), 'build-hotdoc': true}],
   ['gstreamer-sharp', { 'option': get_option('sharp') }],
   ['pygobject', { 'option': get_option('python'), 'match_gst_version': false, 'sysdep': 'pygobject-3.0', 'sysdep_version': '>= 3.8' }],
-  ['gst-python', { 'option': get_option('python')}],
+  ['gst-python', { 'option': gst_python_option}],
   ['gst-examples', { 'option': get_option('gst-examples'), 'match_gst_versions': false}],
+  ['gtk', {'option': get_option('gtk'), 'match_gst_version': false, 'subproject_options': gtk_options}],
   ['gst-plugins-rs', { 'option': get_option('rs'), 'build-hotdoc': true, 'match_gst_version': false}],
 ]
 
-if build_system == 'windows'
-  subproject('win-flex-bison-binaries')
-  subproject('win-nasm')
-elif build_system == 'darwin'
-  subproject('macos-bison-binary')
+if get_option('build-tools-source') == 'subproject'
+  if build_system == 'windows'
+    subproject('win-flex-bison-binaries')
+    subproject('win-nasm')
+    subproject('win-pkgconfig')
+  elif build_system == 'darwin'
+    subproject('macos-bison-binary')
+    # Newer macOS provides /usr/lib/pkgconfig/libpcre2-8.pc which is broken
+    # because it says headers are in /usr/include but that directory doesn't
+    # exist. It can only be used to find the library, which only exists on
+    # newer macOS at /usr/lib/libpcre2-8.dylib, so it's also unusable.
+    #
+    # jit support requires macOS 11.0 or newer, so disable it by default
+    subproject('pcre2', default_options: ['default_library=static', 'jit=disabled'])
+  endif
 endif
 
 orc_option = get_option('orc')
@@ -139,6 +191,10 @@ plugins_doc_caches = []
 orc_update_targets = []
 all_plugins = []
 all_tools = {}
+all_helpers = {}
+gst_tools = []
+gst_helpers = []
+gst_libraries =[]
 # Using a list and not a dict to keep the ordering to build the chain of `gir`
 # dependencies
 all_libraries = []
@@ -154,15 +210,12 @@ foreach sp : subprojects
   if match_gst_version
     subproj = subproject(project_name, version: gst_version, required: is_required, default_options: default_options)
   elif sysdep != ''
-      sysdep_dep = dependency(sysdep, version: sysdep_version, required: false, default_options: default_options)
-      if not sysdep_dep.found()
-        subproj = subproject(project_name, required: is_required, default_options: default_options)
-      endif
+    sysdep_dep = dependency(sysdep, version: sysdep_version, required: is_required, default_options: default_options)
   else
     subproj = subproject(project_name, required: is_required, default_options: default_options)
   endif
 
-  if project_name == 'gst-plugins-base'
+  if project_name == 'gst-plugins-base' and subproj.found()
     gst_base_orc_req = subproj.get_variable('orc_req', '')
     if gst_base_orc_req != orc_req
       error('orc_req is "@0@" but it should be "@1@" from subprojects/gst-plugins-base/meson.build'
@@ -186,13 +239,14 @@ foreach sp : subprojects
     all_libraries += subproj.get_variable('gst_libraries', [])
     if not get_option('tools').disabled()
       all_tools += subproj.get_variable('gst_tools', {})
+      all_helpers += subproj.get_variable('gst_helpers', {})
     endif
 
     orc_update_targets += subproj.get_variable('orc_update_targets', [])
 
     subprojects_names += [project_name]
 
-    if not meson.is_cross_build() and build_infos.get('build-hotdoc', false)
+    if not meson.is_cross_build() and build_infos.get('build-hotdoc', false) and get_option('doc').allowed()
       plugins_doc_caches += [subproj.get_variable('gst_plugins_doc_dep', [])]
       if documented_projects != ''
         documented_projects += ','
@@ -207,17 +261,38 @@ giomodules = []
 glib_dep = dependency('glib-2.0')
 if glib_dep.type_name() == 'internal'
   subp = subproject('glib-networking', required : get_option('tls'),
-             default_options: ['gnutls=auto', 'openssl=auto'])
+             default_options: ['gnutls=auto', 'openssl=auto', 'libproxy=auto', 'gnome_proxy=auto'])
   if subp.found()
     giomodules += subp.get_variable('giomodules', [])
   endif
 endif
 
-gst_plugins_doc_dep = custom_target('plugins-doc-cache',
-  command: [python3, '-c', 'print("Built all doc caches")'],
-  input: plugins_doc_caches,
-  output: 'plugins_doc_caches',
+if get_option('doc').allowed()
+  gst_plugins_doc_dep = custom_target('plugins-doc-cache',
+    command: [python3, '-c', 'print("Built all doc caches")'],
+    input: plugins_doc_caches,
+    output: 'plugins_doc_caches',
+    capture: true,
+  )
+else
+  message('doc option is disabled, will not generate targets for building plugins doc caches')
+endif
+
+gir_files = []
+gir_targets = []
+foreach pkgname_library : all_libraries
+  lib_def = pkgname_library[1]
+  foreach gir_target: lib_def.get('gir_targets', [])
+    gir_files += [gir_target[0].full_path()]
+    gir_targets += gir_target
+  endforeach
+endforeach
+
+custom_target('update_girs',
+  command: [find_program('scripts/update-girs.py'), meson.global_build_root()] + gir_files,
+  output: 'update_girs',
   capture: true,
+  depends: gir_targets
 )
 
 if meson.is_cross_build() or build_machine.system() == 'windows'
@@ -256,7 +331,11 @@ configure_file(
 )
 
 if documented_projects != ''
-  subproject('gst-docs', required: get_option('doc').enabled())
+  gst_doc = subproject('gst-docs', required: get_option('doc').enabled())
+  if gst_doc.found()
+    gst_doc_target = gst_doc.get_variable('gstreamer_doc')
+    alias_target('gst-doc', gst_doc_target)
+  endif
   message('Gst docs subprojects: ' + documented_projects)
 endif
 
@@ -267,7 +346,7 @@ foreach plugin: all_plugins
   plugin_path = plugin.get_variable('full_path')
   all_plugins_paths += plugin_path
   all_plugins_dirs += fs.parent(plugin_path)
-  plugins_names += plugin_path
+  plugins_names += fs.name(plugin_path)
 endforeach
 
 # Work around meson bug: https://github.com/mesonbuild/meson/pull/6770
@@ -288,6 +367,7 @@ devenv.set('GST_VERSION', meson.project_version())
 devenv.set('GST_ENV', 'gst-' + meson.project_version())
 devenv.set('GST_REGISTRY', meson.current_build_dir() / 'registry.dat')
 devenv.set('GST_PLUGIN_SYSTEM_PATH', '')
+devenv.set('GST_PLUGIN_LOADING_WHITELIST', '*')
 meson.add_devenv(devenv)
 
 generate_plugins_paths = find_program('scripts/generate_plugins_path.py')
@@ -300,27 +380,41 @@ configure_file(
 
 if building_full
   cdata = configuration_data()
-  cdata.set_quoted('GST_API_VERSION', apiversion)
+  cdata.set_quoted('GST_API_VERSION', api_version)
   cdata.set_quoted('GETTEXT_PACKAGE', 'gstreamer-full-1.0')
-  cdata.set_quoted('PACKAGE_VERSION', gst_version)
+  cdata.set_quoted('PACKAGE_VERSION', meson.project_version())
   cdata.set_quoted('GST_PACKAGE_ORIGIN', get_option('package-origin'))
+  cdata.set_quoted('GST_FULL_LICENSE', get_option('gstreamer-full-license'))
+  cdata.set_quoted('GST_PLUGIN_FULL_FEATURES_NAME', 'fullstaticfeatures')
   configure_file(output : 'config.h', configuration : cdata)
   configinc = include_directories('.')
   gst_c_args = ['-DHAVE_CONFIG_H']
 
   # Generate a .c file which declare and register all built plugins
-  all_plugin_names = ';'.join(plugins_names)
-
   static_plugins = get_option('gst-full-plugins')
+  plugins_to_be_initialized = []
   if static_plugins == '*'
-    static_plugins = all_plugin_names
+    all_plugin_names = ';'.join(plugins_names)
+  else
+    missing_plugins = []
+    foreach plugin : static_plugins.split(';')
+      if plugins_names.contains(plugin)
+        plugins_to_be_initialized += [plugin]
+      else
+        missing_plugins += [plugin]
+      endif
+    endforeach
+    if missing_plugins.length() > 0
+      error('Some gstreamer-full plugins enabled via the \'gst-full-plugins\' option are not available, please enable the corresponding meson options: @0@'.format(', '.join(missing_plugins)))
+    endif
+    all_plugin_names = ';'.join(plugins_to_be_initialized)
   endif
   generate_init_static_plugins = find_program('scripts/generate_init_static_plugins.py')
   init_static_plugins_c = configure_file(
     output: 'gstinitstaticplugins.c',
     command : [generate_init_static_plugins,
                '-o ' + '@OUTPUT@',
-               '-p ' + static_plugins,
+               '-p ' + all_plugin_names,
                '-e ' + get_option('gst-full-elements'),
                '-t ' + get_option('gst-full-typefind-functions'),
                '-d ' + get_option('gst-full-device-providers'),
@@ -341,6 +435,7 @@ if building_full
 
   foreach pkgname_library : all_libraries
     pkg_name = pkgname_library[0]
+    gst_libraries += pkg_name
     lib_def = pkgname_library[1]
 
     if pkg_name in wanted_libs or all_libs
@@ -359,6 +454,10 @@ if building_full
   # glib and gobject are part of our public API. If we are using glib from the
   # system then our pkg-config file must require it. If we built it as
   # subproject then we need to link_whole it.
+  # Note that link_whole dependencies aren't exposed transitively in
+  # Windows/Cygwin, because symbols from static libraries must
+  # be manually marked as exported through a module definition file.
+  # See e.g. https://github.com/FFmpeg/FFmpeg/blob/3057ce797f6e1348b978f5ffe9e2afd2224544f0/configure#L5726
   glib_deps = []
   glib_dep = dependency('glib-2.0')
   gobject_dep = dependency('gobject-2.0')
@@ -393,17 +492,28 @@ if building_full
     giomodules_deps += dependency(module)
   endforeach
 
-  # Build both shared and static library
-  gstfull = both_libraries('gstreamer-full-1.0',
+  # Build shared library
+  gstfull = build_target('gstreamer-full-1.0',
     init_static_plugins_c,
+    c_args: ['-DBUILDING_GST'] + gst_c_args,
+    target_type: get_option('gst-full-target-type'),
     link_args: gstfull_link_args,
     link_whole : exposed_libs,
     dependencies : [incdir_deps, glib_deps, all_plugins, giomodules_deps],
     link_depends : link_deps,
     install : true,
   )
+  gst_full_c_flags =  ['-DGST_STATIC_COMPILATION']
 
-  gst_full_dep = declare_dependency(link_with: gstfull.get_shared_lib(),
+  gst_full_libs = [gstfull]
+
+  # See above re: symbol exports in Win32
+  if ['windows', 'cygwin'].contains(host_machine.system())
+    gst_full_libs += exposed_libs
+  endif
+
+  gst_full_dep = declare_dependency(link_with: gst_full_libs,
+    compile_args: gst_full_c_flags,
     dependencies : incdir_deps + glib_deps,
     include_directories: include_directories('.')
   )
@@ -413,7 +523,12 @@ if building_full
     warning('The compiler does not support `-Wl,--undefined` linker flag. The method `gst_init_static_plugins` might be dropped during the link stage of an application using libgstreamer-full-1.0.a, preventing plugins registration.')
   endif
 
-  if not get_option('introspection').disabled()
+  if building_full_static
+    warning('Introspection is enabled in gst-full static build mode but this is not supported by now. gir generation is now disabled.')
+  endif
+  # FIXME: gnome.generate_gir should link with not only gstfull in static gst-full but the whole gstreamer suite.
+  # tried dependencies without success.
+  if not get_option('introspection').disabled() and not building_full_static
     built_girs = {}
     foreach gir: exposed_girs
       includes = []
@@ -433,15 +548,16 @@ if building_full
   pkgconfig.generate(gstfull,
     requires: glib_deps,
     libraries_private: gst_full_libs_private,
+    extra_cflags: gst_full_c_flags,
     subdirs : 'gstreamer-1.0')
   meson.override_dependency('gstreamer-full-1.0', gst_full_dep)
 
   if not get_option('tools').disabled()
+    # Loop for tools
     foreach tool, data: all_tools
-      exe_name = '@0@-@1@'.format(tool, apiversion)
-      extra_args = data.get('extra_c_args', [])
-      sources = data.get('files')
-      install_tag = data.get('install_tag', 'bin')
+      gst_tools += tool
+      exe_name = '@0@-@1@'.format(tool, api_version)
+
       deps = []
       foreach d : data.get('deps', [])
         if d not in exposed_deps
@@ -449,14 +565,67 @@ if building_full
         endif
       endforeach
 
-      executable(exe_name,
-        sources,
-        install: true,
-        install_tag: install_tag,
-        include_directories : [configinc],
+      exe = executable(exe_name,
+        data.get('files'),
+        install: data.get('install', true),
+        install_tag: data.get('install_tag', 'bin'),
+        install_dir: data.get('install_dir', get_option('bindir')),
+        include_directories : data.get('include_directories', [configinc]),
         dependencies : [gst_full_dep] + deps,
-        c_args: extra_args + gst_c_args + ['-DG_LOG_DOMAIN="@0@"'.format(exe_name)],
+        c_args: data.get('extra_c_args', []) + gst_c_args + ['-DG_LOG_DOMAIN="@0@"'.format(exe_name)],
+        cpp_args: data.get('extra_cpp_args', []),
+        objc_args: data.get('extra_objc_args', []),
+        override_options: data.get('override_options', []),
       )
+
+      if(data.has_key('env'))
+        env = data.get('env')
+        value = env[1]
+        if env[1] == 'exe-full-path'
+          value = exe.full_path()
+        endif
+        meson.add_devenv({env[0]: value})
+      endif
+
+      if data.has_key('man_page')
+        install_man(data.get('man_page'))
+      endif
+
+    endforeach
+
+    # Loop for helpers tools
+    foreach helper, data: all_helpers
+      gst_helpers += helper
+      exe_name = '@0@'.format(helper)
+
+      deps = []
+      foreach d : data.get('deps', [])
+        if d not in exposed_deps
+          deps += d
+        endif
+      endforeach
+
+      exe = executable(exe_name,
+        data.get('files'),
+        install: data.get('install', true),
+        install_tag: data.get('install_tag', 'bin'),
+        install_dir: data.get('install_dir', get_option('bindir')),
+        include_directories : data.get('include_directories', [configinc]),
+        dependencies : [gst_full_dep] + deps,
+        c_args: data.get('extra_c_args', []) + gst_c_args + ['-DG_LOG_DOMAIN="@0@"'.format(exe_name)],
+        cpp_args: data.get('extra_cpp_args', []),
+        objc_args: data.get('extra_objc_args', []),
+        override_options: data.get('override_options', []),
+      )
+
+      if(data.has_key('env'))
+        env = data.get('env')
+        value = env[1]
+        if env[1] == 'exe-full-path'
+          value = exe.full_path()
+        endif
+        meson.add_devenv({env[0]: value})
+      endif
 
       if data.has_key('man_page')
         install_man(data.get('man_page'))
@@ -464,6 +633,16 @@ if building_full
 
     endforeach
   endif
+else # not gst_full
+  foreach tool, data: all_tools
+    gst_tools += tool
+  endforeach
+  foreach helper, data: all_helpers
+    gst_helpers += helper
+  endforeach
+  foreach library : all_libraries
+    gst_libraries = library[0]
+  endforeach
 endif
 
 message('Building subprojects: ' + ', '.join(subprojects_names))
@@ -492,6 +671,8 @@ if orc_subproject.found() and orc_update_targets.length() > 0
   alias_target('update-orc-dist', orc_update_targets)
 endif
 
+subdir('scripts')
+
 dotnet_format = find_program('dotnet-format', required: false)
 if dotnet_format.found()
     run_target('csharp_format_check',
@@ -507,13 +688,9 @@ endif
 
 summary({
   'gstreamer-full library': building_full,
+  'gstreamer-full target type': get_option('gst-full-target-type'),
+  'Tools': gst_tools,
+  'Helpers': gst_helpers,
+  'Libraries': gst_libraries,
+  'Tests and examples disabled': building_full,
 }, section: 'Build options', bool_yn: true, list_sep: '  ')
-
-gst_tools = []
-foreach tool, data: all_tools
-  gst_tools += tool
-endforeach
-
-summary({
-    'Tools': gst_tools,
-}, section: 'Build options', list_sep: ', ')

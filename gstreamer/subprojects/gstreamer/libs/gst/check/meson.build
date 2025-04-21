@@ -3,6 +3,7 @@ gst_check_sources = files(
   'gstcheck.c',
   'gstconsistencychecker.c',
   'gstharness.c',
+  'gstharnesslink.c',
   'gsttestclock.c',
 )
 gst_check_headers = files(
@@ -15,6 +16,15 @@ gst_check_headers = files(
   'gsttestclock.h',
 )
 install_headers(gst_check_headers, subdir : 'gstreamer-1.0/gst/check/')
+
+doc_sources = []
+foreach s: gst_check_sources + gst_check_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'check': pathsep.join(doc_sources)
+}
 
 
 check_cdata = configuration_data()
@@ -36,7 +46,7 @@ configure_file(input : 'libcheck/check.h.in',
   install_dir : join_paths(get_option('includedir'), 'gstreamer-1.0/gst/check'),
   configuration : check_cdata)
 
-gst_check = library('gstcheck-@0@'.format(apiversion),
+gst_check = library('gstcheck-@0@'.format(api_version),
   gst_check_sources,
   c_args : gst_c_args + ['-UG_DISABLE_ASSERT', '-DBUILDING_GST_CHECK', '-DG_LOG_DOMAIN="GStreamer-Check"'],
   version : libversion,
@@ -68,7 +78,7 @@ if build_gir
   gir = {
     'sources' : gst_check_sources + gst_check_headers,
     'namespace' : 'GstCheck',
-    'nsversion' : apiversion,
+    'nsversion' : api_version,
     'identifier_prefix' : 'Gst',
     'symbol_prefix' : 'gst',
     'export_packages' : pkg_name,
@@ -81,6 +91,7 @@ if build_gir
   library_def += {'gir': [gir]}
   if not static_build
     gst_check_gir = gnome.generate_gir(gst_check, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [gst_check_gir]}
     gst_check_gen_sources += gst_check_gir
   endif
 endif

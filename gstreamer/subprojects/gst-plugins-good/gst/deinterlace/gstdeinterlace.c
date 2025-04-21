@@ -282,14 +282,22 @@ gst_deinterlace_locking_get_type (void)
   return deinterlace_locking_type;
 }
 
+#if G_BYTE_ORDER == G_BIG_ENDIAN
 #define DEINTERLACE_VIDEO_FORMATS \
     "{ AYUV, ARGB, ABGR, RGBA, BGRA, Y444, xRGB, xBGR, RGBx, BGRx, RGB, " \
-    "BGR, YUY2, YVYU, UYVY, Y42B, I420, YV12, Y41B, NV12, NV21 }"
+    "BGR, YUY2, YVYU, UYVY, Y42B, I420, YV12, Y41B, NV12, NV21, " \
+    "Y444_16BE, Y444_12BE, Y444_10BE, I422_12BE, I422_10BE, I420_12BE, I420_10BE } "
+#else
+#define DEINTERLACE_VIDEO_FORMATS \
+    "{ AYUV, ARGB, ABGR, RGBA, BGRA, Y444, xRGB, xBGR, RGBx, BGRx, RGB, " \
+    "BGR, YUY2, YVYU, UYVY, Y42B, I420, YV12, Y41B, NV12, NV21, " \
+    "Y444_16LE, Y444_12LE, Y444_10LE, I422_12LE, I422_10LE, I420_12LE, I420_10LE } "
+#endif
 
 #define DEINTERLACE_CAPS GST_VIDEO_CAPS_MAKE(DEINTERLACE_VIDEO_FORMATS)
 
 #define DEINTERLACE_ALL_CAPS DEINTERLACE_CAPS ";" \
-    GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("ANY", GST_VIDEO_FORMATS_ALL)
+    GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("ANY", GST_VIDEO_FORMATS_ANY)
 
 static GstStaticCaps progressive_caps =
 GST_STATIC_CAPS ("video/x-raw(ANY),interlace-mode=(string)progressive");
@@ -375,17 +383,17 @@ static const struct
   GType (*get_type) (void);
 } _method_types[] = {
   {
-  gst_deinterlace_method_tomsmocomp_get_type}, {
-  gst_deinterlace_method_greedy_h_get_type}, {
-  gst_deinterlace_method_greedy_l_get_type}, {
-  gst_deinterlace_method_vfir_get_type}, {
-  gst_deinterlace_method_linear_get_type}, {
-  gst_deinterlace_method_linear_blend_get_type}, {
-  gst_deinterlace_method_scaler_bob_get_type}, {
-  gst_deinterlace_method_weave_get_type}, {
-  gst_deinterlace_method_weave_tff_get_type}, {
-  gst_deinterlace_method_weave_bff_get_type}, {
-  gst_deinterlace_method_yadif_get_type}
+      gst_deinterlace_method_tomsmocomp_get_type}, {
+      gst_deinterlace_method_greedy_h_get_type}, {
+      gst_deinterlace_method_greedy_l_get_type}, {
+      gst_deinterlace_method_vfir_get_type}, {
+      gst_deinterlace_method_linear_get_type}, {
+      gst_deinterlace_method_linear_blend_get_type}, {
+      gst_deinterlace_method_scaler_bob_get_type}, {
+      gst_deinterlace_method_weave_get_type}, {
+      gst_deinterlace_method_weave_tff_get_type}, {
+      gst_deinterlace_method_weave_bff_get_type}, {
+      gst_deinterlace_method_yadif_get_type}
 };
 
 static void
@@ -1280,7 +1288,7 @@ gst_deinterlace_update_qos (GstDeinterlace * self, gdouble proportion,
   if (G_LIKELY (timestamp != GST_CLOCK_TIME_NONE)) {
     if (G_UNLIKELY (diff > 0))
       self->earliest_time =
-          timestamp + 2 * diff + ((self->fields ==
+          timestamp + MIN (2 * diff, GST_SECOND) + ((self->fields ==
               GST_DEINTERLACE_ALL) ? self->field_duration : 2 *
           self->field_duration);
     else
@@ -2377,8 +2385,10 @@ gst_deinterlace_caps_double_framerate (GstCaps * caps, gboolean half)
     } else if (G_VALUE_TYPE (val) == GST_TYPE_FRACTION_RANGE) {
       const GValue *min, *max;
       GValue nrange = { 0, }, nmin = {
-      0,}, nmax = {
-      0,};
+        0,
+      }, nmax = {
+        0,
+      };
       gint n, d;
 
       g_value_init (&nrange, GST_TYPE_FRACTION_RANGE);
@@ -2462,7 +2472,9 @@ dup_caps_with_alternate (GstCaps * caps)
   GstCapsFeatures *features;
 
   with_alternate = gst_caps_copy (caps);
-  features = gst_caps_features_new (GST_CAPS_FEATURE_FORMAT_INTERLACED, NULL);
+  features =
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_FORMAT_INTERLACED,
+      NULL);
   gst_caps_set_features_simple (with_alternate, features);
 
   gst_caps_set_simple (with_alternate, "interlace-mode", G_TYPE_STRING,
@@ -2723,6 +2735,11 @@ gst_deinterlace_do_bufferpool (GstDeinterlace * self, GstCaps * outcaps)
     /* no pool, we can make our own */
     GST_DEBUG_OBJECT (self, "no pool, making new pool");
     pool = gst_video_buffer_pool_new ();
+    {
+      gchar *name = g_strdup_printf ("%s-output-pool", GST_OBJECT_NAME (self));
+      g_object_set (pool, "name", name, NULL);
+      g_free (name);
+    }
   }
 
   /* now configure */
@@ -3160,6 +3177,11 @@ gst_deinterlace_propose_allocation (GstDeinterlace * self, GstQuery * query)
   size = GST_VIDEO_INFO_SIZE (&info);
 
   pool = gst_video_buffer_pool_new ();
+  {
+    gchar *name = g_strdup_printf ("%s-input-pool", GST_OBJECT_NAME (self));
+    g_object_set (pool, "name", name, NULL);
+    g_free (name);
+  }
 
   gst_query_add_allocation_pool (query, pool, size, 0, 0);
 
@@ -3341,6 +3363,7 @@ gst_deinterlace_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
         }
         break;
       }
+      /* FALLTHROUGH */
     default:
       res = gst_pad_query_default (pad, parent, query);
       break;

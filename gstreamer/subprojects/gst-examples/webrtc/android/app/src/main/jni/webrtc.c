@@ -38,7 +38,7 @@
 GST_DEBUG_CATEGORY_STATIC (debug_category);
 #define GST_CAT_DEFAULT debug_category
 
-#define DEFAULT_SIGNALLING_SERVER "wss://webrtc.nirbheek.in:8443"
+#define DEFAULT_SIGNALLING_SERVER "wss://webrtc.gstreamer.net:8443"
 
 #define GET_CUSTOM_DATA(env, thiz, fieldID) (WebRTC *)(gintptr)(*env)->GetLongField (env, thiz, fieldID)
 #define SET_CUSTOM_DATA(env, thiz, fieldID, data) (*env)->SetLongField (env, thiz, fieldID, (jlong)(gintptr)data)
@@ -107,7 +107,14 @@ cleanup_and_quit_loop (WebRTC * webrtc, const gchar * msg, enum AppState state)
   }
 
   if (webrtc->pipe) {
+    GstBus *bus;
+
     gst_element_set_state (webrtc->pipe, GST_STATE_NULL);
+
+    bus = gst_pipeline_get_bus (GST_PIPELINE (webrtc->pipe));
+    gst_bus_remove_watch (bus);
+    gst_object_unref (bus);
+
     gst_object_unref (webrtc->pipe);
     webrtc->pipe = NULL;
   }
@@ -281,9 +288,10 @@ send_sdp_offer (WebRTC * webrtc, GstWebRTCSessionDescription * offer)
 
 /* Offer created by our pipeline, to be sent to the peer */
 static void
-on_offer_created (GstPromise * promise, WebRTC * webrtc)
+on_offer_created (GstPromise * promise, gpointer user_data)
 {
   GstWebRTCSessionDescription *offer = NULL;
+  WebRTC *webrtc = (WebRTC *) user_data;
   const GstStructure *reply;
 
   g_assert (webrtc->app_state == PEER_CALL_NEGOTIATING);
@@ -328,6 +336,45 @@ add_fec_to_offer (GstElement * webrtc)
       "fec-percentage", 25, "do-nack", FALSE, NULL);
 }
 
+static gboolean
+bus_watch_cb (GstBus * bus, GstMessage * message, gpointer user_data)
+{
+  WebRTC *webrtc = user_data;
+
+  switch (GST_MESSAGE_TYPE (message)) {
+    case GST_MESSAGE_ERROR:
+    {
+      GError *error = NULL;
+      gchar *debug = NULL;
+
+      gst_message_parse_error (message, &error, &debug);
+      cleanup_and_quit_loop (webrtc, "ERROR: error on bus", APP_STATE_ERROR);
+      g_warning ("Error on bus: %s (debug: %s)", error->message, debug);
+      g_error_free (error);
+      g_free (debug);
+      break;
+    }
+    case GST_MESSAGE_WARNING:
+    {
+      GError *error = NULL;
+      gchar *debug = NULL;
+
+      gst_message_parse_warning (message, &error, &debug);
+      g_warning ("Warning on bus: %s (debug: %s)", error->message, debug);
+      g_error_free (error);
+      g_free (debug);
+      break;
+    }
+    case GST_MESSAGE_LATENCY:
+      gst_bin_recalculate_latency (GST_BIN (webrtc->pipe));
+      break;
+    default:
+      break;
+  }
+
+  return G_SOURCE_CONTINUE;
+}
+
 #define RTP_CAPS_OPUS "application/x-rtp,media=audio,encoding-name=OPUS,payload=100"
 #define RTP_CAPS_VP8 "application/x-rtp,media=video,encoding-name=VP8,payload=101"
 
@@ -337,13 +384,14 @@ start_pipeline (WebRTC * webrtc)
   GstStateChangeReturn ret;
   GError *error = NULL;
   GstPad *pad;
+  GstBus *bus;
 
   webrtc->pipe =
       gst_parse_launch ("webrtcbin name=sendrecv "
       "ahcsrc device-facing=front ! video/x-raw,width=[320,1280] ! queue max-size-buffers=1 ! videoconvert ! "
       "vp8enc keyframe-max-dist=30 deadline=1 error-resilient=default ! rtpvp8pay picture-id-mode=15-bit mtu=1300 ! "
       "queue max-size-time=300000000 ! " RTP_CAPS_VP8 " ! sendrecv.sink_0 "
-      "openslessrc ! queue ! audioconvert ! audioresample ! audiorate ! queue ! opusenc ! rtpopuspay ! "
+      "openslessrc ! queue ! audioconvert ! audioresample ! audiorate ! queue ! opusenc perfect-timestamp=true ! rtpopuspay ! "
       "queue ! " RTP_CAPS_OPUS " ! sendrecv.sink_1 ", &error);
 
   if (error) {
@@ -351,6 +399,10 @@ start_pipeline (WebRTC * webrtc)
     g_error_free (error);
     goto err;
   }
+
+  bus = gst_pipeline_get_bus (GST_PIPELINE (webrtc->pipe));
+  gst_bus_add_watch (bus, bus_watch_cb, webrtc);
+  gst_object_unref (bus);
 
   webrtc->webrtcbin = gst_bin_get_by_name (GST_BIN (webrtc->pipe), "sendrecv");
   g_assert (webrtc->webrtcbin != NULL);
@@ -630,18 +682,18 @@ connect_to_websocket_server_async (WebRTC * webrtc)
   SoupLogger *logger;
   SoupMessage *message;
   SoupSession *session;
-  const char *https_aliases[] = { "wss", NULL };
   const gchar *ca_certs;
+  GTlsDatabase *db;
 
   ca_certs = g_getenv ("CA_CERTIFICATES");
   g_assert (ca_certs != NULL);
   g_print ("ca-certificates %s", ca_certs);
-  session = soup_session_new_with_options (SOUP_SESSION_SSL_STRICT, FALSE,
-      //                                 SOUP_SESSION_SSL_USE_SYSTEM_CA_FILE, TRUE,
-      SOUP_SESSION_SSL_CA_FILE, ca_certs,
-      SOUP_SESSION_HTTPS_ALIASES, https_aliases, NULL);
+  session = soup_session_new_with_options (NULL);
+  db = g_tls_file_database_new (ca_certs, NULL);
+  if (db)
+    soup_session_set_tls_database (session, db);
 
-  logger = soup_logger_new (SOUP_LOGGER_LOG_BODY, -1);
+  logger = soup_logger_new (SOUP_LOGGER_LOG_BODY);
   soup_session_add_feature (session, SOUP_SESSION_FEATURE (logger));
   g_object_unref (logger);
 
@@ -650,8 +702,9 @@ connect_to_websocket_server_async (WebRTC * webrtc)
   g_print ("Connecting to server...\n");
 
   /* Once connected, we will register */
-  soup_session_websocket_connect_async (session, message, NULL, NULL, NULL,
-      (GAsyncReadyCallback) on_server_connected, webrtc);
+  soup_session_websocket_connect_async (session, message, NULL, NULL,
+      G_PRIORITY_DEFAULT, NULL, (GAsyncReadyCallback) on_server_connected,
+      webrtc);
   webrtc->app_state = SERVER_CONNECTING;
 
   return G_SOURCE_REMOVE;

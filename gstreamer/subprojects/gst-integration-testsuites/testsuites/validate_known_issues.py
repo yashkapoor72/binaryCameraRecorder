@@ -43,38 +43,9 @@ KNOWN_ISSUES = {
                 "timeout": True,
                 "sometimes": True,
             },
-        ]
-    },
-    "https://gitlab.freedesktop.org/gstreamer/gst-plugins-base/issues/311": {
-        "tests": [
-            "validate.http.*.ogg$",
-            "validate.http.*.ogv$",
-            "validate.rtsp.*.ogg$",
-            "validate.rtsp.*.ogv$",
-        ],
-        "issues": [
             {
-                "detected-on": "playbin",
-                "summary": "We got an ERROR message on the bus",
-                "details": ".*No valid frames decoded before end of stream.*",
-                "level": "critical",
-                "sometimes": True,
-            },
-            {
-                "level": "critical",
-                "summary": "We got an ERROR message on the bus",
-                "details": ".*Got error: Could not decode stream.*",
-                "sometimes": True,
-            },
-            {
-                "level": "critical",
-                "summary": "The program stopped before some actions were executed",
-                "sometimes": True,
-            },
-            {
-                "summary": "The program stopped before some actions were executed",
-                "issue-id": "scenario::not-ended",
-                "sometimes": True,
+                'returncode': 238,
+                'sometimes': True,
             },
         ]
     },
@@ -101,7 +72,8 @@ KNOWN_ISSUES = {
             },
         ]
     },
-    "https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/930": {
+    # https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/930
+    "WontFix-legacy-HLS-1": {
         "tests": [
             "validate.hls.playback.reverse_playback.*",
         ],
@@ -125,7 +97,8 @@ KNOWN_ISSUES = {
             },
         ],
     },
-    "https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/609": {
+    # https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/609
+    "WontFix-legacy-HLS-2": {
         "tests": [
             "validate.hls.playback.*seek.*",
         ],
@@ -139,7 +112,8 @@ KNOWN_ISSUES = {
             },
         ],
     },
-    "https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/937": {
+    # https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/937
+    "WontFix-legacy-HLS-3": {
         "tests": [
             "validate.hls.playback.fast_forward.*",
         ],
@@ -206,39 +180,6 @@ KNOWN_ISSUES = {
             },
         ]
     },
-    "https://gitlab.freedesktop.org/gstreamer/gst-libav/issues/45": {
-        "tests": [
-            "validate.file.playback.reverse_playback.rawaudioS32LE_prores_mov"
-        ],
-        "issues": [
-            {
-                "issue-id": "runtime::error-on-bus",
-                "summary": "We got an ERROR message on the bus",
-                "level": "critical",
-                "detected-on": "playbin0",
-                "details": ".*No valid frames decoded before end of stream.*",
-            },
-            {
-                "issue-id": "scenario::not-ended",
-                "summary": "The program stopped before some actions were executed",
-                "level": "critical",
-                "detected-on": "reverse_playback",
-            },
-        ],
-    },
-    "https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/issues/1020": {
-        "tests": [
-            "validate.*mxf.*",
-        ],
-        "issues": [
-            {
-                "issue-id": "threading::pull-range-from-wrong-thread",
-                "summary": "gst_pad_pull_range called from wrong thread",
-                "level": "critical",
-                'can-happen-several-times': True,
-            },
-        ]
-    },
     "Our asf file is basically broken": {
         "tests": [
             "validate.file.transcode.*.samples_multimedia_cx_asf_wmv_elephant_asf",
@@ -248,5 +189,5 @@ KNOWN_ISSUES = {
                 "issue-id": "transcoded-file-wrong-duration",
             },
         ]
-    }
+    },
 }

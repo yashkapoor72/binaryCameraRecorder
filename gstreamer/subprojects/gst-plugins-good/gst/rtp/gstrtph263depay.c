@@ -126,6 +126,9 @@ gst_rtp_h263_depay_init (GstRtpH263Depay * rtph263depay)
 
   rtph263depay->offset = 0;
   rtph263depay->leftover = 0;
+
+  gst_rtp_base_depayload_set_aggregate_hdrext_enabled (GST_RTP_BASE_DEPAYLOAD
+      (rtph263depay), TRUE);
 }
 
 static void
@@ -318,7 +321,7 @@ gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
     if (payload_len > 4 && (GST_READ_UINT32_BE (payload) >> 10 == 0x20)) {
       GST_DEBUG ("Mode %c with PSC => frame start", "ABC"[F + P]);
       rtph263depay->start = TRUE;
-      if ((! !(payload[4] & 0x02)) != I) {
+      if ((!!(payload[4] & 0x02)) != I) {
         GST_DEBUG ("Wrong Picture Coding Type Flag in rtp header");
         I = !I;
       }
@@ -407,6 +410,7 @@ too_small:
   {
     GST_ELEMENT_WARNING (rtph263depay, STREAM, DECODE,
         ("Packet payload was too small"), (NULL));
+    gst_rtp_base_depayload_dropped (depayload);
     return NULL;
   }
 }

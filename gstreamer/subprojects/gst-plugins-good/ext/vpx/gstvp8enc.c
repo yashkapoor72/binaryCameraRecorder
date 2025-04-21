@@ -89,11 +89,11 @@ static void
 gst_vp8_enc_user_data_free (GstVP8EncUserData * user_data)
 {
   if (user_data->image)
-    g_slice_free (vpx_image_t, user_data->image);
+    g_free (user_data->image);
 
   g_list_foreach (user_data->invisible, (GFunc) _gst_mini_object_unref0, NULL);
   g_list_free (user_data->invisible);
-  g_slice_free (GstVP8EncUserData, user_data);
+  g_free (user_data);
 }
 
 static vpx_codec_iface_t *gst_vp8_enc_get_algo (GstVPXEnc * enc);
@@ -317,7 +317,7 @@ gst_vp8_enc_process_frame_user_data (GstVPXEnc * enc,
   }
 
   if (user_data->image)
-    g_slice_free (vpx_image_t, user_data->image);
+    g_free (user_data->image);
   user_data->image = NULL;
   return user_data;
 }
@@ -343,7 +343,7 @@ gst_vp8_enc_set_frame_user_data (GstVPXEnc * enc, GstVideoCodecFrame * frame,
     vpx_image_t * image)
 {
   GstVP8EncUserData *user_data;
-  user_data = g_slice_new0 (GstVP8EncUserData);
+  user_data = g_new0 (GstVP8EncUserData, 1);
   user_data->image = image;
   gst_video_codec_frame_set_user_data (frame, user_data,
       (GDestroyNotify) gst_vp8_enc_user_data_free);
@@ -402,9 +402,8 @@ gst_vp8_enc_preflight_buffer (GstVPXEnc * enc,
     gboolean layer_sync, guint layer_id, guint8 tl0picidx)
 {
   GstCustomMeta *meta = gst_buffer_add_custom_meta (buffer, "GstVP8Meta");
-  GstStructure *s = gst_custom_meta_get_structure (meta);
 
-  gst_structure_set (s,
+  gst_structure_set (meta->structure,
       "use-temporal-scaling", G_TYPE_BOOLEAN, (enc->cfg.ts_periodicity != 0),
       "layer-sync", G_TYPE_BOOLEAN, layer_sync,
       "layer-id", G_TYPE_UINT, layer_id,

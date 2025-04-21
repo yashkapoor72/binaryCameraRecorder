@@ -346,11 +346,8 @@ gst_matroska_parse_add_stream (GstMatroskaParse * parse, GstEbmlRead * ebml)
         if ((ret = gst_ebml_read_uint (ebml, &id, &num)) != GST_FLOW_OK)
           break;
 
-        if (num == 0) {
-          GST_ERROR_OBJECT (parse, "Invalid TrackUID 0");
-          ret = GST_FLOW_ERROR;
-          break;
-        }
+        if (num == 0)
+          GST_WARNING_OBJECT (parse, "Invalid TrackUID 0");
 
         GST_DEBUG_OBJECT (parse, "TrackUID: %" G_GUINT64_FORMAT, num);
         context->uid = num;
@@ -946,12 +943,6 @@ gst_matroska_parse_add_stream (GstMatroskaParse * parse, GstEbmlRead * ebml)
         break;
       }
 
-      default:
-        GST_WARNING ("Unknown TrackEntry subelement 0x%x - ignoring", id);
-        /* pass-through */
-
-        /* we ignore these because they're nothing useful (i.e. crap)
-         * or simply not implemented yet. */
       case GST_MATROSKA_ID_TRACKMINCACHE:
       case GST_MATROSKA_ID_TRACKMAXCACHE:
       case GST_MATROSKA_ID_MAXBLOCKADDITIONID:
@@ -963,6 +954,12 @@ gst_matroska_parse_add_stream (GstMatroskaParse * parse, GstEbmlRead * ebml)
       case GST_MATROSKA_ID_CODECINFOURL:
       case GST_MATROSKA_ID_CODECDOWNLOADURL:
       case GST_MATROSKA_ID_CODECDECODEALL:
+        /* we ignore these because they're nothing useful (i.e. crap)
+         * or simply not implemented yet. */
+        ret = gst_ebml_read_skip (ebml);
+        break;
+      default:
+        GST_WARNING ("Unknown TrackEntry subelement 0x%x - ignoring", id);
         ret = gst_ebml_read_skip (ebml);
         break;
     }
@@ -3202,8 +3199,8 @@ gst_matroska_parse_handle_sink_event (GstPad * pad, GstObject * parent,
       parse->common.segment.position = GST_CLOCK_TIME_NONE;
       parse->cluster_time = GST_CLOCK_TIME_NONE;
       parse->cluster_offset = 0;
-      /* fall-through */
     }
+      /* FALLTHROUGH */
     default:
       res = gst_pad_event_default (pad, parent, event);
       break;

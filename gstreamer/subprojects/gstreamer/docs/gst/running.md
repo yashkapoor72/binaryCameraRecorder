@@ -268,7 +268,8 @@ Use `all` to enable all tracing flags.
 
 Set this variable to a file path to redirect all GStreamer debug
 messages to this file. If left unset, debug messages with be output unto
-the standard error.
+the standard error. The %p pattern is replaced with the PID and the %r
+with a random number.
 
 **`ORC_CODE`.**
 
@@ -314,7 +315,7 @@ the encoding does not look like UTF-8.
 **`GST_GL_WINDOW`.**
 
 Influences the window system to use by the GStreamer OpenGL library.
-Common values are 'x11', 'wayland', 'win32' or 'cocoa'.
+Common values are 'x11', 'wayland', 'surfaceless', 'win32' or 'cocoa'.
 
 **`GST_GL_PLATFORM`.**
 
@@ -342,3 +343,10 @@ Example: `GST_PLUGIN_FEATURE_RANK=foo:PRIMARY,bar:primary,foobar:128`
 As a result of the above example,
 the `foo` and` bar` plugin feature rank values are `PRIMARY`(256)
 and `SECONDARY`(128) rank value will be assigned to `foobar`.
+
+**`GST_XINITTHREADS`.**
+
+Set this variable when using components that rely on X11, such as ximagesrc, 
+from gst-launch-1.0 or other command line applications. However, applications 
+should not depend on this variable and should make their own `XInitThreads()`
+call as early as possible.

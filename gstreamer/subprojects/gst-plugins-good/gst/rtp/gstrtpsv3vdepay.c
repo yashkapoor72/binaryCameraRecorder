@@ -98,6 +98,9 @@ gst_rtp_sv3v_depay_class_init (GstRtpSV3VDepayClass * klass)
 static void
 gst_rtp_sv3v_depay_init (GstRtpSV3VDepay * rtpsv3vdepay)
 {
+  gst_rtp_base_depayload_set_aggregate_hdrext_enabled (GST_RTP_BASE_DEPAYLOAD
+      (rtpsv3vdepay), TRUE);
+
   rtpsv3vdepay->adapter = gst_adapter_new ();
 }
 
@@ -139,13 +142,13 @@ gst_rtp_sv3v_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
     guint width, height;
   } resolutions[7] = {
     {
-    160, 128}, {
-    128, 96}, {
-    176, 144}, {
-    352, 288}, {
-    704, 576}, {
-    240, 180}, {
-    320, 240}
+        160, 128}, {
+        128, 96}, {
+        176, 144}, {
+        352, 288}, {
+        704, 576}, {
+        240, 180}, {
+        320, 240}
   };
   gint payload_len;
   guint8 *payload;
@@ -281,6 +284,7 @@ bad_packet:
   {
     GST_ELEMENT_WARNING (rtpsv3vdepay, STREAM, DECODE,
         (NULL), ("Packet was too short"));
+    gst_rtp_base_depayload_dropped (depayload);
     return NULL;
   }
 }

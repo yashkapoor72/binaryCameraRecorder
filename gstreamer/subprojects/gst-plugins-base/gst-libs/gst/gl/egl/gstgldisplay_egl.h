@@ -67,6 +67,9 @@ GST_GL_API
 GstGLDisplayEGL *gst_gl_display_egl_new (void);
 
 GST_GL_API
+GstGLDisplayEGL *gst_gl_display_egl_new_surfaceless (void);
+
+GST_GL_API
 GstGLDisplayEGL *gst_gl_display_egl_new_with_egl_display (gpointer display);
 
 GST_GL_API
@@ -74,6 +77,9 @@ GstGLDisplayEGL *gst_gl_display_egl_from_gl_display (GstGLDisplay * display);
 
 GST_GL_API
 gpointer         gst_gl_display_egl_get_from_native (GstGLDisplayType type, guintptr display);
+
+GST_GL_API
+void             gst_gl_display_egl_set_foreign     (GstGLDisplayEGL * display_egl, gboolean foreign);
 
 #define GST_GL_DISPLAY_EGL_NAME "gst.gl.display.egl"
 

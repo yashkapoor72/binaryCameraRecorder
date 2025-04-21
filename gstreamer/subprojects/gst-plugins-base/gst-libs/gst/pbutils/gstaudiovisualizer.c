@@ -987,6 +987,11 @@ default_decide_allocation (GstAudioVisualizer * scope, GstQuery * query)
   if (pool == NULL) {
     /* we did not get a pool, make one ourselves then */
     pool = gst_video_buffer_pool_new ();
+    {
+      gchar *name = g_strdup_printf ("%s-pool", GST_OBJECT_NAME (scope));
+      g_object_set (pool, "name", name, NULL);
+      g_free (name);
+    }
   }
 
   config = gst_buffer_pool_get_config (pool);
@@ -1050,10 +1055,9 @@ gst_audio_visualizer_chain (GstPad * pad, GstObject * parent,
   GstFlowReturn ret = GST_FLOW_OK;
   GstAudioVisualizer *scope;
   GstAudioVisualizerClass *klass;
-  GstBuffer *inbuf;
+  GstBuffer *inbuf, *databuf;
   guint64 dist, ts;
   guint avail, sbpf;
-  gpointer adata;
   gint bpf, rate;
 
   scope = GST_AUDIO_VISUALIZER (parent);
@@ -1165,7 +1169,7 @@ gst_audio_visualizer_chain (GstPad * pad, GstObject * parent,
     GST_BUFFER_DURATION (outbuf) = scope->priv->frame_duration;
 
     /* this can fail as the data size we need could have changed */
-    if (!(adata = (gpointer) gst_adapter_map (scope->priv->adapter, sbpf)))
+    if (!(databuf = gst_adapter_get_buffer (scope->priv->adapter, sbpf)))
       break;
 
     gst_video_frame_map (&outframe, &scope->vinfo, outbuf,
@@ -1182,9 +1186,9 @@ gst_audio_visualizer_chain (GstPad * pad, GstObject * parent,
       }
     }
 
-    gst_buffer_replace_all_memory (inbuf,
-        gst_memory_new_wrapped (GST_MEMORY_FLAG_READONLY, adata, sbpf, 0,
-            sbpf, NULL, NULL));
+    gst_buffer_remove_all_memory (inbuf);
+    gst_buffer_copy_into (inbuf, databuf, GST_BUFFER_COPY_MEMORY, 0, sbpf);
+    gst_buffer_unref (databuf);
 
     /* call class->render() vmethod */
     if (klass->render) {
@@ -1265,7 +1269,7 @@ gst_audio_visualizer_src_event (GstPad * pad, GstObject * parent,
       if (diff >= 0)
         /* we're late, this is a good estimate for next displayable
          * frame (see part-qos.txt) */
-        scope->priv->earliest_time = timestamp + 2 * diff +
+        scope->priv->earliest_time = timestamp + MIN (2 * diff, GST_SECOND) +
             scope->priv->frame_duration;
       else
         scope->priv->earliest_time = timestamp + diff;

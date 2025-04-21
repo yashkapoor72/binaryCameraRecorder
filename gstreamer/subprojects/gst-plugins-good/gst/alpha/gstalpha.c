@@ -271,8 +271,8 @@ gst_alpha_class_init (GstAlphaClass * klass)
   gst_element_class_set_static_metadata (gstelement_class, "Alpha filter",
       "Filter/Effect/Video",
       "Adds an alpha channel to video - uniform or via chroma-keying",
-      "Wim Taymans <wim.taymans@gmail.com>\n"
-      "Edward Hervey <edward.hervey@collabora.co.uk>\n"
+      "Wim Taymans <wim.taymans@gmail.com>, "
+      "Edward Hervey <edward.hervey@collabora.co.uk>, "
       "Jan Schmidt <thaytan@noraisin.net>");
 
   gst_element_class_add_static_pad_template (gstelement_class,
@@ -375,7 +375,7 @@ gst_alpha_set_property (GObject * object, guint prop_id,
     case PROP_PREFER_PASSTHROUGH:{
       gboolean prefer_passthrough = g_value_get_boolean (value);
 
-      reconfigure = ((! !prefer_passthrough) != (! !alpha->prefer_passthrough))
+      reconfigure = ((!!prefer_passthrough) != (!!alpha->prefer_passthrough))
           && (alpha->method == ALPHA_METHOD_SET) && (alpha->alpha == 1.0);
       alpha->prefer_passthrough = prefer_passthrough;
       break;

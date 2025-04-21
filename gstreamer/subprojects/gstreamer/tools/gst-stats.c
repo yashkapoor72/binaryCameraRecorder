@@ -30,6 +30,7 @@
 #include "tools.h"
 
 /* log parser */
+static GRegex *custom_log = NULL;
 static GRegex *raw_log = NULL;
 static GRegex *ansi_log = NULL;
 
@@ -174,7 +175,7 @@ free_latency_stats (gpointer data)
   GstLatencyStats *ls = data;
 
   g_free (ls->name);
-  g_slice_free (GstLatencyStats, data);
+  g_free (data);
 }
 
 static void
@@ -191,7 +192,7 @@ free_reported_latency (gpointer data)
 static void
 free_element_stats (gpointer data)
 {
-  g_slice_free (GstElementStats, data);
+  g_free (data);
 }
 
 static inline GstElementStats *
@@ -211,7 +212,7 @@ get_pad_stats (guint ix)
 static void
 free_pad_stats (gpointer data)
 {
-  g_slice_free (GstPadStats, data);
+  g_free (data);
 }
 
 static inline GstThreadStats *
@@ -220,7 +221,7 @@ get_thread_stats (gpointer id)
   GstThreadStats *stats = g_hash_table_lookup (threads, id);
 
   if (G_UNLIKELY (!stats)) {
-    stats = g_slice_new0 (GstThreadStats);
+    stats = g_new0 (GstThreadStats, 1);
     stats->tthread = GST_CLOCK_TIME_NONE;
     g_hash_table_insert (threads, id, stats);
   }
@@ -246,7 +247,7 @@ new_pad_stats (GstStructure * s)
       "pad-direction", GST_TYPE_PAD_DIRECTION, &dir,
       "thread-id", G_TYPE_UINT64, &thread_id, NULL);
 
-  stats = g_slice_new0 (GstPadStats);
+  stats = g_new0 (GstPadStats, 1);
   if (is_ghost_pad)
     num_ghostpads++;
   num_pads++;
@@ -279,7 +280,7 @@ new_element_stats (GstStructure * s)
       "name", G_TYPE_STRING, &name,
       "type", G_TYPE_STRING, &type, "is-bin", G_TYPE_BOOLEAN, &is_bin, NULL);
 
-  stats = g_slice_new0 (GstElementStats);
+  stats = g_new0 (GstElementStats, 1);
   if (is_bin)
     num_bins++;
   num_elements++;
@@ -298,13 +299,13 @@ new_element_stats (GstStructure * s)
 static void
 free_thread_stats (gpointer data)
 {
-  g_slice_free (GstThreadStats, data);
+  g_free (data);
 }
 
 static GstPluginStats *
 new_plugin_stats (const gchar * plugin_name)
 {
-  GstPluginStats *plugin = g_slice_new (GstPluginStats);
+  GstPluginStats *plugin = g_new0 (GstPluginStats, 1);
   guint i;
 
   plugin->name = g_strdup (plugin_name);
@@ -328,7 +329,7 @@ free_plugin_stats (gpointer data)
   for (i = 0; i < N_FACTORY_TYPES; i++)
     g_ptr_array_unref (plugin->factories[i]);
 
-  g_slice_free (GstPluginStats, data);
+  g_free (data);
 }
 
 static void
@@ -909,25 +910,36 @@ process_leaf_bins (gpointer key, gpointer value, gpointer user_data)
 /* main */
 
 static gboolean
-init (void)
+init (const gchar * tracer_regexp)
 {
   /* compile the parser regexps */
+
+  if (tracer_regexp) {
+    GError *gerr = NULL;
+    custom_log = g_regex_new (tracer_regexp, 0, 0, &gerr);
+    if (!custom_log) {
+      g_warning ("Could not compile tracer regexp: %s\n", gerr->message);
+      g_clear_error (&gerr);
+      return FALSE;
+    }
+  }
+
   /* 0:00:00.004925027 31586      0x1c5c600 DEBUG           GST_REGISTRY gstregistry.c:463:gst_registry_add_plugin:<registry0> adding plugin 0x1c79160 for filename "/usr/lib/gstreamer-1.0/libgstxxx.so"
    * 0:00:02.719599000 35292 000001C031A49C60 DEBUG             GST_TRACER gsttracer.c:162:gst_tracer_register:<registry0> update existing feature 000001C02F9843C0 (latency)
    */
   raw_log = g_regex_new (
       /* 1: ts */
-      "^([0-9:.]+) +"
+      "^[0-9:.]+ +"
       /* 2: pid */
-      "([0-9]+) +"
+      "[0-9]+ +"
       /* 3: thread */
-      "(0?x?[0-9a-fA-F]+) +"
+      "0?x?[0-9a-fA-F]+ +"
       /* 4: level */
-      "([A-Z]+) +"
+      "TRACE +"
       /* 5: category */
-      "([a-zA-Z_-]+) +"
+      "[a-zA-Z_-]+ +"
       /* 6: file:line:func: */
-      "([^:]*:[0-9]+:[^:]*:) +"
+      "[^:]*:[0-9]+:[^:]*: +"
       /* 7: (obj)? log-text */
       "(.*)$", 0, 0, NULL);
   if (!raw_log) {
@@ -937,20 +949,20 @@ init (void)
 
   ansi_log = g_regex_new (
       /* 1: ts */
-      "^([0-9:.]+) +"
+      "^[0-9:.]+ +"
       /* 2: pid */
-      "\\\x1b\\[[0-9;]+m *([0-9]+)\\\x1b\\[00m +"
+      "\\\x1b\\[[0-9;]+m *[0-9]+\\\x1b\\[00m +"
       /* 3: thread */
-      "(0x[0-9a-fA-F]+) +"
+      "0x[0-9a-fA-F]+ +"
       /* 4: level */
-      "(?:\\\x1b\\[[0-9;]+m)?([A-Z]+) +\\\x1b\\[00m +"
+      "(?:\\\x1b\\[[0-9;]+m)?TRACE +\\\x1b\\[00m +"
       /* 5: category */
-      "\\\x1b\\[[0-9;]+m +([a-zA-Z_-]+) +"
+      "\\\x1b\\[[0-9;]+m +[a-zA-Z_-]+ +"
       /* 6: file:line:func: */
-      "([^:]*:[0-9]+:[^:]*:)(?:\\\x1b\\[00m)? +"
+      "[^:]*:[0-9]+:[^:]*:?:\\\x1b\\[00m? +"
       /* 7: (obj)? log-text */
       "(.*)$", 0, 0, NULL);
-  if (!raw_log) {
+  if (!ansi_log) {
     GST_WARNING ("failed to compile the 'ansi' parser");
     return FALSE;
   }
@@ -1000,6 +1012,8 @@ done (void)
     g_regex_unref (raw_log);
   if (ansi_log)
     g_regex_unref (ansi_log);
+  if (custom_log)
+    g_regex_unref (custom_log);
 }
 
 static gint
@@ -1177,9 +1191,12 @@ collect_stats (const gchar * filename)
       GRegex *parser;
       GstStructure *s;
       guint lnr = 0;
-      gchar *level, *data;
+      gchar *data;
 
-      if (strchr (line, 27)) {
+      if (custom_log) {
+        parser = custom_log;
+        GST_INFO ("format is 'custom'");
+      } else if (strchr (line, 27)) {
         parser = ansi_log;
         GST_INFO ("format is 'ansi'");
       } else {
@@ -1192,50 +1209,45 @@ collect_stats (const gchar * filename)
       while (!feof (log)) {
         if (fgets (line, 5000, log)) {
           if (g_regex_match (parser, line, 0, &match_info)) {
-            /* filter by level */
-            level = g_match_info_fetch (match_info, 4);
-            if (!strcmp (level, "TRACE")) {
-              data = g_match_info_fetch (match_info, 7);
-              if ((s = gst_structure_from_string (data, NULL))) {
-                const gchar *name = gst_structure_get_name (s);
+            data = g_match_info_fetch (match_info, 1);
+            if ((s = gst_structure_from_string (data, NULL))) {
+              const gchar *name = gst_structure_get_name (s);
 
-                if (!strcmp (name, "new-pad")) {
-                  new_pad_stats (s);
-                } else if (!strcmp (name, "new-element")) {
-                  new_element_stats (s);
-                } else if (!strcmp (name, "buffer")) {
-                  do_buffer_stats (s);
-                } else if (!strcmp (name, "event")) {
-                  do_event_stats (s);
-                } else if (!strcmp (name, "message")) {
-                  do_message_stats (s);
-                } else if (!strcmp (name, "query")) {
-                  do_query_stats (s);
-                } else if (!strcmp (name, "thread-rusage")) {
-                  do_thread_rusage_stats (s);
-                } else if (!strcmp (name, "proc-rusage")) {
-                  do_proc_rusage_stats (s);
-                } else if (!strcmp (name, "latency")) {
-                  do_latency_stats (s);
-                } else if (!strcmp (name, "element-latency")) {
-                  do_element_latency_stats (s);
-                } else if (!strcmp (name, "element-reported-latency")) {
-                  do_element_reported_latency (s);
-                } else if (!strcmp (name, "factory-used")) {
-                  do_factory_used (s);
-                } else {
-                  // TODO(ensonic): parse the xxx.class log lines
-                  if (!g_str_has_suffix (data, ".class")) {
-                    GST_WARNING ("unknown log entry: '%s'", data);
-                  }
-                }
-                gst_structure_free (s);
+              if (!strcmp (name, "new-pad")) {
+                new_pad_stats (s);
+              } else if (!strcmp (name, "new-element")) {
+                new_element_stats (s);
+              } else if (!strcmp (name, "buffer")) {
+                do_buffer_stats (s);
+              } else if (!strcmp (name, "event")) {
+                do_event_stats (s);
+              } else if (!strcmp (name, "message")) {
+                do_message_stats (s);
+              } else if (!strcmp (name, "query")) {
+                do_query_stats (s);
+              } else if (!strcmp (name, "thread-rusage")) {
+                do_thread_rusage_stats (s);
+              } else if (!strcmp (name, "proc-rusage")) {
+                do_proc_rusage_stats (s);
+              } else if (!strcmp (name, "latency")) {
+                do_latency_stats (s);
+              } else if (!strcmp (name, "element-latency")) {
+                do_element_latency_stats (s);
+              } else if (!strcmp (name, "element-reported-latency")) {
+                do_element_reported_latency (s);
+              } else if (!strcmp (name, "factory-used")) {
+                do_factory_used (s);
               } else {
-                GST_WARNING ("unknown log entry: '%s'", data);
+                // TODO(ensonic): parse the xxx.class log lines
+                if (!g_str_has_suffix (data, ".class")) {
+                  GST_WARNING ("unknown log entry: '%s'", data);
+                }
               }
-              g_free (data);
+              gst_structure_free (s);
+            } else {
+              GST_WARNING ("unknown log entry: '%s'", data);
             }
-            g_free (level);
+            g_free (data);
           } else {
             if (*line) {
               GST_WARNING ("foreign log entry: %s:%d:'%s'", filename, lnr,
@@ -1263,6 +1275,7 @@ gint
 main (gint argc, gchar * argv[])
 {
   gchar **filenames = NULL;
+  gchar *tracer_regexp = NULL;
   guint num;
   GError *err = NULL;
   GOptionContext *ctx;
@@ -1270,6 +1283,8 @@ main (gint argc, gchar * argv[])
     GST_TOOLS_GOPTION_VERSION,
     // TODO(ensonic): add a summary flag, if set read the whole thing, print
     // stats once, and exit
+    {"tracer-regexp", 't', 0, G_OPTION_ARG_STRING, &tracer_regexp,
+        "Custom Perl regular expression to extract tracer data", "regexp"},
     {G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &filenames, NULL}
     ,
     {NULL}
@@ -1283,14 +1298,27 @@ main (gint argc, gchar * argv[])
 
   g_set_prgname ("gst-stats-" GST_API_VERSION);
 
+#ifdef G_OS_WIN32
+  argv = g_win32_get_command_line ();
+#endif
+
   ctx = g_option_context_new ("FILE");
   g_option_context_add_main_entries (ctx, options, GETTEXT_PACKAGE);
   g_option_context_add_group (ctx, gst_init_get_option_group ());
-  if (!g_option_context_parse (ctx, &argc, &argv, &err)) {
+#ifdef G_OS_WIN32
+  if (!g_option_context_parse_strv (ctx, &argv, &err))
+#else
+  if (!g_option_context_parse (ctx, &argc, &argv, &err))
+#endif
+  {
     g_print ("Error initializing: %s\n", GST_STR_NULL (err->message));
     exit (1);
   }
   g_option_context_free (ctx);
+
+#ifdef G_OS_WIN32
+  argc = g_strv_length (argv);
+#endif
 
   gst_tools_print_version ();
 
@@ -1305,12 +1333,17 @@ main (gint argc, gchar * argv[])
     return 1;
   }
 
-  if (init ()) {
+  if (init (tracer_regexp)) {
     collect_stats (filenames[0]);
     print_stats ();
   }
   done ();
 
   g_strfreev (filenames);
+
+#ifdef G_OS_WIN23
+  g_strfreev (argv);
+#endif
+
   return 0;
 }

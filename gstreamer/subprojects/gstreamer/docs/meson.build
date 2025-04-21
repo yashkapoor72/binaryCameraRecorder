@@ -44,36 +44,6 @@ gst_plugins_doc_dep = custom_target('build-doc-cache',
     build_always_stale: true,
 )
 
-hotdoc_p = find_program('hotdoc', required: get_option('doc'))
-if not hotdoc_p.found()
-    message('Hotdoc not found, not building the documentation')
-    subdir_done()
-endif
-
-hotdoc_req = '>= 0.11.0'
-hotdoc_version = run_command(hotdoc_p, '--version', check: false).stdout()
-if not hotdoc_version.version_compare(hotdoc_req)
-    if get_option('doc').enabled()
-        error('Hotdoc version @0@ not found, got @1@'.format(hotdoc_req, hotdoc_version))
-    else
-        message('Hotdoc version @0@ not found, got @1@'.format(hotdoc_req, hotdoc_version))
-        subdir_done()
-    endif
-endif
-
-hotdoc = import('hotdoc')
-required_hotdoc_extensions = ['gi-extension', 'gst-extension']
-foreach extension: required_hotdoc_extensions
-    if not hotdoc.has_extensions(extension)
-        if get_option('doc').enabled()
-            error('Documentation enabled but @0@ missing'.format(extension))
-        endif
-
-        message('@0@ extension not found, not building documentation'.format(extension))
-        subdir_done()
-    endif
-endforeach
-
 if static_build
     if get_option('doc').enabled()
         error('Documentation enabled but not supported when building statically.')
@@ -99,7 +69,7 @@ endforeach
 
 build_hotdoc = true
 docconf = configuration_data()
-docconf.set('GST_API_VERSION', apiversion)
+docconf.set('GST_API_VERSION', api_version)
 
 version_entities = configure_file(input : 'version.in',
     output : 'gst_api_version.md',
@@ -113,6 +83,7 @@ foreach h: ['gettext.h', 'glib-compat-private.h', 'glib-compat.h',
             '../libs/gst/base/gstindex.h',
             '../libs/gst/base/gstindex.c',
             '../libs/gst/check/internal-check.h',
+            '../libs/gst/check/gstharnesslink.h',
             'parser/grammar.tab.pre.h', 'parse/parse_lex.h', 'types.h',
             'gst-printf.h', 'printf-args.h', 'printf-extension.h',
             'printf-parse.h', 'vasnprintf.h', 'gstregistrybinary.c',
@@ -120,69 +91,117 @@ foreach h: ['gettext.h', 'glib-compat-private.h', 'glib-compat.h',
     gst_excludes += [join_paths(meson.current_source_dir(), '..', 'gst', h)]
 endforeach
 
-libs_doc = [hotdoc.generate_doc('gstreamer',
-    project_version: apiversion,
-    gi_c_sources: '../gst/*.[hc]',
-    gi_sources: [gst_gir[0].full_path()],
-    gi_c_source_filters: gst_excludes,
-    sitemap: 'gst/sitemap.txt',
-    index: 'gst/index.md',
-    gi_index: 'gst/gi-index.md',
-    gi_smart_index: true,
-    gi_c_source_roots: [join_paths(meson.current_source_dir(), '../gst/'), ],
-    dependencies: [gst_dep, gmodule_dep],
-    extra_assets: [join_paths(meson.current_source_dir(), 'images')],
-)]
+cdir = meson.current_source_dir()
 
-libs = [
-  ['base', gst_base_gir, gst_base_dep],
-  ['controller', gst_controller_gir, gst_controller_dep,],
-  ['net', gst_net_gir, gst_net_dep],
-  ['check', gst_check_gir, gst_check_dep],
-]
-
-foreach lib: libs
-  name = lib[0]
-  gir = lib[1]
-  deps = [lib[2], gir]
-  libs_doc += [hotdoc.generate_doc(name,
-      project_version: apiversion,
-      gi_c_sources: ['../libs/gst/' + name + '/*.[hc]'],
-      gi_c_source_filters: gst_excludes,
-      gi_sources: gir[0].full_path(),
-      gi_c_source_roots: [join_paths(meson.current_source_dir(), '../libs/gst/' + name), ],
-      sitemap: join_paths('libs', name, 'sitemap.txt'),
-      index: join_paths('libs/', name, 'index.md'),
-      gi_index: join_paths('libs/', name, 'index.md'),
-      gi_smart_index: true,
-      gi_order_generated_subpages: true,
-      dependencies: deps,
-      install: false,
-  )]
+doc_sources = []
+foreach s: gst_sources + gst_headers
+  doc_sources += s.full_path()
 endforeach
 
-plugins_doc = [
-    hotdoc.generate_doc('coreelements',
-        project_version: apiversion,
-        sitemap: 'plugins/sitemap.txt',
-        index: 'plugins/index.md',
-        gst_index: 'plugins/index.md',
-        gst_smart_index: true,
-        gst_c_sources: ['../plugins/elements/*.c', '../plugins/elements/*.h'],
-        dependencies: [gst_plugins_doc_dep],
-        gst_cache_file: plugins_cache,
-        gst_plugin_name: 'coreelements',
-    ),
-    hotdoc.generate_doc('coretracers',
-        project_version: apiversion,
-        sitemap: 'plugins/coretracers/sitemap.txt',
-        index: 'plugins/coretracers/index.md',
-        gst_index: 'plugins/coretracers/index.md',
-        gst_smart_index: true,
-        gst_c_sources: ['../plugins/tracers/*.c', '../plugins/tracers/*.h'],
-        dependencies: [gst_plugins_doc_dep],
-        gst_cache_file: plugins_cache,
-        gst_plugin_name: 'coretracers',
-    )
+lib_sources = {
+  'gst': pathsep.join(doc_sources)
+}
 
-]
+gst_doc_source_file = configure_file(
+  output: 'gst_doc_sources.json',
+  configuration: lib_sources,
+  output_format: 'json')
+
+gst_doc_gi_source_file = configure_file(
+  output: 'gst_doc_gi_sources.json',
+  configuration: {'gst': gst_gir[0].full_path()},
+  output_format: 'json'
+)
+
+lib_hotdoc_config = custom_target(
+  'build-gst-hotdoc-configs',
+  command: [
+    plugins_cache_generator,
+    'hotdoc-lib-config',
+    '--srcdir', cdir,
+    '--builddir', meson.current_build_dir(),
+    '--buildroot', meson.global_build_root(),
+    '--project_version', api_version,
+    '--gi_source_file', gst_doc_gi_source_file,
+    '--gi_c_source_file', gst_doc_source_file,
+    '--gi_c_source_filters', gst_excludes,
+    '--source_root', cdir / 'gst',
+    '--gi_source_root', cdir / '..' / 'gst',
+    '--output', '@OUTPUT@',
+  ],
+  output: 'hotdoc-gst-configs.json',
+  depends: [gst_gir[0]],
+)
+
+libs_doc_source_file = configure_file(
+  output: 'libs_doc_sources.json',
+  configuration: libs_sources,
+  output_format: 'json')
+
+libs_doc_gi_source_file = configure_file(
+  output: 'libs_doc_gi_sources.json',
+  configuration: {
+    'base': gst_base_gir[0].full_path(),
+    'controller': gst_controller_gir[0].full_path(),
+    'net': gst_net_gir[0].full_path(),
+    'check': gst_check_gir[0].full_path(),
+  },
+  output_format: 'json')
+
+libs_hotdoc_configs = custom_target(
+  'build-libs-hotdoc-configs',
+  command: [
+    plugins_cache_generator,
+    'hotdoc-lib-config',
+    '--srcdir', cdir,
+    '--builddir', meson.current_build_dir(),
+    '--buildroot', meson.global_build_root(),
+    '--project_version', api_version,
+    '--gi_source_file', libs_doc_gi_source_file,
+    '--gi_c_source_file', libs_doc_source_file,
+    '--gi_c_source_filters', gst_excludes,
+    '--source_root', cdir / 'libs',
+    '--gi_source_root', cdir / '..' / 'libs' / 'gst',
+    '--output', '@OUTPUT@',
+  ],
+  output: 'hotdoc-libs-configs.json',
+  depends: [gst_base_gir[0], gst_controller_gir[0], gst_net_gir[0], gst_check_gir[0]],
+)
+
+doc_source_file = configure_file(output: 'doc_sources.json', configuration: plugin_sources, output_format: 'json')
+
+plugin_libraries = {}
+
+foreach plugin: plugins
+  if plugin.name().startswith('gst')
+    plugin_name = plugin.name().substring(3)
+  else
+    plugin_name = plugin.name()
+  endif
+
+  plugin_libraries += {
+    plugin_name: plugin.full_path()
+  }
+endforeach
+
+doc_plugin_libs_file = configure_file(output: 'doc_plugin_libs.json', configuration: plugin_libraries, output_format: 'json')
+
+plugin_hotdoc_configs = custom_target(
+  'build-hotdoc-configs',
+  command: [
+    plugins_cache_generator,
+    'hotdoc-config',
+    '--builddir', meson.current_build_dir(),
+    '--project_version', api_version,
+    '--sitemap', cdir / 'plugins/sitemap.txt',
+    '--index', cdir / 'plugins/index.md',
+    '--gst_index', cdir / 'plugins/index.md',
+    '--gst_c_source_file', doc_source_file,
+    '--gst_plugin_libraries_file', doc_plugin_libs_file,
+    '--gst_cache_file', '@INPUT@',
+    '--output', '@OUTPUT@',
+  ],
+  input: plugins_cache,
+  output: 'hotdoc-configs.json',
+  depends: [hotdoc_plugin_scanner],
+)

@@ -59,8 +59,8 @@ seekable_sinkpad_query (GstPad * pad, GstObject * parent, GstQuery * query)
 
 #define compare_buffer_to_data(buffer, data, data_size)             \
 G_STMT_START {                                                      \
-fail_unless_equals_int (data_size, gst_buffer_get_size (buffer));   \
-fail_unless (gst_buffer_memcmp (buffer, 0, data, data_size) == 0);  \
+  fail_unless_equals_int (data_size, gst_buffer_get_size (buffer)); \
+  fail_unless (gst_buffer_memcmp (buffer, 0, data, data_size) == 0);\
 } G_STMT_END
 
 static void
@@ -74,11 +74,14 @@ test_ebml_header_with_version (gint version,
   g_object_set (h->element, "version", version, NULL);
 
   inbuffer = gst_harness_create_buffer (h, 1);
+  GST_BUFFER_PTS (inbuffer) = 0;
   fail_unless_equals_int (GST_FLOW_OK, gst_harness_push (h, inbuffer));
-  fail_unless_equals_int (2, gst_harness_buffers_received (h));
 
   outbuffer = gst_harness_pull (h);
   compare_buffer_to_data (outbuffer, data, data_size);
+  gst_buffer_unref (outbuffer);
+
+  outbuffer = gst_harness_pull (h);
   gst_buffer_unref (outbuffer);
 
   gst_harness_teardown (h);
@@ -142,6 +145,7 @@ GST_START_TEST (test_vorbis_header)
   h = setup_matroskamux_harness (VORBIS_TMPL_CAPS_STRING);
 
   inbuffer = gst_harness_create_buffer (h, 1);
+  GST_BUFFER_PTS (inbuffer) = 0;
   fail_unless_equals_int (GST_FLOW_OK, gst_harness_push (h, inbuffer));
 
   outbuffer = gst_harness_pull (h);
@@ -160,7 +164,10 @@ GST_START_TEST (test_vorbis_header)
     ASSERT_BUFFER_REFCOUNT (outbuffer, "outbuffer", 1);
     gst_buffer_unref (outbuffer);
 
-    outbuffer = gst_harness_try_pull (h);
+    if (vorbis_header_found)
+      break;
+
+    outbuffer = gst_harness_pull (h);
   }
 
   fail_unless (vorbis_header_found);
@@ -186,13 +193,11 @@ test_block_group_with_version (gint version,
   inbuffer = gst_harness_create_buffer (h, 1);
   GST_BUFFER_TIMESTAMP (inbuffer) = 0;
   fail_unless_equals_int (GST_FLOW_OK, gst_harness_push (h, inbuffer));
-  fail_unless_equals_int (5, gst_harness_buffers_received (h));
 
-  outbuffer = gst_harness_pull (h);
-  fail_unless (outbuffer != NULL);
-  while (outbuffer != NULL) {
+  for (int i = 0; i < 5; i++) {
+    outbuffer = gst_harness_pull (h);
+    fail_unless (outbuffer != NULL);
     gst_buffer_unref (outbuffer);
-    outbuffer = gst_harness_try_pull (h);
   }
 
   /* Now push a buffer */
@@ -227,7 +232,7 @@ GST_END_TEST;
 
 GST_START_TEST (test_block_group_v2)
 {
-  guint8 data0_v2[] = { 0xa3, 0x85, 0x81, 0x00, 0x01, 0x00 };
+  guint8 data0_v2[] = { 0xa3, 0x85, 0x81, 0x00, 0x01, 0x80 };
 
   test_block_group_with_version (2, data0_v2, sizeof (data0_v2));
 }
@@ -245,13 +250,11 @@ GST_START_TEST (test_reset)
   inbuffer = gst_harness_create_buffer (h, 1);
   GST_BUFFER_TIMESTAMP (inbuffer) = 0;
   fail_unless_equals_int (GST_FLOW_OK, gst_harness_push (h, inbuffer));
-  fail_unless_equals_int (5, gst_harness_buffers_received (h));
 
-  outbuffer = gst_harness_pull (h);
-  fail_unless (outbuffer != NULL);
-  while (outbuffer != NULL) {
+  for (int i = 0; i < 5; i++) {
+    outbuffer = gst_harness_pull (h);
+    fail_unless (outbuffer != NULL);
     gst_buffer_unref (outbuffer);
-    outbuffer = gst_harness_try_pull (h);
   }
 
   fail_unless_equals_int (GST_STATE_CHANGE_SUCCESS,
@@ -262,12 +265,13 @@ GST_START_TEST (test_reset)
   inbuffer = gst_harness_create_buffer (h, 1);
   GST_BUFFER_TIMESTAMP (inbuffer) = 0;
   fail_unless_equals_int (GST_FLOW_OK, gst_harness_push (h, inbuffer));
+  gst_harness_push_event (h, gst_event_new_eos ());
 
   outbuffer = gst_harness_pull (h);
   fail_unless (outbuffer != NULL);
   while (outbuffer != NULL) {
     gst_buffer_unref (outbuffer);
-    outbuffer = gst_harness_try_pull (h);
+    fail_unless (gst_harness_pull_until_eos (h, &outbuffer));
   }
 
   gst_harness_teardown (h);
@@ -307,10 +311,10 @@ GST_START_TEST (test_timecodescale)
 {
   GstBuffer *inbuffer, *outbuffer;
   guint8 data_h0[] = {
-    0xa3, 0x85, 0x81, 0x00, 0x00, 0x00,
+    0xa3, 0x85, 0x81, 0x00, 0x00, 0x80,
   };
   guint8 data_h1[] = {
-    0xa3, 0x85, 0x81, 0x00, 0x01, 0x00,
+    0xa3, 0x85, 0x81, 0x00, 0x01, 0x80,
   };
 
   GstHarness *h = setup_matroskamux_harness (AC3_CAPS_STRING);
@@ -940,7 +944,6 @@ test_toc (gboolean with_edition)
 
   /* send eos to ensure everything is written */
   fail_unless (gst_harness_push_event (h, gst_event_new_eos ()));
-  ASSERT_MINI_OBJECT_REFCOUNT (test_toc, "test_toc", 1);
 
   outbuffer = gst_harness_pull (h);
   fail_unless (outbuffer != NULL);
@@ -958,7 +961,7 @@ test_toc (gboolean with_edition)
     }
 
     gst_buffer_unref (outbuffer);
-    outbuffer = gst_harness_try_pull (h);
+    fail_unless (gst_harness_pull_until_eos (h, &outbuffer));
   }
 
   fail_unless (gst_buffer_map (merged_buffer, &info, GST_MAP_READ));

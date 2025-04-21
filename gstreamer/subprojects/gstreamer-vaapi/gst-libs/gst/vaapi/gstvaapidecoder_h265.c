@@ -499,8 +499,7 @@ nal_is_rasl (guint8 nal_type)
 static gboolean
 nal_is_slice (guint8 nal_type)
 {
-  if ((nal_type >= GST_H265_NAL_SLICE_TRAIL_N) &&
-      (nal_type <= GST_H265_NAL_SLICE_CRA_NUT))
+  if ((nal_type <= GST_H265_NAL_SLICE_CRA_NUT))
     return TRUE;
   return FALSE;
 }
@@ -1210,12 +1209,16 @@ ensure_context (GstVaapiDecoderH265 * decoder, GstH265SPS * sps)
     return GST_VAAPI_DECODER_STATUS_SUCCESS;
 
   /* XXX: fix surface size when cropping is implemented */
-  info.profile = priv->profile;
-  info.entrypoint = priv->entrypoint;
-  info.chroma_type = priv->chroma_type;
-  info.width = sps->width;
-  info.height = sps->height;
-  info.ref_frames = dpb_size;
+  /* *INDENT-OFF* */
+  info = (GstVaapiContextInfo) {
+    .profile = priv->profile,
+    .entrypoint = priv->entrypoint,
+    .chroma_type = priv->chroma_type,
+    .width = sps->width,
+    .height = sps->height,
+    .ref_frames = dpb_size,
+  };
+  /* *INDENT-ON* */
 
   if (!gst_vaapi_decoder_ensure_context (GST_VAAPI_DECODER (decoder), &info))
     return GST_VAAPI_DECODER_STATUS_ERROR_UNKNOWN;
@@ -1984,7 +1987,8 @@ fill_picture (GstVaapiDecoderH265 * decoder, GstVaapiPictureH265 * picture,
   pic_param->pic_fields.bits.NoBiPredFlag = 0;
 
   pic_param->sps_max_dec_pic_buffering_minus1 =
-      sps->max_dec_pic_buffering_minus1[0];
+      sps->max_dec_pic_buffering_minus1[sps->max_sub_layers_minus1];
+
   COPY_FIELD (sps, bit_depth_luma_minus8);
   COPY_FIELD (sps, bit_depth_chroma_minus8);
   COPY_FIELD (sps, pcm_sample_bit_depth_luma_minus1);

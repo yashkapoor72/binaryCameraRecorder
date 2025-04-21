@@ -24,6 +24,15 @@ rtp_headers = files([
 ])
 install_headers(rtp_headers, subdir : 'gstreamer-1.0/gst/rtp/')
 
+doc_sources = []
+foreach s: rtp_sources + rtp_headers
+  doc_sources += s.full_path()
+endforeach
+
+libs_sources += {
+  'rtp': pathsep.join(doc_sources)
+}
+
 rtp_enums = gnome.mkenums_simple('gstrtp-enumtypes',
   sources : rtp_headers,
   body_prefix : '#ifdef HAVE_CONFIG_H\n#include "config.h"\n#endif',
@@ -74,6 +83,7 @@ if build_gir
   library_def = {'lib': library_def['lib'], 'gir': [gir]}
   if not static_build
     rtp_gir = gnome.generate_gir(gst_rtp, kwargs: gir)
+    library_def += {'gir_targets':  library_def.get('gir_targets', []) + [rtp_gir]}
     rtp_gen_sources += [rtp_gir]
   endif
 endif

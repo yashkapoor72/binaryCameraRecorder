@@ -312,6 +312,28 @@ gst_rtp_pt_demux_finalize (GObject * object)
   G_OBJECT_CLASS (parent_class)->finalize (object);
 }
 
+/* Removes "ssrc-*" attributes matching other SSRCs. */
+static gboolean
+_filter_ssrc (const GstIdStr * fieldname, GValue * value, gpointer ssrc)
+{
+  if (!g_str_has_prefix (gst_id_str_as_str (fieldname), "ssrc-"))
+    return TRUE;
+
+  gchar *endptr;
+  guint32 field_ssrc =
+      g_ascii_strtoll (gst_id_str_as_str (fieldname) + 5, &endptr, 10);
+
+  if (!endptr || *endptr != '-')
+    return TRUE;
+
+  /* Found a valid "ssrc-*" */
+  if (field_ssrc != *(guint32 *) ssrc)
+    /* Not the expected SSRC => remove this field */
+    return FALSE;
+
+  return TRUE;
+}
+
 static GstCaps *
 gst_rtp_pt_demux_get_caps (GstRtpPtDemux * rtpdemux, guint pt)
 {
@@ -349,7 +371,12 @@ gst_rtp_pt_demux_get_caps (GstRtpPtDemux * rtpdemux, guint pt)
   }
 
   if (caps != NULL) {
+    GstStructure *s;
+
     caps = gst_caps_make_writable (caps);
+    s = gst_caps_get_structure (caps, 0);
+    gst_structure_filter_and_map_in_place_id_str (s, _filter_ssrc, &ssrc);
+
     gst_caps_set_simple (caps, "payload", G_TYPE_INT, pt, NULL);
     if (have_ssrc)
       gst_caps_set_simple (caps, "ssrc", G_TYPE_UINT, ssrc, NULL);
@@ -493,7 +520,7 @@ gst_rtp_pt_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     gst_pad_set_event_function (srcpad, gst_rtp_pt_demux_src_event);
 
     GST_DEBUG_OBJECT (rtpdemux, "Adding pt=%d to the list.", pt);
-    rtpdemuxpad = g_slice_new0 (GstRtpPtDemuxPad);
+    rtpdemuxpad = g_new0 (GstRtpPtDemuxPad, 1);
     rtpdemuxpad->pt = pt;
     rtpdemuxpad->newcaps = FALSE;
     rtpdemuxpad->pad = srcpad;
@@ -505,8 +532,31 @@ gst_rtp_pt_demux_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     gst_pad_set_active (srcpad, TRUE);
 
     /* First push the stream-start event, it must always come first */
-    gst_pad_push_event (srcpad,
-        gst_pad_get_sticky_event (rtpdemux->sink, GST_EVENT_STREAM_START, 0));
+    {
+      gchar *stream_id;
+      GstEvent *sink_event, *event;
+      guint group_id;
+      GstStreamFlags flags;
+
+      sink_event =
+          gst_pad_get_sticky_event (rtpdemux->sink, GST_EVENT_STREAM_START, 0);
+
+      stream_id =
+          gst_pad_create_stream_id_printf (srcpad, GST_ELEMENT_CAST (rtpdemux),
+          "%u", pt);
+
+      event = gst_event_new_stream_start (stream_id);
+      if (gst_event_parse_group_id (sink_event, &group_id)) {
+        gst_event_set_group_id (event, group_id);
+      }
+      gst_event_parse_stream_flags (sink_event, &flags);
+      gst_event_set_stream_flags (event, flags);
+
+      gst_pad_push_event (srcpad, event);
+
+      gst_event_unref (sink_event);
+      g_free (stream_id);
+    }
 
     /* Then caps event is sent */
     gst_pad_set_caps (srcpad, caps);
@@ -720,7 +770,7 @@ gst_rtp_pt_demux_release (GstRtpPtDemux * ptdemux)
 
     gst_pad_set_active (pad->pad, FALSE);
     gst_element_remove_pad (GST_ELEMENT_CAST (ptdemux), pad->pad);
-    g_slice_free (GstRtpPtDemuxPad, pad);
+    g_free (pad);
   }
   g_slist_free (tmppads);
 }

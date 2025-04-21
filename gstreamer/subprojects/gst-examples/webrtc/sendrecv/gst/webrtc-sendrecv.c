@@ -53,7 +53,7 @@ static SoupWebsocketConnection *ws_conn = NULL;
 static enum AppState app_state = 0;
 static gchar *peer_id = NULL;
 static gchar *our_id = NULL;
-static const gchar *server_url = "wss://webrtc.nirbheek.in:8443";
+static const gchar *server_url = "wss://webrtc.gstreamer.net:8443";
 static gboolean disable_ssl = FALSE;
 static gboolean remote_is_offerer = FALSE;
 static gboolean custom_ice = FALSE;
@@ -380,14 +380,15 @@ on_ice_gathering_state_notify (GstElement * webrtcbin, GParamSpec * pspec,
 static gboolean webrtcbin_get_stats (GstElement * webrtcbin);
 
 static gboolean
-on_webrtcbin_stat (GQuark field_id, const GValue * value, gpointer unused)
+on_webrtcbin_stat (const GstIdStr * fieldname, const GValue * value,
+    gpointer unused)
 {
   if (GST_VALUE_HOLDS_STRUCTURE (value)) {
-    GST_DEBUG ("stat: \'%s\': %" GST_PTR_FORMAT, g_quark_to_string (field_id),
+    GST_DEBUG ("stat: \'%s\': %" GST_PTR_FORMAT, gst_id_str_as_str (fieldname),
         gst_value_get_structure (value));
   } else {
     GST_FIXME ("unknown field \'%s\' value type: \'%s\'",
-        g_quark_to_string (field_id), g_type_name (G_VALUE_TYPE (value)));
+        gst_id_str_as_str (fieldname), g_type_name (G_VALUE_TYPE (value)));
   }
 
   return TRUE;
@@ -401,7 +402,7 @@ on_webrtcbin_get_stats (GstPromise * promise, GstElement * webrtcbin)
   g_return_if_fail (gst_promise_wait (promise) == GST_PROMISE_RESULT_REPLIED);
 
   stats = gst_promise_get_reply (promise);
-  gst_structure_foreach (stats, on_webrtcbin_stat, NULL);
+  gst_structure_foreach_id_str (stats, on_webrtcbin_stat, NULL);
 
   g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtcbin);
 }
@@ -422,6 +423,53 @@ webrtcbin_get_stats (GstElement * webrtcbin)
   return G_SOURCE_REMOVE;
 }
 
+static gboolean
+bus_watch_cb (GstBus * bus, GstMessage * message, gpointer user_data)
+{
+  GstPipeline *pipeline = user_data;
+
+  switch (GST_MESSAGE_TYPE (message)) {
+    case GST_MESSAGE_ASYNC_DONE:
+    {
+      GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS (GST_BIN (pipe1),
+          GST_DEBUG_GRAPH_SHOW_ALL, "webrtc-sendrecv.async-done");
+      break;
+    }
+    case GST_MESSAGE_ERROR:
+    {
+      GError *error = NULL;
+      gchar *debug = NULL;
+
+      GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS (GST_BIN (pipe1),
+          GST_DEBUG_GRAPH_SHOW_ALL, "webrtc-sendrecv.error");
+
+      gst_message_parse_error (message, &error, &debug);
+      cleanup_and_quit_loop ("ERROR: Error on bus", APP_STATE_ERROR);
+      g_warning ("Error on bus: %s (debug: %s)", error->message, debug);
+      g_error_free (error);
+      g_free (debug);
+      break;
+    }
+    case GST_MESSAGE_WARNING:
+    {
+      GError *error = NULL;
+      gchar *debug = NULL;
+
+      gst_message_parse_warning (message, &error, &debug);
+      g_warning ("Warning on bus: %s (debug: %s)", error->message, debug);
+      g_error_free (error);
+      g_free (debug);
+      break;
+    }
+    case GST_MESSAGE_LATENCY:
+      gst_bin_recalculate_latency (GST_BIN (pipeline));
+      break;
+    default:
+      break;
+  }
+
+  return G_SOURCE_CONTINUE;
+}
 
 #define STUN_SERVER "stun://stun.l.google.com:19302"
 #define RTP_TWCC_URI "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
@@ -431,6 +479,7 @@ webrtcbin_get_stats (GstElement * webrtcbin)
 static gboolean
 start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
 {
+  GstBus *bus;
   char *audio_desc, *video_desc;
   GstStateChangeReturn ret;
   GstWebRTCICE *custom_agent;
@@ -442,7 +491,8 @@ start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
   audio_desc =
       g_strdup_printf
       ("audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample"
-      "! queue ! opusenc ! rtpopuspay name=audiopay pt=%u ! queue", opus_pt);
+      "! queue ! opusenc perfect-timestamp=true ! rtpopuspay name=audiopay pt=%u "
+      "! application/x-rtp, encoding-name=OPUS ! queue", opus_pt);
   audio_bin = gst_parse_bin_from_description (audio_desc, TRUE, &audio_error);
   g_free (audio_desc);
   if (audio_error) {
@@ -531,6 +581,10 @@ start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
       G_CALLBACK (send_ice_candidate_message), NULL);
   g_signal_connect (webrtc1, "notify::ice-gathering-state",
       G_CALLBACK (on_ice_gathering_state_notify), NULL);
+
+  bus = gst_pipeline_get_bus (GST_PIPELINE (pipe1));
+  gst_bus_add_watch (bus, bus_watch_cb, pipe1);
+  gst_object_unref (bus);
 
   gst_element_set_state (pipe1, GST_STATE_READY);
 
@@ -1029,8 +1083,15 @@ main (int argc, char *argv[])
     g_main_loop_unref (loop);
 
   if (pipe1) {
+    GstBus *bus;
+
     gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_NULL);
     gst_print ("Pipeline stopped\n");
+
+    bus = gst_pipeline_get_bus (GST_PIPELINE (pipe1));
+    gst_bus_remove_watch (bus);
+    gst_object_unref (bus);
+
     gst_object_unref (pipe1);
   }
 

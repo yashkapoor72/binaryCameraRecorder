@@ -36,7 +36,6 @@
 G_BEGIN_DECLS
 
 #define NUM_LOOKBACK_FRAGMENTS 3
-#define MAX_DOWNLOAD_ERROR_COUNT 3
 
 /* Internal, so not using GST_FLOW_CUSTOM_SUCCESS_N */
 #define GST_ADAPTIVE_DEMUX_FLOW_SWITCH (GST_FLOW_CUSTOM_SUCCESS_2 + 2)
@@ -83,6 +82,8 @@ struct _GstAdaptiveDemuxPrivate
 
   /* Callback / timer id for the next manifest update */
   guint manifest_updates_cb;
+  gboolean manifest_updates_enabled;
+  gboolean need_manual_manifest_update;
 
   /* Count of failed manifest updates */
   gint update_failed_count;
@@ -100,7 +101,10 @@ struct _GstAdaptiveDemuxPrivate
   /* Set to TRUE if any stream is waiting on the manifest update */
   gboolean stream_waiting_for_manifest;
 
-  GMutex api_lock;
+  /* Set to TRUE if streams can download fragment data. If FALSE,
+   * they can load playlists / prepare for updata_fragment_info()
+   */
+  gboolean streams_can_download_fragments;
 
   /* Protects demux and stream segment information
    * Needed because seeks can update segment information
@@ -140,7 +144,13 @@ struct _GstAdaptiveDemuxPrivate
   /* Current output selection seqnum */
   guint32 current_selection_seqnum;
   /* Current output position (in running time) */
-  GstClockTimeDiff global_output_position;
+  GstClockTime global_output_position;
+  /* NOTE: The two following variables are to handle lost-sync internal flushing
+   * and transposing the base time */
+  /* Initial output position (in running time) */
+  GstClockTime initial_output_position;
+  /* Offset to apply to outgoing segments (in running time) */
+  GstClockTime base_offset;
   /* End of fields protected by output_lock */
 
   gint n_audio_streams, n_video_streams, n_subtitle_streams;
@@ -153,6 +163,14 @@ struct _GstAdaptiveDemuxPrivate
    * Head is the period being outputted, or to be outputted first
    * Tail is where new streams get added */
   GQueue *periods;
+
+  /* The maximum number of times HTTP request can be required before considering
+   * failed */
+  gint max_retries;
+  /* The backoff factor and max for the HTTP request retries */
+  gdouble retry_backoff_factor;
+  gdouble retry_backoff_max;
+
 };
 
 static inline gboolean gst_adaptive_demux_scheduler_lock(GstAdaptiveDemux *d)
@@ -181,6 +199,7 @@ gboolean gst_adaptive_demux_is_live (GstAdaptiveDemux * demux);
 
 void gst_adaptive_demux2_stream_on_manifest_update (GstAdaptiveDemux2Stream * stream);
 void gst_adaptive_demux2_stream_on_output_space_available (GstAdaptiveDemux2Stream *stream);
+void gst_adaptive_demux2_stream_on_can_download_fragments(GstAdaptiveDemux2Stream *stream);
 
 gboolean gst_adaptive_demux2_stream_has_next_fragment (GstAdaptiveDemux2Stream * stream);
 GstFlowReturn gst_adaptive_demux2_stream_seek (GstAdaptiveDemux2Stream * stream,
@@ -191,6 +210,7 @@ gboolean gst_adaptive_demux_get_live_seek_range (GstAdaptiveDemux * demux,
 gboolean gst_adaptive_demux2_stream_in_live_seek_range (GstAdaptiveDemux * demux,
     GstAdaptiveDemux2Stream * stream);
 gboolean gst_adaptive_demux2_stream_is_selected_locked (GstAdaptiveDemux2Stream *stream);
+gboolean gst_adaptive_demux2_stream_is_default_locked (GstAdaptiveDemux2Stream *stream);
 
 gboolean gst_adaptive_demux_has_next_period (GstAdaptiveDemux * demux);
 void gst_adaptive_demux_advance_period (GstAdaptiveDemux * demux);
@@ -212,10 +232,7 @@ typedef struct
   GstClockTimeDiff runningtime_buffering;
 } TrackQueueItem;
 
-GstAdaptiveDemux2Stream *find_stream_for_track_locked (GstAdaptiveDemux *
-    demux, GstAdaptiveDemuxTrack * track);
-
-GstMiniObject * track_dequeue_data_locked (GstAdaptiveDemux * demux, GstAdaptiveDemuxTrack * track, gboolean check_sticky_events);
+GstMiniObject * gst_adaptive_demux_track_dequeue_data_locked (GstAdaptiveDemux * demux, GstAdaptiveDemuxTrack * track, gboolean check_sticky_events);
 void gst_adaptive_demux_track_flush (GstAdaptiveDemuxTrack * track);
 void gst_adaptive_demux_track_drain_to (GstAdaptiveDemuxTrack * track, GstClockTime drain_running_time);
 void gst_adaptive_demux_track_update_next_position (GstAdaptiveDemuxTrack * track);
@@ -227,6 +244,8 @@ GstAdaptiveDemuxPeriod * gst_adaptive_demux_period_new (GstAdaptiveDemux * demux
 GstAdaptiveDemuxPeriod * gst_adaptive_demux_period_ref (GstAdaptiveDemuxPeriod * period);
 void                     gst_adaptive_demux_period_unref (GstAdaptiveDemuxPeriod * period);
 
+gboolean                 gst_adaptive_demux_period_add_stream (GstAdaptiveDemuxPeriod * period,
+							      GstAdaptiveDemux2Stream * stream);
 gboolean                 gst_adaptive_demux_period_add_track (GstAdaptiveDemuxPeriod * period,
 							      GstAdaptiveDemuxTrack * track);
 gboolean                 gst_adaptive_demux_track_add_elements (GstAdaptiveDemuxTrack * track,

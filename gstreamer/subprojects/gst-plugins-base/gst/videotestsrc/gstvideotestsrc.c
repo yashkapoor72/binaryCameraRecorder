@@ -89,11 +89,30 @@ enum
   PROP_LAST
 };
 
+#define BAYER_CAPS_GEN(mask, bits, endian)	\
+	" "#mask#bits#endian
 
-#define VTS_VIDEO_CAPS GST_VIDEO_CAPS_MAKE (GST_VIDEO_FORMATS_ALL) "," \
+#define BAYER_CAPS_ORD(bits, endian)		\
+	BAYER_CAPS_GEN(bggr, bits, endian)","	\
+	BAYER_CAPS_GEN(rggb, bits, endian)","	\
+	BAYER_CAPS_GEN(grbg, bits, endian)","	\
+	BAYER_CAPS_GEN(gbrg, bits, endian)
+
+#define BAYER_CAPS_BITS(bits)			\
+	BAYER_CAPS_ORD(bits, le)","		\
+	BAYER_CAPS_ORD(bits, be)
+
+#define BAYER_CAPS_ALL				\
+	BAYER_CAPS_ORD(,)"," 			\
+	BAYER_CAPS_BITS(10)","			\
+	BAYER_CAPS_BITS(12)","			\
+	BAYER_CAPS_BITS(14)","			\
+	BAYER_CAPS_BITS(16)
+
+#define VTS_VIDEO_CAPS GST_VIDEO_CAPS_MAKE (GST_VIDEO_FORMATS_ALL) ","	\
   "multiview-mode = { mono, left, right }"                              \
   ";" \
-  "video/x-bayer, format=(string) { bggr, rggb, grbg, gbrg }, "        \
+  "video/x-bayer, format=(string) {" BAYER_CAPS_ALL " },"\
   "width = " GST_VIDEO_SIZE_RANGE ", "                                 \
   "height = " GST_VIDEO_SIZE_RANGE ", "                                \
   "framerate = " GST_VIDEO_FPS_RANGE ", "                              \
@@ -111,6 +130,8 @@ GST_STATIC_PAD_TEMPLATE ("src",
 G_DEFINE_TYPE (GstVideoTestSrc, gst_video_test_src, GST_TYPE_PUSH_SRC);
 GST_ELEMENT_REGISTER_DEFINE (videotestsrc, "videotestsrc",
     GST_RANK_NONE, GST_TYPE_VIDEO_TEST_SRC);
+
+static void gst_video_test_src_finalize (GObject * object);
 
 static void gst_video_test_src_set_pattern (GstVideoTestSrc * videotestsrc,
     int pattern_type);
@@ -246,6 +267,7 @@ gst_video_test_src_class_init (GstVideoTestSrcClass * klass)
 
   gobject_class->set_property = gst_video_test_src_set_property;
   gobject_class->get_property = gst_video_test_src_get_property;
+  gobject_class->finalize = gst_video_test_src_finalize;
 
   g_object_class_install_property (gobject_class, PROP_PATTERN,
       g_param_spec_enum ("pattern", "Pattern",
@@ -272,8 +294,7 @@ gst_video_test_src_class_init (GstVideoTestSrcClass * klass)
   g_object_class_install_property (gobject_class, PROP_TIMESTAMP_OFFSET,
       g_param_spec_int64 ("timestamp-offset", "Timestamp offset",
           "An offset added to timestamps set on buffers (in ns)", 0,
-          (G_MAXLONG == G_MAXINT64) ? G_MAXINT64 : (G_MAXLONG * GST_SECOND - 1),
-          0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          G_MAXINT64, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (gobject_class, PROP_IS_LIVE,
       g_param_spec_boolean ("is-live", "Is Live",
           "Whether to act as a live source", DEFAULT_IS_LIVE,
@@ -405,6 +426,15 @@ gst_video_test_src_init (GstVideoTestSrc * src)
   src->motion_type = DEFAULT_MOTION_TYPE;
   src->flip = DEFAULT_FLIP;
 
+  g_mutex_init (&src->cache_lock);
+}
+
+static void
+gst_video_test_src_finalize (GObject * object)
+{
+  GstVideoTestSrc *src = GST_VIDEO_TEST_SRC (object);
+  g_mutex_clear (&src->cache_lock);
+  G_OBJECT_CLASS (parent_class)->finalize (object);
 }
 
 static GstCaps *
@@ -744,9 +774,11 @@ gst_video_test_src_set_property (GObject * object, guint prop_id,
   }
 
   if (invalidate) {
+    g_mutex_lock (&src->cache_lock);
     /* Property change invalidated the current pattern - check if it's static now or not */
     src->have_static_pattern = gst_video_test_src_is_static_pattern (src);
     gst_clear_buffer (&src->cached);
+    g_mutex_unlock (&src->cache_lock);
   }
 }
 
@@ -826,47 +858,85 @@ gst_video_test_src_get_property (GObject * object, guint prop_id,
   }
 }
 
+#define DIV_ROUND_UP(s,v) (((s) + ((v)-1)) / (v))
+
 static gboolean
-gst_video_test_src_parse_caps (const GstCaps * caps,
-    gint * width, gint * height, gint * fps_n, gint * fps_d,
-    GstVideoColorimetry * colorimetry, gint * x_inv, gint * y_inv)
+gst_video_test_src_parse_caps (const GstCaps * caps, GstVideoInfo * info,
+    GstVideoTestSrc * videotestsrc)
 {
   const GstStructure *structure;
-  GstPadLinkReturn ret;
+  gboolean ret;
   const GValue *framerate;
   const gchar *str;
+  gint x_inv = 0, y_inv = 0, bpp = 0, bigendian = 0;
 
   GST_DEBUG ("parsing caps");
 
+  gst_video_info_init (info);
+
   structure = gst_caps_get_structure (caps, 0);
 
-  ret = gst_structure_get_int (structure, "width", width);
-  ret &= gst_structure_get_int (structure, "height", height);
+  ret = gst_structure_get_int (structure, "width", &info->width);
+  ret &= gst_structure_get_int (structure, "height", &info->height);
   framerate = gst_structure_get_value (structure, "framerate");
 
   if (framerate) {
-    *fps_n = gst_value_get_fraction_numerator (framerate);
-    *fps_d = gst_value_get_fraction_denominator (framerate);
+    info->fps_n = gst_value_get_fraction_numerator (framerate);
+    info->fps_d = gst_value_get_fraction_denominator (framerate);
   } else
     goto no_framerate;
 
   if ((str = gst_structure_get_string (structure, "colorimetry")))
-    gst_video_colorimetry_from_string (colorimetry, str);
+    gst_video_colorimetry_from_string (&info->colorimetry, str);
 
   if ((str = gst_structure_get_string (structure, "format"))) {
-    if (g_str_equal (str, "bggr")) {
-      *x_inv = *y_inv = 0;
-    } else if (g_str_equal (str, "rggb")) {
-      *x_inv = *y_inv = 1;
-    } else if (g_str_equal (str, "grbg")) {
-      *x_inv = 0;
-      *y_inv = 1;
-    } else if (g_str_equal (str, "gbrg")) {
-      *x_inv = 1;
-      *y_inv = 0;
+    if (g_str_has_prefix (str, "bggr")) {
+      x_inv = y_inv = 0;
+    } else if (g_str_has_prefix (str, "rggb")) {
+      x_inv = y_inv = 1;
+    } else if (g_str_has_prefix (str, "grbg")) {
+      x_inv = 0;
+      y_inv = 1;
+    } else if (g_str_has_prefix (str, "gbrg")) {
+      x_inv = 1;
+      y_inv = 0;
     } else
       goto invalid_format;
+
+    if (strlen (str) == 4) {    /* 8bit bayer */
+      bpp = 8;
+    } else if (strlen (str) == 8) {     /* 10/12/14/16 le/be bayer */
+      bpp = (gint) g_ascii_strtoull (str + 4, NULL, 10);
+      if (bpp & 1)              /* odd bpp bayer formats not supported */
+        goto invalid_format;
+      if (bpp < 10 || bpp > 16) /* bayer 10,12,14,16 only */
+        goto invalid_format;
+
+      if (g_str_has_suffix (str, "le"))
+        bigendian = 0;
+      else if (g_str_has_suffix (str, "be"))
+        bigendian = 1;
+      else
+        goto invalid_format;
+    } else
+      goto invalid_format;
+
+    if (bpp == 8)
+      info->finfo = gst_video_format_get_info (GST_VIDEO_FORMAT_GRAY8);
+    else if (bigendian)
+      info->finfo = gst_video_format_get_info (GST_VIDEO_FORMAT_GRAY16_BE);
+    else
+      info->finfo = gst_video_format_get_info (GST_VIDEO_FORMAT_GRAY16_LE);
   }
+
+  videotestsrc->bayer = TRUE;
+  videotestsrc->bpp = bpp;
+  videotestsrc->x_invert = x_inv;
+  videotestsrc->y_invert = y_inv;
+
+  info->stride[0] = GST_ROUND_UP_4 (info->width) * DIV_ROUND_UP (bpp, 8);
+  info->size = info->stride[0] * info->height;
+
   return ret;
 
   /* ERRORS */
@@ -913,6 +983,11 @@ gst_video_test_src_decide_allocation (GstBaseSrc * bsrc, GstQuery * query)
       pool = gst_buffer_pool_new ();
     else
       pool = gst_video_buffer_pool_new ();
+    {
+      gchar *name = g_strdup_printf ("%s-pool", GST_OBJECT_NAME (videotestsrc));
+      g_object_set (pool, "name", name, NULL);
+      g_free (name);
+    }
   }
 
   config = gst_buffer_pool_get_config (pool);
@@ -960,22 +1035,8 @@ gst_video_test_src_setcaps (GstBaseSrc * bsrc, GstCaps * caps)
       goto parse_failed;
 
   } else if (gst_structure_has_name (structure, "video/x-bayer")) {
-    gint x_inv = 0, y_inv = 0;
-
-    gst_video_info_init (&info);
-
-    info.finfo = gst_video_format_get_info (GST_VIDEO_FORMAT_GRAY8);
-
-    if (!gst_video_test_src_parse_caps (caps, &info.width, &info.height,
-            &info.fps_n, &info.fps_d, &info.colorimetry, &x_inv, &y_inv))
+    if (!gst_video_test_src_parse_caps (caps, &info, videotestsrc))
       goto parse_failed;
-
-    info.size = GST_ROUND_UP_4 (info.width) * info.height;
-    info.stride[0] = GST_ROUND_UP_4 (info.width);
-
-    videotestsrc->bayer = TRUE;
-    videotestsrc->x_invert = x_inv;
-    videotestsrc->y_invert = y_inv;
   } else {
     goto unsupported_caps;
   }
@@ -1026,7 +1087,9 @@ gst_video_test_src_setcaps (GstBaseSrc * bsrc, GstCaps * caps)
   videotestsrc->running_time = 0;
   videotestsrc->n_frames = 0;
 
+  g_mutex_lock (&videotestsrc->cache_lock);
   gst_clear_buffer (&videotestsrc->cached);
+  g_mutex_unlock (&videotestsrc->cache_lock);
 
   GST_OBJECT_UNLOCK (videotestsrc);
 
@@ -1121,8 +1184,8 @@ gst_video_test_src_query (GstBaseSrc * bsrc, GstQuery * query)
             break;
         }
       }
-      /* fall through */
     }
+      /* FALLTHROUGH */
     default:
       res = GST_BASE_SRC_CLASS (parent_class)->query (bsrc, query);
       break;
@@ -1262,12 +1325,15 @@ gst_video_test_src_fill (GstPushSrc * psrc, GstBuffer * buffer)
   if (src->have_static_pattern) {
     GstVideoFrame sframe, dframe;
 
+    g_mutex_lock (&src->cache_lock);
     if (src->cached == NULL) {
       src->cached = gst_buffer_new_allocate (NULL, src->info.size, NULL);
 
       ret = fill_image (GST_PUSH_SRC (src), src->cached);
-      if (G_UNLIKELY (ret != GST_FLOW_OK))
+      if (G_UNLIKELY (ret != GST_FLOW_OK)) {
+        g_mutex_unlock (&src->cache_lock);
         goto fill_failed;
+      }
     } else {
       GST_LOG_OBJECT (src, "Reusing cached pattern buffer");
     }
@@ -1279,11 +1345,14 @@ gst_video_test_src_fill (GstPushSrc * psrc, GstBuffer * buffer)
     gst_video_frame_map (&sframe, &src->info, src->cached, GST_MAP_READ);
     gst_video_frame_map (&dframe, &src->info, buffer, GST_MAP_WRITE);
 
-    if (!gst_video_frame_copy (&dframe, &sframe))
+    if (!gst_video_frame_copy (&dframe, &sframe)) {
+      g_mutex_unlock (&src->cache_lock);
       goto copy_failed;
+    }
 
     gst_video_frame_unmap (&sframe);
     gst_video_frame_unmap (&dframe);
+    g_mutex_unlock (&src->cache_lock);
   } else {
     ret = fill_image (GST_PUSH_SRC (src), buffer);
     if (G_UNLIKELY (ret != GST_FLOW_OK))
@@ -1383,7 +1452,9 @@ gst_video_test_src_stop (GstBaseSrc * basesrc)
   src->n_lines = 0;
   src->lines = NULL;
 
+  g_mutex_lock (&src->cache_lock);
   gst_clear_buffer (&src->cached);
+  g_mutex_unlock (&src->cache_lock);
 
   return TRUE;
 }

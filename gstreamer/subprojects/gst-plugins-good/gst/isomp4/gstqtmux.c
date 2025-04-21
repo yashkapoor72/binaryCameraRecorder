@@ -641,6 +641,8 @@ gst_qt_mux_class_init (GstQTMuxClass * klass)
 static void
 gst_qt_mux_pad_reset (GstQTMuxPad * qtpad)
 {
+  guint i;
+
   qtpad->fourcc = 0;
   qtpad->is_out_of_order = FALSE;
   qtpad->sample_size = 0;
@@ -678,7 +680,13 @@ gst_qt_mux_pad_reset (GstQTMuxPad * qtpad)
     atom_traf_free (qtpad->traf);
     qtpad->traf = NULL;
   }
+  for (i = 0; i < atom_array_get_len (&qtpad->fragment_buffers); i++) {
+    GstBuffer *buf = atom_array_index (&qtpad->fragment_buffers, i);
+    if (buf != NULL)
+      gst_buffer_unref (atom_array_index (&qtpad->fragment_buffers, i));
+  }
   atom_array_clear (&qtpad->fragment_buffers);
+
   if (qtpad->samples)
     g_array_unref (qtpad->samples);
   qtpad->samples = NULL;
@@ -918,16 +926,16 @@ extract_608_field_from_s334_1a (const guint8 * ccdata, gsize ccdata_size,
   /* Iterate over the ccdata and put the corresponding tuples for the given field
    * in the storage */
   for (i = 0; i < ccdata_size; i += 3) {
-    if ((field == 1 && (ccdata[i * 3] & 0x80)) ||
-        (field == 2 && !(ccdata[i * 3] & 0x80))) {
+    if ((field == 1 && (ccdata[i] & 0x80)) ||
+        (field == 2 && !(ccdata[i] & 0x80))) {
       GST_DEBUG ("Storing matching cc for field %d : 0x%02x 0x%02x", field,
-          ccdata[i * 3 + 1], ccdata[i * 3 + 2]);
+          ccdata[i + 1], ccdata[i + 2]);
       if (res_size >= storage_size) {
         storage_size += 128;
         storage = g_realloc (storage, storage_size);
       }
-      storage[res_size] = ccdata[i * 3 + 1];
-      storage[res_size + 1] = ccdata[i * 3 + 2];
+      storage[res_size] = ccdata[i + 1];
+      storage[res_size + 1] = ccdata[i + 2];
       res_size += 2;
     }
   }
@@ -1809,6 +1817,62 @@ gst_qt_mux_add_metadata_tags (GstQTMux * qtmux, const GstTagList * list,
   return;
 }
 
+static void
+gst_qt_mux_set_matrix_from_tags (guint32 * matrix, const GstTagList * tags)
+{
+  gchar *orientation;
+
+  if (!tags ||
+      !gst_tag_list_get_string (tags, "image-orientation", &orientation))
+    return;
+
+  if (!g_strcmp0 ("rotate-0", orientation)) {
+    matrix[0] = 1 << 16;
+    matrix[1] = 0;
+    matrix[3] = 0;
+    matrix[4] = 1 << 16;
+  } else if (!g_strcmp0 ("rotate-90", orientation)) {
+    matrix[0] = 0;
+    matrix[1] = 1 << 16;
+    matrix[3] = G_MAXUINT16 << 16;
+    matrix[4] = 0;
+  } else if (!g_strcmp0 ("rotate-180", orientation)) {
+    matrix[0] = G_MAXUINT16 << 16;
+    matrix[1] = 0;
+    matrix[3] = 0;
+    matrix[4] = G_MAXUINT16 << 16;
+  } else if (!g_strcmp0 ("rotate-270", orientation)) {
+    matrix[0] = 0;
+    matrix[1] = G_MAXUINT16 << 16;
+    matrix[3] = 1 << 16;
+    matrix[4] = 0;
+  } else if (!g_strcmp0 ("flip-rotate-0", orientation)) {
+    matrix[0] = G_MAXUINT16 << 16;
+    matrix[1] = 0;
+    matrix[3] = 0;
+    matrix[4] = 1 << 16;
+  } else if (!g_strcmp0 ("flip-rotate-90", orientation)) {
+    matrix[0] = 0;
+    matrix[1] = G_MAXUINT16 << 16;
+    matrix[3] = G_MAXUINT16 << 16;
+    matrix[4] = 0;
+  } else if (!g_strcmp0 ("flip-rotate-180", orientation)) {
+    matrix[0] = 1 << 16;
+    matrix[1] = 0;
+    matrix[3] = 0;
+    matrix[4] = G_MAXUINT16 << 16;
+  } else if (!g_strcmp0 ("flip-rotate-270", orientation)) {
+    matrix[0] = 0;
+    matrix[1] = 1 << 16;
+    matrix[3] = 1 << 16;
+    matrix[4] = 0;
+  } else {
+    GST_WARNING ("Unsupported orientation %s", orientation);
+  }
+
+  g_free (orientation);
+}
+
 /*
  * Gets the tagsetter iface taglist and puts the known tags
  * into the output stream
@@ -1817,6 +1881,7 @@ static void
 gst_qt_mux_setup_metadata (GstQTMux * qtmux)
 {
   const GstTagList *tags = NULL;
+  guint32 transform_matrix[9] = { 0 };
   GList *l;
 
   GST_OBJECT_LOCK (qtmux);
@@ -1844,6 +1909,12 @@ gst_qt_mux_setup_metadata (GstQTMux * qtmux)
     GST_DEBUG_OBJECT (qtmux, "No new tags received");
   }
 
+  /* Initialize to identity */
+  transform_matrix[0] = 1 << 16;
+  transform_matrix[4] = 1 << 16;
+  transform_matrix[8] = 1 << 30;
+  gst_qt_mux_set_matrix_from_tags (transform_matrix, tags);
+
   GST_OBJECT_LOCK (qtmux);
   for (l = GST_ELEMENT (qtmux)->sinkpads; l; l = l->next) {
     GstQTMuxPad *qpad = GST_QT_MUX_PAD (l->data);
@@ -1852,6 +1923,12 @@ gst_qt_mux_setup_metadata (GstQTMux * qtmux)
       GST_DEBUG_OBJECT (qpad, "Adding tags");
       gst_tag_list_remove_tag (qpad->tags, GST_TAG_CONTAINER_FORMAT);
       gst_qt_mux_add_metadata_tags (qtmux, qpad->tags, &qpad->trak->udta);
+
+      /* Use the matrix from the stream tags if available, otherwise fall back
+       * to global tags or identity. */
+      memcpy (qpad->trak->tkhd.matrix, transform_matrix, sizeof (guint32) * 9);
+      gst_qt_mux_set_matrix_from_tags (qpad->trak->tkhd.matrix, qpad->tags);
+
       qpad->tags_changed = FALSE;
       GST_DEBUG_OBJECT (qpad, "Tags added");
     } else {
@@ -2192,6 +2269,9 @@ gst_qt_mux_set_header_on_caps (GstQTMux * mux, GstBuffer * buf)
   GstCaps *caps, *tcaps;
 
   tcaps = gst_pad_get_current_caps (GST_AGGREGATOR_SRC_PAD (mux));
+  if (G_UNLIKELY (tcaps == NULL))
+    return;
+
   caps = gst_caps_copy (tcaps);
   gst_caps_unref (tcaps);
 
@@ -4493,7 +4573,7 @@ init:
         G_GINT64_FORMAT " (%" GST_TIME_FORMAT ") of %" G_GINT64_FORMAT " (%"
         GST_STIME_FORMAT ")", first_qt_dts, GST_TIME_ARGS (first_dts), dts,
         GST_TIME_ARGS (current_dts), dts - first_qt_dts,
-        GST_STIME_ARGS (current_dts - first_dts));
+        GST_STIME_ARGS ((GstClockTimeDiff) (current_dts - first_dts)));
     atom_traf_set_base_decode_time (pad->traf, dts - first_qt_dts);
   }
 
@@ -5706,20 +5786,19 @@ gst_qt_mux_aggregate (GstAggregator * agg, gboolean timeout)
 }
 
 static gboolean
-field_is_in (GQuark field_id, const gchar * fieldname, ...)
+field_is_in (const GstIdStr * fieldname, const gchar * name, ...)
 {
   va_list varargs;
-  gchar *name = (gchar *) fieldname;
 
-  va_start (varargs, fieldname);
+  va_start (varargs, name);
   while (name) {
-    if (field_id == g_quark_from_static_string (name)) {
+    if (gst_id_str_is_equal_to_str (fieldname, name)) {
       va_end (varargs);
 
       return TRUE;
     }
 
-    name = va_arg (varargs, char *);
+    name = va_arg (varargs, const char *);
   }
   va_end (varargs);
 
@@ -5727,25 +5806,27 @@ field_is_in (GQuark field_id, const gchar * fieldname, ...)
 }
 
 static gboolean
-check_field (GQuark field_id, const GValue * value, gpointer user_data)
+check_field (const GstIdStr * fieldname, const GValue * value,
+    gpointer user_data)
 {
   GstStructure *structure = (GstStructure *) user_data;
-  const GValue *other = gst_structure_id_get_value (structure, field_id);
+  const GValue *other = gst_structure_id_str_get_value (structure, fieldname);
   const gchar *name = gst_structure_get_name (structure);
 
   if (g_str_has_prefix (name, "video/")) {
     /* ignore framerate with video caps */
-    if (g_strcmp0 (g_quark_to_string (field_id), "framerate") == 0)
+    if (gst_id_str_is_equal_to_str (fieldname, "framerate"))
       return TRUE;
   }
 
   if (g_strcmp0 (name, "video/x-h264") == 0 ||
-      g_strcmp0 (name, "video/x-h265") == 0) {
+      g_strcmp0 (name, "video/x-h265") == 0 ||
+      g_strcmp0 (name, "video/x-h266") == 0) {
     /* We support muxing multiple codec_data structures, and the new SPS
      * will contain updated tier / level / profiles, which means we do
      * not need to fail renegotiation when those change.
      */
-    if (field_is_in (field_id,
+    if (field_is_in (fieldname,
             "codec_data", "tier", "level", "profile",
             "chroma-site", "chroma-format", "bit-depth-luma", "colorimetry",
             /* TODO: this may require a separate track but gst, vlc, ffmpeg and
@@ -5757,7 +5838,7 @@ check_field (GQuark field_id, const GValue * value, gpointer user_data)
   }
 
   if (other == NULL) {
-    if (field_is_in (field_id, "interlace-mode", NULL) &&
+    if (field_is_in (fieldname, "interlace-mode", NULL) &&
         !g_strcmp0 (g_value_get_string (value), "progressive")) {
       return TRUE;
     }
@@ -5777,7 +5858,7 @@ gst_qtmux_caps_is_subset_full (GstQTMux * qtmux, GstCaps * subset,
   if (!gst_structure_has_name (sup_s, gst_structure_get_name (sub_s)))
     return FALSE;
 
-  return gst_structure_foreach (sub_s, check_field, sup_s);
+  return gst_structure_foreach_id_str (sub_s, check_field, sup_s);
 }
 
 /* will unref @qtmux */
@@ -5785,15 +5866,17 @@ static gboolean
 gst_qt_mux_can_renegotiate (GstQTMux * qtmux, GstPad * pad, GstCaps * caps)
 {
   GstQTMuxPad *qtmuxpad = GST_QT_MUX_PAD_CAST (pad);
+  gboolean ret = TRUE;
 
   /* does not go well to renegotiate stream mid-way, unless
    * the old caps are a subset of the new one (this means upstream
    * added more info to the caps, as both should be 'fixed' caps) */
 
+  GST_OBJECT_LOCK (qtmux);
   if (!qtmuxpad->configured_caps) {
     GST_DEBUG_OBJECT (qtmux, "pad %s accepted caps %" GST_PTR_FORMAT,
         GST_PAD_NAME (pad), caps);
-    return TRUE;
+    goto out;
   }
 
   g_assert (caps != NULL);
@@ -5802,14 +5885,18 @@ gst_qt_mux_can_renegotiate (GstQTMux * qtmux, GstPad * pad, GstCaps * caps)
     GST_WARNING_OBJECT (qtmux,
         "pad %s refused renegotiation to %" GST_PTR_FORMAT " from %"
         GST_PTR_FORMAT, GST_PAD_NAME (pad), caps, qtmuxpad->configured_caps);
-    return FALSE;
+    ret = FALSE;
+    goto out;
   }
 
   GST_DEBUG_OBJECT (qtmux,
       "pad %s accepted renegotiation to %" GST_PTR_FORMAT " from %"
       GST_PTR_FORMAT, GST_PAD_NAME (pad), caps, qtmuxpad->configured_caps);
 
-  return TRUE;
+out:
+  GST_OBJECT_UNLOCK (qtmux);
+
+  return ret;
 }
 
 static gboolean
@@ -6073,9 +6160,9 @@ gst_qt_mux_audio_sink_set_caps (GstQTMuxPad * qtpad, GstCaps * caps)
   } else if (strcmp (mimetype, "audio/x-ac3") == 0) {
     entry.fourcc = FOURCC_ac_3;
 
-    /* Fixed values according to TS 102 366 but it also mentions that
-     * they should be ignored */
-    entry.channels = 2;
+    /* TS 102 366 mentions that these fields should be ignored,
+     * but be friendly and fill in the channel count like FFmpeg does */
+    entry.channels = channels;
     entry.sample_size = 16;
 
     /* AC-3 needs an extension atom but its data can only be obtained from
@@ -6382,6 +6469,28 @@ gst_qt_mux_video_sink_set_caps (GstQTMuxPad * qtpad, GstCaps * caps)
     if (ext_atom != NULL)
       ext_atom_list = g_list_prepend (ext_atom_list, ext_atom);
 
+  } else if (strcmp (mimetype, "video/x-h266") == 0) {
+    const gchar *format;
+
+    if (!codec_data) {
+      GST_WARNING_OBJECT (qtmux, "no codec_data in h266 caps");
+      goto refuse_caps;
+    }
+
+    format = gst_structure_get_string (structure, "stream-format");
+    if (strcmp (format, "vvc1") == 0)
+      entry.fourcc = FOURCC_vvc1;
+    else if (strcmp (format, "vvi1") == 0)
+      entry.fourcc = FOURCC_vvi1;
+
+    ext_atom = build_btrt_extension (0, qtpad->avg_bitrate, qtpad->max_bitrate);
+    if (ext_atom != NULL)
+      ext_atom_list = g_list_prepend (ext_atom_list, ext_atom);
+
+    ext_atom = build_vvcC_extension (0, 0, codec_data);
+    if (ext_atom != NULL)
+      ext_atom_list = g_list_prepend (ext_atom_list, ext_atom);
+
   } else if (strcmp (mimetype, "video/x-svq") == 0) {
     gint version = 0;
     const GstBuffer *seqh = NULL;
@@ -6584,24 +6693,87 @@ gst_qt_mux_video_sink_set_caps (GstQTMuxPad * qtpad, GstCaps * caps)
     entry.fourcc = FOURCC_cfhd;
     sync = FALSE;
   } else if (strcmp (mimetype, "video/x-av1") == 0) {
-    gint presentation_delay;
-    guint8 presentation_delay_byte = 0;
-    GstBuffer *av1_codec_data;
+    gint presentation_delay = -1;
+    GstBuffer *av1_codec_data = NULL;
 
-    if (gst_structure_get_int (structure, "presentation-delay",
-            &presentation_delay)) {
-      presentation_delay_byte = 1 << 5;
-      presentation_delay_byte |= MAX (0xF, presentation_delay & 0xF);
+    if (codec_data) {
+      av1_codec_data = gst_buffer_ref ((GstBuffer *) codec_data);
+    } else {
+      GstMapInfo map;
+      const gchar *tmp;
+      guint tmp2;
+
+      gst_structure_get_int (structure, "presentation-delay",
+          &presentation_delay);
+
+      av1_codec_data = gst_buffer_new_allocate (NULL, 4, NULL);
+      gst_buffer_map (av1_codec_data, &map, GST_MAP_WRITE);
+
+      /*
+       *  unsigned int (1) marker = 1;
+       *  unsigned int (7) version = 1;
+       *  unsigned int (3) seq_profile;
+       *  unsigned int (5) seq_level_idx_0;
+       *  unsigned int (1) seq_tier_0;
+       *  unsigned int (1) high_bitdepth;
+       *  unsigned int (1) twelve_bit;
+       *  unsigned int (1) monochrome;
+       *  unsigned int (1) chroma_subsampling_x;
+       *  unsigned int (1) chroma_subsampling_y;
+       *  unsigned int (2) chroma_sample_position;
+       *  unsigned int (3) reserved = 0;
+       *
+       *  unsigned int (1) initial_presentation_delay_present;
+       *  if (initial_presentation_delay_present) {
+       *    unsigned int (4) initial_presentation_delay_minus_one;
+       *  } else {
+       *    unsigned int (4) reserved = 0;
+       *  }
+       */
+
+      map.data[0] = 0x81;
+      map.data[1] = 0x00;
+      if ((tmp = gst_structure_get_string (structure, "profile"))) {
+        if (strcmp (tmp, "main") == 0)
+          map.data[1] |= (0 << 5);
+        if (strcmp (tmp, "high") == 0)
+          map.data[1] |= (1 << 5);
+        if (strcmp (tmp, "professional") == 0)
+          map.data[1] |= (2 << 5);
+      }
+      /* FIXME: level set to 1 */
+      map.data[1] |= 0x01;
+      /* FIXME: tier set to 0 */
+
+      if (gst_structure_get_uint (structure, "bit-depth-luma", &tmp2)) {
+        if (tmp2 == 10) {
+          map.data[2] |= 0x40;
+        } else if (tmp2 == 12) {
+          map.data[2] |= 0x60;
+        }
+      }
+
+      /* Assume 4:2:0 if nothing else is given */
+      map.data[2] |= 0x0C;
+      if ((tmp = gst_structure_get_string (structure, "chroma-format"))) {
+        if (strcmp (tmp, "4:0:0") == 0)
+          map.data[2] |= 0x1C;
+        if (strcmp (tmp, "4:2:0") == 0)
+          map.data[2] |= 0x0C;
+        if (strcmp (tmp, "4:2:2") == 0)
+          map.data[2] |= 0x08;
+        if (strcmp (tmp, "4:4:4") == 0)
+          map.data[2] |= 0x00;
+      }
+
+      /* FIXME: keep chroma-site unknown */
+
+      if (presentation_delay != -1) {
+        map.data[3] = 0x10 | (MAX (0xF, presentation_delay) & 0xF);
+      }
+
+      gst_buffer_unmap (av1_codec_data, &map);
     }
-
-
-    av1_codec_data = gst_buffer_new_allocate (NULL, 5, NULL);
-    /* Fill version and 3 bytes of flags to 0 */
-    gst_buffer_memset (av1_codec_data, 0, 0, 4);
-    gst_buffer_fill (av1_codec_data, 4, &presentation_delay_byte, 1);
-    if (codec_data)
-      av1_codec_data = gst_buffer_append (av1_codec_data,
-          gst_buffer_ref ((GstBuffer *) codec_data));
 
     entry.fourcc = FOURCC_av01;
 
@@ -6967,8 +7139,10 @@ gst_qt_mux_sink_event (GstAggregator * agg, GstAggregatorPad * agg_pad,
         GST_OBJECT_UNLOCK (qtmux);
       }
 
+      GST_OBJECT_LOCK (qtmux);
       if (ret)
         gst_caps_replace (&qtmux_pad->configured_caps, caps);
+      GST_OBJECT_UNLOCK (qtmux);
 
       gst_event_unref (event);
       event = NULL;

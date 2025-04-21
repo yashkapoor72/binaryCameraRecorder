@@ -372,8 +372,8 @@ gst_svthevc_enc_sink_getcaps (GstVideoEncoder * enc, GstCaps * filter)
   filter_caps = gst_caps_new_empty ();
 
   for (i = 0; i < gst_caps_get_size (supported_incaps); i++) {
-    GQuark q_name =
-        gst_structure_get_name_id (gst_caps_get_structure (supported_incaps,
+    const GstIdStr *name =
+        gst_structure_get_name_id_str (gst_caps_get_structure (supported_incaps,
             i));
 
     for (j = 0; j < gst_caps_get_size (allowed_caps); j++) {
@@ -381,7 +381,7 @@ gst_svthevc_enc_sink_getcaps (GstVideoEncoder * enc, GstCaps * filter)
       const GValue *val;
       GstStructure *s;
 
-      s = gst_structure_new_id_empty (q_name);
+      s = gst_structure_new_id_str_empty (name);
       if ((val = gst_structure_get_value (allowed_s, "width")))
         gst_structure_set_value (s, "width", val);
       if ((val = gst_structure_get_value (allowed_s, "height")))
@@ -621,6 +621,12 @@ gst_svthevc_enc_class_init (GstSvtHevcEncClass * klass)
 
   gst_element_class_add_static_pad_template (element_class, &sink_factory);
   gst_element_class_add_static_pad_template (element_class, &src_factory);
+
+  gst_type_mark_as_plugin_api (GST_SVTHEVC_ENC_B_PYRAMID_TYPE, 0);
+  gst_type_mark_as_plugin_api (GST_SVTHEVC_ENC_BASE_LAYER_MODE_TYPE, 0);
+  gst_type_mark_as_plugin_api (GST_SVTHEVC_ENC_PRED_STRUCT_TYPE, 0);
+  gst_type_mark_as_plugin_api (GST_SVTHEVC_ENC_RC_TYPE, 0);
+  gst_type_mark_as_plugin_api (GST_SVTHEVC_ENC_TUNE_TYPE, 0);
 }
 
 static void
@@ -628,8 +634,8 @@ gst_svthevc_enc_init (GstSvtHevcEnc * encoder)
 {
   EB_H265_ENC_INPUT *in_data;
 
-  encoder->in_buf = g_slice_new0 (EB_BUFFERHEADERTYPE);
-  in_data = g_slice_new0 (EB_H265_ENC_INPUT);
+  encoder->in_buf = g_new0 (EB_BUFFERHEADERTYPE, 1);
+  in_data = g_new0 (EB_H265_ENC_INPUT, 1);
   encoder->in_buf->pBuffer = (unsigned char *) in_data;
   encoder->in_buf->nSize = sizeof (*encoder->in_buf);
   encoder->in_buf->pAppPrivate = NULL;
@@ -747,8 +753,8 @@ gst_svthevc_enc_finalize (GObject * object)
   if (encoder->in_buf) {
     EB_H265_ENC_INPUT *in_data = (EB_H265_ENC_INPUT *) encoder->in_buf->pBuffer;
     if (in_data)
-      g_slice_free (EB_H265_ENC_INPUT, in_data);
-    g_slice_free (EB_BUFFERHEADERTYPE, encoder->in_buf);
+      g_free (in_data);
+    g_free (encoder->in_buf);
   }
 
   g_free ((gpointer) encoder->svthevc_version);
@@ -1448,6 +1454,12 @@ gst_svthevc_enc_set_format (GstVideoEncoder * video_enc,
 
     caps = gst_video_info_to_caps (info);
     pool = gst_video_buffer_pool_new ();
+    {
+      gchar *name =
+          g_strdup_printf ("%s-internal-pool", GST_OBJECT_NAME (encoder));
+      g_object_set (pool, "name", name, NULL);
+      g_free (name);
+    }
 
     size = GST_VIDEO_INFO_SIZE (info);
     GST_INFO_OBJECT (encoder,
@@ -1501,7 +1513,7 @@ gst_svthevc_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
   GstCaps *caps;
   GstVideoInfo info;
   GstVideoAlignment video_align;
-  GstBufferPool *pool;
+  GstBufferPool *pool = NULL;
   GstStructure *config;
   guint i, size, min, max;
 
@@ -1548,6 +1560,12 @@ gst_svthevc_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
       gst_query_add_allocation_param (query, allocator, &params);
 
     pool = gst_video_buffer_pool_new ();
+    {
+      gchar *name =
+          g_strdup_printf ("%s-propose-pool", GST_OBJECT_NAME (svthevcenc));
+      g_object_set (pool, "name", name, NULL);
+      g_free (name);
+    }
 
     config = gst_buffer_pool_get_config (pool);
     gst_buffer_pool_config_set_params (config, caps, size, 0, 0);
@@ -2255,6 +2273,12 @@ gst_svthevc_enc_get_property (GObject * object, guint prop_id,
   }
   GST_OBJECT_UNLOCK (encoder);
 }
+
+/**
+ * plugin-svthevcenc:
+ *
+ * Since: 1.18
+ */
 
 static gboolean
 plugin_init (GstPlugin * plugin)

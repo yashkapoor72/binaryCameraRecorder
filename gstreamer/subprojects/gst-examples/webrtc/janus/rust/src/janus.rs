@@ -27,7 +27,7 @@ use {
     futures::sink::{Sink, SinkExt},
     futures::stream::{Stream, StreamExt},
     gst::prelude::*,
-    http::Request,
+    http::Uri,
     log::{debug, error, info, trace},
     rand::prelude::*,
     serde_derive::{Deserialize, Serialize},
@@ -101,13 +101,13 @@ pub struct Args {
 struct Base {
     janus: String,
     transaction: Option<String>,
-    session_id: Option<i64>,
+    session_id: Option<u64>,
     sender: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct DataHolder {
-    id: i64,
+    id: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -153,8 +153,8 @@ struct JsonReply {
 }
 
 fn transaction_id() -> String {
-    thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
         .map(char::from)
         .take(30)
         .collect()
@@ -186,8 +186,8 @@ impl std::ops::Deref for Peer {
 
 #[derive(Clone, Copy, Debug)]
 struct ConnectionHandle {
-    id: i64,
-    session_id: i64,
+    id: u64,
+    session_id: u64,
 }
 
 // Actual peer state
@@ -244,7 +244,7 @@ impl Peer {
 
         let transaction = transaction_id();
         let sdp_data = offer.sdp().as_text()?;
-        let msg = WsMessage::Text(
+        let msg = WsMessage::text(
             json!({
                  "janus": "message",
                  "transaction": transaction,
@@ -363,7 +363,7 @@ impl Peer {
     fn on_ice_candidate(&self, mlineindex: u32, candidate: &str) -> Result<(), anyhow::Error> {
         let transaction = transaction_id();
         info!("Sending ICE {} {}", mlineindex, &candidate);
-        let msg = WsMessage::Text(
+        let msg = WsMessage::text(
             json!({
                 "janus": "trickle",
                 "transaction": transaction,
@@ -407,16 +407,20 @@ pub struct JanusGateway {
 
 impl JanusGateway {
     pub async fn new(pipeline: gst::Bin) -> Result<Self, anyhow::Error> {
+        use tungstenite::client::IntoClientRequest;
+
         let args = Args::parse();
-        let request = Request::builder()
-            .uri(&args.server)
-            .header("Sec-WebSocket-Protocol", "janus-protocol")
-            .body(())?;
+
+        let mut request = args.server.parse::<Uri>()?.into_client_request()?;
+        request.headers_mut().append(
+            "Sec-WebSocket-Protocol",
+            http::HeaderValue::from_static("janus-protocol"),
+        );
 
         let (mut ws, _) = connect_async(request).await?;
 
         let transaction = transaction_id();
-        let msg = WsMessage::Text(
+        let msg = WsMessage::text(
             json!({
                 "janus": "create",
                 "transaction": transaction,
@@ -436,7 +440,7 @@ impl JanusGateway {
         let session_id = json_msg.data.expect("no session id").id;
 
         let transaction = transaction_id();
-        let msg = WsMessage::Text(
+        let msg = WsMessage::text(
             json!({
                 "janus": "attach",
                 "transaction": transaction,
@@ -458,7 +462,7 @@ impl JanusGateway {
         let handle = json_msg.data.expect("no session id").id;
 
         let transaction = transaction_id();
-        let msg = WsMessage::Text(
+        let msg = WsMessage::text(
             json!({
                 "janus": "message",
                 "transaction": transaction,
@@ -485,7 +489,7 @@ impl JanusGateway {
         );
 
         let encode_bin =
-            gst::parse_bin_from_description_with_name(bin_description, false, "encode-bin")?;
+            gst::parse::bin_from_description_with_name(bin_description, false, "encode-bin")?;
 
         pipeline.add(&encode_bin).expect("Failed to add encode bin");
 
@@ -499,10 +503,11 @@ impl JanusGateway {
             .static_pad("sink")
             .expect("Failed to get sink pad from encoder");
 
-        if let Ok(video_ghost_pad) = gst::GhostPad::with_target(Some("video_sink"), &sinkpad) {
-            encode_bin.add_pad(&video_ghost_pad)?;
-            srcpad.link(&video_ghost_pad)?;
-        }
+        let video_ghost_pad = gst::GhostPad::builder_with_target(&sinkpad)?
+            .name("video_sink")
+            .build();
+        encode_bin.add_pad(&video_ghost_pad)?;
+        srcpad.link(&video_ghost_pad)?;
 
         let sinkpad2 = webrtcbin
             .request_pad_simple("sink_%u")
@@ -511,11 +516,11 @@ impl JanusGateway {
             .by_name("webrtc-vsink")
             .expect("No webrtc-vsink found");
         let srcpad = vsink.static_pad("src").expect("Element without src pad");
-        if let Ok(webrtc_ghost_pad) = gst::GhostPad::with_target(Some("webrtc_video_src"), &srcpad)
-        {
-            encode_bin.add_pad(&webrtc_ghost_pad)?;
-            webrtc_ghost_pad.link(&sinkpad2)?;
-        }
+        let webrtc_ghost_pad = gst::GhostPad::builder_with_target(&srcpad)?
+            .name("webrtc_video_src")
+            .build();
+        encode_bin.add_pad(&webrtc_ghost_pad)?;
+        webrtc_ghost_pad.link(&sinkpad2)?;
 
         let transceiver = webrtcbin.emit_by_name::<glib::Object>("get-transceiver", &[&0i32]);
         transceiver.set_property("do-nack", false);
@@ -626,7 +631,7 @@ impl JanusGateway {
                     // Handle keepalive ticks, fired every 10 seconds
                     _ws_msg = timer_fuse.select_next_some() => {
                         let transaction = transaction_id();
-                        Some(WsMessage::Text(
+                        Some(WsMessage::text(
                             json!({
                                 "janus": "keepalive",
                                 "transaction": transaction,

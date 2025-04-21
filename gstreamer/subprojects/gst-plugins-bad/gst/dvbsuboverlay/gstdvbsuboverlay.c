@@ -71,7 +71,7 @@ enum
 #define DVBSUB_OVERLAY_CAPS GST_VIDEO_CAPS_MAKE(VIDEO_FORMATS)
 
 #define DVBSUB_OVERLAY_ALL_CAPS DVBSUB_OVERLAY_CAPS ";" \
-    GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("ANY", GST_VIDEO_FORMATS_ALL)
+    GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("ANY", GST_VIDEO_FORMATS_ANY)
 
 static GstStaticCaps sw_template_caps = GST_STATIC_CAPS (DVBSUB_OVERLAY_CAPS);
 
@@ -1226,6 +1226,7 @@ gst_dvbsub_overlay_event_video (GstPad * pad, GstObject * parent,
     }
     case GST_EVENT_FLUSH_STOP:
       gst_segment_init (&render->video_segment, GST_FORMAT_TIME);
+      /* FALLTHROUGH */
     default:
       ret = gst_pad_push_event (render->srcpad, event);
       break;

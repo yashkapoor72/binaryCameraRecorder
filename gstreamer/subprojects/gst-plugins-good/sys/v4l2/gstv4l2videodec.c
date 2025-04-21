@@ -138,6 +138,10 @@ gst_v4l2_video_dec_open (GstVideoDecoder * decoder)
   if (gst_caps_is_empty (self->probed_sinkcaps))
     goto no_encoded_format;
 
+  self->supports_source_change =
+      gst_v4l2_object_subscribe_event (self->v4l2capture,
+      V4L2_EVENT_SOURCE_CHANGE);
+
   return TRUE;
 
 no_encoded_format:
@@ -185,7 +189,6 @@ gst_v4l2_video_dec_start (GstVideoDecoder * decoder)
 
   gst_v4l2_object_unlock (self->v4l2output);
   g_atomic_int_set (&self->active, TRUE);
-  g_atomic_int_set (&self->capture_configuration_change, FALSE);
   self->output_flow = GST_FLOW_OK;
 
   return TRUE;
@@ -256,13 +259,15 @@ static gboolean
 gst_v4l2_video_dec_set_format (GstVideoDecoder * decoder,
     GstVideoCodecState * state)
 {
+  GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
   GstV4l2Error error = GST_V4L2_ERROR_INIT;
   gboolean ret = TRUE;
-  GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
+  gboolean dyn_resolution = self->v4l2output->fmtdesc &&
+      (self->v4l2output->fmtdesc->flags & V4L2_FMT_FLAG_DYN_RESOLUTION);
 
   GST_DEBUG_OBJECT (self, "Setting format: %" GST_PTR_FORMAT, state->caps);
 
-  if (self->input_state) {
+  if (self->input_state && !dyn_resolution) {
     if (compatible_caps (self, state->caps)) {
       GST_DEBUG_OBJECT (self, "Compatible caps");
       goto done;
@@ -286,8 +291,7 @@ gst_v4l2_video_dec_set_format (GstVideoDecoder * decoder,
      * the complexity and should not have much impact in performance since the
      * following allocation query will happen on a drained pipeline and won't
      * block. */
-    if (self->v4l2capture->pool &&
-        !gst_v4l2_buffer_pool_orphan (&self->v4l2capture->pool)) {
+    if (!gst_v4l2_buffer_pool_orphan (self->v4l2capture)) {
       GstCaps *caps = gst_pad_get_current_caps (decoder->srcpad);
       if (caps) {
         GstQuery *query = gst_query_new_allocation (caps, FALSE);
@@ -301,14 +305,9 @@ gst_v4l2_video_dec_set_format (GstVideoDecoder * decoder,
     self->output_flow = GST_FLOW_OK;
   }
 
-  ret = gst_v4l2_object_set_format (self->v4l2output, state->caps, &error);
-
-  gst_caps_replace (&self->probed_srccaps, NULL);
-  self->probed_srccaps = gst_v4l2_object_probe_caps (self->v4l2capture,
-      gst_v4l2_object_get_raw_caps ());
-
-  if (gst_caps_is_empty (self->probed_srccaps))
-    goto no_raw_format;
+  /* No V4L2_FMT_FLAG_DYN_RESOLUTION or no fmtdesc set yet */
+  if (!dyn_resolution)
+    ret = gst_v4l2_object_set_format (self->v4l2output, state->caps, &error);
 
   if (ret)
     self->input_state = gst_video_codec_state_ref (state);
@@ -317,12 +316,6 @@ gst_v4l2_video_dec_set_format (GstVideoDecoder * decoder,
 
 done:
   return ret;
-
-no_raw_format:
-  GST_ELEMENT_ERROR (self, RESOURCE, SETTINGS,
-      (_("Decoder on device %s has no supported output format"),
-          self->v4l2output->videodev), (NULL));
-  return GST_FLOW_ERROR;
 }
 
 static gboolean
@@ -351,14 +344,50 @@ gst_v4l2_video_dec_flush (GstVideoDecoder * decoder)
   gst_v4l2_object_unlock_stop (self->v4l2output);
   gst_v4l2_object_unlock_stop (self->v4l2capture);
 
-  if (self->v4l2output->pool)
-    gst_v4l2_buffer_pool_flush (self->v4l2output->pool);
+  gst_v4l2_buffer_pool_flush (self->v4l2output);
 
   /* gst_v4l2_buffer_pool_flush() calls streamon the capture pool and must be
    * called after gst_v4l2_object_unlock_stop() stopped flushing the buffer
-   * pool. */
-  if (self->v4l2capture->pool)
-    gst_v4l2_buffer_pool_flush (self->v4l2capture->pool);
+   * pool. If the resolution has changed before we stopped the driver we must
+   * reallocate the capture pool. We simply discard the pool, and let the
+   * capture thread handle re-allocation.*/
+  if (gst_v4l2_buffer_pool_flush (self->v4l2capture) ==
+      GST_V4L2_FLOW_RESOLUTION_CHANGE || self->draining)
+    gst_v4l2_object_stop (self->v4l2capture);
+
+  return TRUE;
+}
+
+static gboolean
+gst_v4l2_video_remove_padding (GstCapsFeatures * features,
+    GstStructure * structure, gpointer user_data)
+{
+  GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (user_data);
+  GstVideoAlignment *align = &self->v4l2capture->align;
+  GstVideoInfo *info = &self->v4l2capture->info.vinfo;
+  int width, height;
+
+  if (!gst_structure_get_int (structure, "width", &width))
+    return TRUE;
+
+  if (!gst_structure_get_int (structure, "height", &height))
+    return TRUE;
+
+  if (align->padding_left != 0 || align->padding_top != 0 ||
+      height != info->height + align->padding_bottom)
+    return TRUE;
+
+  if (height == info->height + align->padding_bottom) {
+    /* Some drivers may round up width to the padded with */
+    if (width == info->width + align->padding_right)
+      gst_structure_set (structure,
+          "width", G_TYPE_INT, width - align->padding_right,
+          "height", G_TYPE_INT, height - align->padding_bottom, NULL);
+    /* Some drivers may keep visible width and only round up bytesperline */
+    else if (width == info->width)
+      gst_structure_set (structure,
+          "height", G_TYPE_INT, height - align->padding_bottom, NULL);
+  }
 
   return TRUE;
 }
@@ -367,13 +396,161 @@ static gboolean
 gst_v4l2_video_dec_negotiate (GstVideoDecoder * decoder)
 {
   GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
+  GstV4l2Error error = GST_V4L2_ERROR_INIT;
+  GstVideoInfoDmaDrm info;
+  GstVideoCodecState *output_state;
+  GstCaps *acquired_caps, *acquired_drm_caps;
+  GstCaps *fixation_caps, *available_caps, *caps, *filter;
+  gboolean active;
+  GstBufferPool *cpool;
+  gboolean ret;
+  gint i;
 
   /* We don't allow renegotiation without careful disabling the pool */
-  if (self->v4l2capture->pool &&
-      gst_buffer_pool_is_active (GST_BUFFER_POOL (self->v4l2capture->pool)))
-    return TRUE;
+  cpool = gst_v4l2_object_get_buffer_pool (self->v4l2capture);
+  if (cpool) {
+    gboolean is_active = gst_buffer_pool_is_active (cpool);
+    gst_object_unref (cpool);
+    if (is_active)
+      return TRUE;
+  }
 
-  return GST_VIDEO_DECODER_CLASS (parent_class)->negotiate (decoder);
+  /* init capture fps according to output */
+  GST_V4L2_FPS_D (self->v4l2capture) = GST_V4L2_FPS_D (self->v4l2output);
+  GST_V4L2_FPS_N (self->v4l2capture) = GST_V4L2_FPS_N (self->v4l2output);
+
+  /* For decoders G_FMT returns coded size, G_SELECTION returns visible size
+   * in the compose rectangle. gst_v4l2_object_acquire_format() checks both
+   * and returns the visible size as with/height and the coded size as
+   * padding. */
+  if (!gst_v4l2_object_acquire_format (self->v4l2capture, &info))
+    goto not_negotiated;
+
+  /* gst_v4l2_object_acquire_format() does not set fps, copy from sink */
+  info.vinfo.fps_n = GST_V4L2_FPS_N (self->v4l2output);
+  info.vinfo.fps_d = GST_V4L2_FPS_D (self->v4l2output);
+
+  gst_caps_replace (&self->probed_srccaps, NULL);
+  self->probed_srccaps = gst_v4l2_object_probe_caps (self->v4l2capture,
+      gst_v4l2_object_get_raw_caps ());
+
+  /* Create caps from the acquired format, removing the format fields */
+  fixation_caps = gst_caps_new_empty ();
+
+  acquired_drm_caps = gst_video_info_dma_drm_to_caps (&info);
+  if (acquired_drm_caps) {
+    GST_DEBUG_OBJECT (self, "Acquired DRM caps: %" GST_PTR_FORMAT,
+        acquired_drm_caps);
+    gst_caps_append (fixation_caps, gst_caps_copy (acquired_drm_caps));
+  }
+
+  acquired_caps = gst_video_info_to_caps (&info.vinfo);
+  if (acquired_caps) {
+    GST_DEBUG_OBJECT (self, "Acquired caps: %" GST_PTR_FORMAT, acquired_caps);
+    gst_caps_append (fixation_caps, gst_caps_copy (acquired_caps));
+  }
+
+  for (i = 0; i < gst_caps_get_size (fixation_caps); i++) {
+    GstStructure *st = gst_caps_get_structure (fixation_caps, i);
+    gst_structure_remove_fields (st, "format", "drm-format", "colorimetry",
+        "chroma-site", NULL);
+  }
+
+  /* Probe currently available pixel formats */
+  available_caps = gst_caps_copy (self->probed_srccaps);
+  GST_DEBUG_OBJECT (self, "Available caps: %" GST_PTR_FORMAT, available_caps);
+
+  /* Replace coded size with visible size, we want to negotiate visible size
+   * with downstream, not coded size. */
+  gst_caps_map_in_place (available_caps, gst_v4l2_video_remove_padding, self);
+
+  filter = gst_caps_intersect_full (available_caps, fixation_caps,
+      GST_CAPS_INTERSECT_FIRST);
+  GST_DEBUG_OBJECT (self, "Filtered caps: %" GST_PTR_FORMAT, filter);
+  gst_caps_unref (fixation_caps);
+  gst_caps_unref (available_caps);
+  caps = gst_pad_peer_query_caps (decoder->srcpad, filter);
+  gst_caps_unref (filter);
+
+  GST_DEBUG_OBJECT (self, "Possible decoded caps: %" GST_PTR_FORMAT, caps);
+  if (gst_caps_is_empty (caps)) {
+    gst_caps_unref (caps);
+    goto not_negotiated;
+  }
+
+  /* Prefer the acquired caps over anything suggested downstream, this ensure
+   * that we preserves the bit depth, as we don't have any fancy fixation
+   * process */
+  if (acquired_drm_caps) {
+    if (gst_caps_is_subset (acquired_drm_caps, caps)) {
+      gst_caps_replace (&acquired_caps, acquired_drm_caps);
+      acquired_drm_caps = NULL;
+      goto use_acquired_caps;
+    }
+
+    gst_clear_caps (&acquired_drm_caps);
+  }
+
+  if (gst_caps_is_subset (acquired_caps, caps))
+    goto use_acquired_caps;
+
+  /* Fixate pixel format */
+  caps = gst_caps_fixate (caps);
+
+  GST_DEBUG_OBJECT (self, "Chosen decoded caps: %" GST_PTR_FORMAT, caps);
+
+  /* Try to set negotiated format, on success replace acquired format */
+  if (gst_v4l2_object_set_format (self->v4l2capture, caps, &error))
+    info = self->v4l2capture->info;
+  else
+    gst_v4l2_clear_error (&error);
+
+use_acquired_caps:
+  gst_caps_unref (caps);
+
+  /* catch possible bogus driver that don't enumerate the format it actually
+   * returned from G_FMT */
+  if (!self->v4l2capture->fmtdesc)
+    goto not_negotiated;
+
+  output_state = gst_video_decoder_set_interlaced_output_state (decoder,
+      info.vinfo.finfo->format, info.vinfo.interlace_mode, info.vinfo.width,
+      info.vinfo.height, self->input_state);
+
+  /* Copy the rest of the information, there might be more in the future */
+  output_state->info.colorimetry = info.vinfo.colorimetry;
+  output_state->caps = acquired_caps;
+  gst_video_codec_state_unref (output_state);
+
+  ret = GST_VIDEO_DECODER_CLASS (parent_class)->negotiate (decoder);
+  if (!ret)
+    goto not_negotiated;
+
+  /* The pool may be created through gst_video_decoder_negotiate(), so must
+   * be kept after */
+  cpool = gst_v4l2_object_get_buffer_pool (self->v4l2capture);
+  gst_v4l2_buffer_pool_enable_resolution_change (GST_V4L2_BUFFER_POOL (cpool));
+
+  /* Ensure our internal pool is activated */
+  active = gst_buffer_pool_set_active (cpool, TRUE);
+  if (cpool)
+    gst_object_unref (cpool);
+  if (!active)
+    goto activate_failed;
+
+  return TRUE;
+
+not_negotiated:
+  GST_ERROR_OBJECT (self, "not negotiated");
+  gst_v4l2_error (self, &error);
+  gst_v4l2_object_stop (self->v4l2capture);
+  return FALSE;
+activate_failed:
+  GST_ELEMENT_ERROR (self, RESOURCE, SETTINGS,
+      (_("Failed to allocate required memory.")),
+      ("Buffer pool activation failed"));
+  gst_v4l2_object_stop (self->v4l2capture);
+  return FALSE;
 }
 
 static gboolean
@@ -422,6 +599,9 @@ gst_v4l2_video_dec_finish (GstVideoDecoder * decoder)
 
   GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
 
+  /* If we are in the middle of a source change, cancel it */
+  self->draining = FALSE;
+
   if (gst_v4l2_decoder_cmd (self->v4l2output, V4L2_DEC_CMD_STOP, 0)) {
     GstTask *task;
 
@@ -444,15 +624,18 @@ gst_v4l2_video_dec_finish (GstVideoDecoder * decoder)
       gst_object_unref (task);
     }
   } else {
+    GstBufferPool *opool = gst_v4l2_object_get_buffer_pool (self->v4l2output);
     /* otherwise keep queuing empty buffers until the processing thread has
      * stopped, _pool_process() will return FLUSHING when that happened */
     while (ret == GST_FLOW_OK) {
       buffer = gst_buffer_new ();
       ret =
-          gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (self->
-              v4l2output->pool), &buffer, NULL);
+          gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (opool), &buffer,
+          NULL);
       gst_buffer_unref (buffer);
     }
+    if (opool)
+      gst_object_unref (opool);
   }
 
   /* and ensure the processing thread has stopped in case another error
@@ -466,15 +649,15 @@ gst_v4l2_video_dec_finish (GstVideoDecoder * decoder)
 
   GST_DEBUG_OBJECT (decoder, "Done draining buffers");
 
-  /* Draining of the capture buffer has completed. 
+  /* Draining of the capture buffer has completed.
    * If any pending frames remain at this point there is a decoder error.
-   * This has been observed as a driver bug, where eos is sent too early.   
+   * This has been observed as a driver bug, where eos is sent too early.
    * These frames will never be rendered, so drop them now with a warning */
 
   pending_frames = gst_video_decoder_get_frames (decoder);
   if (pending_frames) {
     int counter = 0;
-    guint32 first, last;
+    guint32 first = 0, last = 0;
     for (GList * g = pending_frames; g; g = g->next) {
       GstVideoCodecFrame *frame = g->data;
       g->data = NULL;
@@ -484,9 +667,11 @@ gst_v4l2_video_dec_finish (GstVideoDecoder * decoder)
       counter++;
       gst_video_decoder_drop_frame (decoder, frame);
     }
-    g_warning
-        ("%s: %i frames %u-%u left undrained after CMD_STOP, eos sent too early: bug in decoder -- please file a bug",
-        GST_ELEMENT_NAME (decoder), counter, first, last);
+    if (self->output_flow == GST_FLOW_OK) {
+      g_warning ("%s: %i frames %u-%u left undrained after CMD_STOP, "
+          "eos sent too early: bug in decoder -- please file a bug",
+          GST_ELEMENT_NAME (decoder), counter, first, last);
+    }
     if (pending_frames)
       g_list_free (pending_frames);
   }
@@ -523,185 +708,86 @@ check_system_frame_number_too_old (guint32 current, guint32 old)
   return FALSE;
 }
 
-static gboolean
-gst_v4l2_video_remove_padding (GstCapsFeatures * features,
-    GstStructure * structure, gpointer user_data)
-{
-  GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (user_data);
-  GstVideoAlignment *align = &self->v4l2capture->align;
-  GstVideoInfo *info = &self->v4l2capture->info;
-  int width, height;
-
-  if (!gst_structure_get_int (structure, "width", &width))
-    return TRUE;
-
-  if (!gst_structure_get_int (structure, "height", &height))
-    return TRUE;
-
-  if (align->padding_left != 0 || align->padding_top != 0 ||
-      height != info->height + align->padding_bottom)
-    return TRUE;
-
-  if (height == info->height + align->padding_bottom) {
-    /* Some drivers may round up width to the padded with */
-    if (width == info->width + align->padding_right)
-      gst_structure_set (structure,
-          "width", G_TYPE_INT, width - align->padding_right,
-          "height", G_TYPE_INT, height - align->padding_bottom, NULL);
-    /* Some drivers may keep visible width and only round up bytesperline */
-    else if (width == info->width)
-      gst_structure_set (structure,
-          "height", G_TYPE_INT, height - align->padding_bottom, NULL);
-  }
-
-  return TRUE;
-}
-
+/* Only used initially to wait for a SRC_CH event
+ * called with decoder stream lock */
 static GstFlowReturn
-gst_v4l2_video_dec_setup_capture (GstVideoDecoder * decoder)
+gst_v4l2_video_dec_wait_for_src_ch (GstV4l2VideoDec * self)
 {
-  GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
-  GstV4l2Error error = GST_V4L2_ERROR_INIT;
-  GstVideoInfo info;
-  GstVideoCodecState *output_state;
-  GstCaps *acquired_caps, *available_caps, *caps, *filter;
-  GstStructure *st;
+  GstFlowReturn flowret;
 
-  if (G_UNLIKELY (!GST_V4L2_IS_ACTIVE (self->v4l2capture))) {
-    /* init capture fps according to output */
-    self->v4l2capture->info.fps_d = self->v4l2output->info.fps_d;
-    self->v4l2capture->info.fps_n = self->v4l2output->info.fps_n;
+  if (!self->wait_for_source_change)
+    return GST_FLOW_OK;
 
-    /* For decoders G_FMT returns coded size, G_SELECTION returns visible size
-     * in the compose rectangle. gst_v4l2_object_acquire_format() checks both
-     * and returns the visible size as with/height and the coded size as
-     * padding. */
-    if (!gst_v4l2_object_acquire_format (self->v4l2capture, &info))
-      goto not_negotiated;
+  GST_DEBUG_OBJECT (self, "Waiting for source change event");
 
-    /* gst_v4l2_object_acquire_format() does not set fps, copy from sink */
-    info.fps_n = self->v4l2output->info.fps_n;
-    info.fps_d = self->v4l2output->info.fps_d;
+  GST_VIDEO_DECODER_STREAM_UNLOCK (GST_VIDEO_DECODER (self));
+  flowret = gst_v4l2_object_poll (self->v4l2capture, GST_CLOCK_TIME_NONE);
+  GST_VIDEO_DECODER_STREAM_LOCK (GST_VIDEO_DECODER (self));
 
-    gst_v4l2_object_clear_format_list (self->v4l2capture);
-    gst_caps_replace (&self->probed_srccaps, NULL);
-    self->probed_srccaps = gst_v4l2_object_probe_caps (self->v4l2capture,
-        gst_v4l2_object_get_raw_caps ());
-    /* Create caps from the acquired format, remove the format field */
-    acquired_caps = gst_video_info_to_caps (&info);
-    GST_DEBUG_OBJECT (self, "Acquired caps: %" GST_PTR_FORMAT, acquired_caps);
-    st = gst_caps_get_structure (acquired_caps, 0);
-    gst_structure_remove_fields (st, "format", "colorimetry", "chroma-site",
-        NULL);
-
-    /* Probe currently available pixel formats */
-    available_caps = gst_caps_copy (self->probed_srccaps);
-    GST_DEBUG_OBJECT (self, "Available caps: %" GST_PTR_FORMAT, available_caps);
-
-    /* Replace coded size with visible size, we want to negotiate visible size
-     * with downstream, not coded size. */
-    gst_caps_map_in_place (available_caps, gst_v4l2_video_remove_padding, self);
-
-    filter = gst_caps_intersect_full (available_caps, acquired_caps,
-        GST_CAPS_INTERSECT_FIRST);
-    GST_DEBUG_OBJECT (self, "Filtered caps: %" GST_PTR_FORMAT, filter);
-    gst_caps_unref (acquired_caps);
-    gst_caps_unref (available_caps);
-    caps = gst_pad_peer_query_caps (decoder->srcpad, filter);
-    gst_caps_unref (filter);
-
-    GST_DEBUG_OBJECT (self, "Possible decoded caps: %" GST_PTR_FORMAT, caps);
-    if (gst_caps_is_empty (caps)) {
-      gst_caps_unref (caps);
-      goto not_negotiated;
-    }
-
-    /* Fixate pixel format */
-    caps = gst_caps_fixate (caps);
-
-    GST_DEBUG_OBJECT (self, "Chosen decoded caps: %" GST_PTR_FORMAT, caps);
-
-    /* Try to set negotiated format, on success replace acquired format */
-    if (gst_v4l2_object_set_format (self->v4l2capture, caps, &error))
-      gst_video_info_from_caps (&info, caps);
-    else
-      gst_v4l2_clear_error (&error);
-    gst_caps_unref (caps);
-
-    output_state = gst_video_decoder_set_output_state (decoder,
-        info.finfo->format, info.width, info.height, self->input_state);
-
-    /* Copy the rest of the information, there might be more in the future */
-    output_state->info.interlace_mode = info.interlace_mode;
-    output_state->info.colorimetry = info.colorimetry;
-    gst_video_codec_state_unref (output_state);
-    gst_v4l2_buffer_pool_enable_resolution_change (GST_V4L2_BUFFER_POOL
-        (self->v4l2capture->pool));
-
-    if (!gst_video_decoder_negotiate (decoder)) {
-      if (GST_PAD_IS_FLUSHING (decoder->srcpad))
-        goto flushing;
-      else
-        goto not_negotiated;
-    }
-
-    /* Ensure our internal pool is activated */
-    if (!gst_buffer_pool_set_active (GST_BUFFER_POOL (self->v4l2capture->pool),
-            TRUE))
-      goto activate_failed;
+  /* Fix the flow return value, as the poll is watching for buffer, but we are
+   * looking for the source change event */
+  if (flowret == GST_V4L2_FLOW_RESOLUTION_CHANGE) {
+    self->wait_for_source_change = FALSE;
+    flowret = GST_FLOW_OK;
+  } else if (flowret == GST_FLOW_OK) {
+    /* A buffer would be unexpected, in this case just terminate */
+    flowret = GST_V4L2_FLOW_LAST_BUFFER;
   }
 
-  return GST_FLOW_OK;
-
-not_negotiated:
-  GST_ERROR_OBJECT (self, "not negotiated");
-  gst_v4l2_error (self, &error);
-  return GST_FLOW_NOT_NEGOTIATED;
-activate_failed:
-  GST_ELEMENT_ERROR (self, RESOURCE, SETTINGS,
-      (_("Failed to allocate required memory.")),
-      ("Buffer pool activation failed"));
-  return GST_FLOW_ERROR;
-flushing:
-  return GST_FLOW_FLUSHING;
+  return flowret;
 }
 
 static void
 gst_v4l2_video_dec_loop (GstVideoDecoder * decoder)
 {
   GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
-  GstV4l2BufferPool *v4l2_pool;
   GstBufferPool *pool;
   GstVideoCodecFrame *frame;
   GstBuffer *buffer = NULL;
   GstFlowReturn ret;
 
-  GST_VIDEO_DECODER_STREAM_LOCK (decoder);
-  if (g_atomic_int_get (&self->capture_configuration_change)) {
-    gst_v4l2_object_stop (self->v4l2capture);
-    ret = gst_v4l2_video_dec_setup_capture (decoder);
-    if (ret != GST_FLOW_OK) {
-      GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
+  GST_LOG_OBJECT (self, "Looping.");
 
-      /* if caps negotiation failed, avoid trying it repeatly */
-      if (ret == GST_FLOW_NOT_NEGOTIATED) {
-        GST_ERROR_OBJECT (decoder,
-            "capture configuration change fail, return negotiation fail");
-        goto beach;
-      } else {
-        return;
-      }
+  GST_VIDEO_DECODER_STREAM_LOCK (decoder);
+  if (G_UNLIKELY (!GST_V4L2_IS_ACTIVE (self->v4l2capture))) {
+    ret = gst_v4l2_video_dec_wait_for_src_ch (self);
+    if (ret != GST_FLOW_OK) {
+      GST_INFO_OBJECT (decoder, "Polling for source change was interrupted");
+      GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
+      goto beach;
     }
-    g_atomic_int_set (&self->capture_configuration_change, FALSE);
+
+    GST_DEBUG_OBJECT (decoder, "Setup the capture queue");
+    if (G_UNLIKELY (!GST_V4L2_IS_ACTIVE (self->v4l2capture))) {
+      if (!gst_video_decoder_negotiate (decoder)) {
+        /* FIXME not super nice ? */
+        if (GST_PAD_IS_FLUSHING (decoder->sinkpad)
+            || GST_PAD_IS_FLUSHING (decoder->srcpad)) {
+          ret = GST_FLOW_FLUSHING;
+        } else {
+          ret = GST_FLOW_NOT_NEGOTIATED;
+          GST_ERROR_OBJECT (decoder, "Failed to setup capture queue");
+        }
+        GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
+        goto beach;
+      }
+
+      /*
+       * In case we are flushing or stopping the element, ensure the active
+       * state is reflected onto the newly create pool.
+       */
+      if (!g_atomic_int_get (&self->active))
+        gst_v4l2_object_unlock (self->v4l2capture);
+    }
+
+    /* just a safety, as introducing mistakes in negotiation seems rather
+     * easy.*/
+    g_return_if_fail (GST_V4L2_IS_ACTIVE (self->v4l2capture));
   }
   GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
 
-  if (G_UNLIKELY (!GST_V4L2_IS_ACTIVE (self->v4l2capture)))
-    return;
+  GST_LOG_OBJECT (decoder, "Acquire output buffer");
 
-  GST_LOG_OBJECT (decoder, "Allocate output buffer");
-
-  v4l2_pool = GST_V4L2_BUFFER_POOL (self->v4l2capture->pool);
   self->output_flow = GST_FLOW_OK;
 
   do {
@@ -720,22 +806,17 @@ gst_v4l2_video_dec_loop (GstVideoDecoder * decoder)
     ret = gst_buffer_pool_acquire_buffer (pool, &buffer, NULL);
     g_object_unref (pool);
 
-    if (ret == GST_V4L2_FLOW_RESOLUTION_CHANGE) {
-      GST_INFO_OBJECT (decoder, "Received resolution change");
-      g_atomic_int_set (&self->capture_configuration_change, TRUE);
-      return;
-    }
-
     if (ret != GST_FLOW_OK)
       goto beach;
 
     GST_LOG_OBJECT (decoder, "Process output buffer");
-    ret = gst_v4l2_buffer_pool_process (v4l2_pool, &buffer, NULL);
-
-    if (ret == GST_V4L2_FLOW_RESOLUTION_CHANGE) {
-      GST_INFO_OBJECT (decoder, "Received resolution change");
-      g_atomic_int_set (&self->capture_configuration_change, TRUE);
-      return;
+    {
+      GstV4l2BufferPool *cpool =
+          GST_V4L2_BUFFER_POOL (gst_v4l2_object_get_buffer_pool
+          (self->v4l2capture));
+      ret = gst_v4l2_buffer_pool_process (cpool, &buffer, NULL);
+      if (cpool)
+        gst_object_unref (cpool);
     }
   } while (ret == GST_V4L2_FLOW_CORRUPTED_BUFFER);
 
@@ -756,9 +837,17 @@ gst_v4l2_video_dec_loop (GstVideoDecoder * decoder)
     gboolean warned = FALSE;
 
     /* Garbage collect old frames in case of codec bugs */
-    while ((oldest_frame = gst_video_decoder_get_oldest_frame (decoder)) &&
-        check_system_frame_number_too_old (frame->system_frame_number,
-            oldest_frame->system_frame_number)) {
+    while ((oldest_frame = gst_video_decoder_get_oldest_frame (decoder))) {
+      if (frame->system_frame_number > oldest_frame->system_frame_number &&
+          GST_VIDEO_CODEC_FRAME_IS_DECODE_ONLY (oldest_frame)) {
+        gst_video_decoder_finish_frame (decoder, oldest_frame);
+        oldest_frame = NULL;
+        continue;
+      }
+
+      if (G_LIKELY (!check_system_frame_number_too_old
+              (frame->system_frame_number, oldest_frame->system_frame_number)))
+        break;
       if (oldest_frame->system_frame_number > 0) {
         gst_video_decoder_drop_frame (decoder, oldest_frame);
         oldest_frame = NULL;
@@ -810,6 +899,26 @@ gst_v4l2_video_dec_loop (GstVideoDecoder * decoder)
   return;
 
 beach:
+  if (ret == GST_V4L2_FLOW_RESOLUTION_CHANGE) {
+    GST_VIDEO_DECODER_STREAM_LOCK (decoder);
+    self->draining = TRUE;
+    GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
+    GST_INFO_OBJECT (decoder, "Received resolution change");
+    return;
+  }
+
+  if (ret == GST_V4L2_FLOW_LAST_BUFFER) {
+    GST_VIDEO_DECODER_STREAM_LOCK (decoder);
+    if (self->draining) {
+      self->draining = FALSE;
+      gst_v4l2_object_stop (self->v4l2capture);
+      GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
+      return;
+    }
+
+    GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
+  }
+
   GST_DEBUG_OBJECT (decoder, "Leaving output thread: %s",
       gst_flow_get_name (ret));
 
@@ -825,7 +934,7 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
 {
   GstV4l2Error error = GST_V4L2_ERROR_INIT;
   GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
-  GstBufferPool *pool = GST_BUFFER_POOL (self->v4l2output->pool);
+  GstBufferPool *pool = NULL;
   GstFlowReturn ret = GST_FLOW_OK;
   gboolean processed = FALSE;
   GstBuffer *tmp;
@@ -844,14 +953,7 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
       goto not_negotiated;
   }
 
-  if (!g_atomic_int_get (&self->capture_configuration_change)) {
-    ret = gst_v4l2_video_dec_setup_capture (decoder);
-    if (ret != GST_FLOW_OK) {
-      GST_ERROR_OBJECT (decoder, "setup capture fail\n");
-      goto not_negotiated;
-    }
-  }
-
+  pool = gst_v4l2_object_get_buffer_pool (self->v4l2output);
   if (G_UNLIKELY (!gst_buffer_pool_is_active (pool))) {
     GstBuffer *codec_data;
     GstStructure *config = gst_buffer_pool_get_config (pool);
@@ -877,14 +979,15 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     /* Ensure input internal pool is active */
 
     gst_buffer_pool_config_set_params (config, self->input_state->caps,
-        self->v4l2output->info.size, min, max);
+        self->v4l2output->info.vinfo.size, min, max);
 
     /* There is no reason to refuse this config */
     if (!gst_buffer_pool_set_config (pool, config)) {
       config = gst_buffer_pool_get_config (pool);
 
       if (!gst_buffer_pool_config_validate_params (config,
-              self->input_state->caps, self->v4l2output->info.size, min, max)) {
+              self->input_state->caps,
+              self->v4l2output->info.vinfo.size, min, max)) {
         gst_structure_free (config);
         goto activate_failed;
       }
@@ -893,6 +996,11 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
         goto activate_failed;
     }
 
+    /* Ensure to unlock capture, as it may be flushing due to previous
+     * unlock/stop calls */
+    gst_v4l2_object_unlock_stop (self->v4l2output);
+    gst_v4l2_object_unlock_stop (self->v4l2capture);
+
     if (!gst_buffer_pool_set_active (pool, TRUE))
       goto activate_failed;
 
@@ -900,12 +1008,18 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     GST_LOG_OBJECT (decoder, "Passing buffer with system frame number %u",
         processed ? frame->system_frame_number : 0);
     ret =
-        gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (self->
-            v4l2output->pool), &codec_data,
+        gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (pool), &codec_data,
         processed ? &frame->system_frame_number : &dummy_frame_number);
     GST_VIDEO_DECODER_STREAM_LOCK (decoder);
 
     gst_buffer_unref (codec_data);
+
+    /* Only wait for source change if the formats supports it */
+    if (!GST_V4L2_IS_ACTIVE (self->v4l2capture) &&
+        self->v4l2output->fmtdesc->flags & V4L2_FMT_FLAG_DYN_RESOLUTION) {
+      gst_v4l2_object_unlock_stop (self->v4l2capture);
+      self->wait_for_source_change = TRUE;
+    }
   }
 
   task_state = gst_pad_get_task_state (GST_VIDEO_DECODER_SRC_PAD (self));
@@ -923,6 +1037,7 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     /* Start the processing task, when it quits, the task will disable input
      * processing to unlock input if draining, or prevent potential block */
     self->output_flow = GST_FLOW_FLUSHING;
+    self->draining = FALSE;
     if (!gst_pad_start_task (decoder->srcpad,
             (GstTaskFunction) gst_v4l2_video_dec_loop, self, NULL))
       goto start_task_failed;
@@ -933,8 +1048,8 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     GST_LOG_OBJECT (decoder, "Passing buffer with system frame number %u",
         frame->system_frame_number);
     ret =
-        gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (self->v4l2output->
-            pool), &frame->input_buffer, &frame->system_frame_number);
+        gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (pool),
+        &frame->input_buffer, &frame->system_frame_number);
     GST_VIDEO_DECODER_STREAM_LOCK (decoder);
 
     if (ret == GST_FLOW_FLUSHING) {
@@ -956,6 +1071,8 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
   gst_buffer_unref (tmp);
 
   gst_video_codec_frame_unref (frame);
+  if (pool)
+    gst_object_unref (pool);
   return ret;
 
   /* ERRORS */
@@ -997,6 +1114,8 @@ process_failed:
   }
 drop:
   {
+    if (pool)
+      gst_object_unref (pool);
     gst_video_decoder_drop_frame (decoder, frame);
     return ret;
   }
@@ -1290,12 +1409,13 @@ G_STMT_START { \
     gint mpegversion = 0;
     gst_structure_get_int (s, "mpegversion", &mpegversion);
 
-    if (mpegversion == 2) {
-      SET_META ("MPEG2");
-      cdata->codec = gst_v4l2_mpeg2_get_codec ();
-    } else {
+    if (mpegversion == 4) {
       SET_META ("MPEG4");
       cdata->codec = gst_v4l2_mpeg4_get_codec ();
+    } else {
+      /* MPEG 2 decoders supports MPEG 1 format */
+      SET_META ("MPEG2");
+      cdata->codec = gst_v4l2_mpeg2_get_codec ();
     }
   } else if (gst_structure_has_name (s, "video/x-h263")) {
     SET_META ("H263");
@@ -1368,11 +1488,16 @@ gst_v4l2_video_dec_register (GstPlugin * plugin, const gchar * basename,
     cdata->device = g_strdup (device_path);
     cdata->sink_caps = gst_caps_new_empty ();
     gst_caps_append_structure (cdata->sink_caps, gst_structure_copy (s));
+    GST_MINI_OBJECT_FLAG_SET (cdata->sink_caps,
+        GST_MINI_OBJECT_FLAG_MAY_BE_LEAKED);
     cdata->src_caps = gst_caps_ref (src_caps);
     type_name = gst_v4l2_video_dec_set_metadata (s, cdata, basename);
 
     /* Skip over if we hit an unmapped type */
     if (!type_name) {
+      g_free (cdata->device);
+      gst_caps_unref (cdata->sink_caps);
+      gst_caps_unref (cdata->src_caps);
       g_free (cdata);
       continue;
     }

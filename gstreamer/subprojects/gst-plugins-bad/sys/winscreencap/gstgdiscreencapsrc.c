@@ -48,6 +48,7 @@
 
 #include "gstgdiscreencapsrc.h"
 #include <gst/video/video.h>
+#include <versionhelpers.h>
 
 GST_DEBUG_CATEGORY_STATIC (gdiscreencapsrc_debug);
 
@@ -156,6 +157,8 @@ gst_gdiscreencapsrc_class_init (GstGDIScreenCapSrcClass * klass)
 static void
 gst_gdiscreencapsrc_init (GstGDIScreenCapSrc * src)
 {
+  static gsize deprecated_warn = 0;
+
   /* Set src element initial values... */
   src->dibMem = NULL;
   src->hBitmap = (HBITMAP) INVALID_HANDLE_VALUE;
@@ -170,6 +173,14 @@ gst_gdiscreencapsrc_init (GstGDIScreenCapSrc * src)
 
   gst_base_src_set_format (GST_BASE_SRC (src), GST_FORMAT_TIME);
   gst_base_src_set_live (GST_BASE_SRC (src), TRUE);
+
+  if (g_once_init_enter (&deprecated_warn)) {
+    if (IsWindows8OrGreater ()) {
+      g_warning ("\"gdiscreencapsrc\" is deprecated and will be removed"
+          "in the future. Use \"d3d11screencapturesrc\" element instead");
+    }
+    g_once_init_leave (&deprecated_warn, 1);
+  }
 }
 
 static void
@@ -342,7 +353,8 @@ gst_gdiscreencapsrc_get_caps (GstBaseSrc * bsrc, GstCaps * filter)
   RECT rect_dst;
   GstCaps *caps;
 
-  src->screen_rect = rect_dst = gst_win32_get_monitor_rect (src->monitor);
+  gst_win32_get_monitor_rect (src->monitor, &rect_dst);
+  src->screen_rect = rect_dst;
 
   if (src->capture_w && src->capture_h &&
       src->capture_x + src->capture_w < rect_dst.right - rect_dst.left &&

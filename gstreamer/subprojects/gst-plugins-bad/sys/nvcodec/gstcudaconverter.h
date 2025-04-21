@@ -20,7 +20,7 @@
 #pragma once
 
 #include <gst/video/video.h>
-#include <gst/cuda/gstcudacontext.h>
+#include <gst/cuda/gstcuda.h>
 
 G_BEGIN_DECLS
 
@@ -35,34 +35,6 @@ G_BEGIN_DECLS
 typedef struct _GstCudaConverter GstCudaConverter;
 typedef struct _GstCudaConverterClass GstCudaConverterClass;
 typedef struct _GstCudaConverterPrivate GstCudaConverterPrivate;
-
-/**
- * GST_CUDA_CONVERTER_OPT_DEST_X:
- *
- * #G_TYPE_INT, x position in the destination frame, default 0
- */
-#define GST_CUDA_CONVERTER_OPT_DEST_X   "GstCudaConverter.dest-x"
-
-/**
- * GST_CUDA_CONVERTER_OPT_DEST_Y:
- *
- * #G_TYPE_INT, y position in the destination frame, default 0
- */
-#define GST_CUDA_CONVERTER_OPT_DEST_Y   "GstCudaConverter.dest-y"
-
-/**
- * GST_CUDA_CONVERTER_OPT_DEST_WIDTH:
- *
- * #G_TYPE_INT, width in the destination frame, default destination width
- */
-#define GST_CUDA_CONVERTER_OPT_DEST_WIDTH   "GstCudaConverter.dest-width"
-
-/**
- * GST_CUDA_CONVERTER_OPT_DEST_HEIGHT:
- *
- * #G_TYPE_INT, height in the destination frame, default destination height
- */
-#define GST_CUDA_CONVERTER_OPT_DEST_HEIGHT   "GstCudaConverter.dest-height"
 
 struct _GstCudaConverter
 {
@@ -93,7 +65,8 @@ GstCudaConverter *  gst_cuda_converter_new (const GstVideoInfo * in_info,
 gboolean            gst_cuda_converter_convert_frame (GstCudaConverter * converter,
                                                       GstVideoFrame * src_frame,
                                                       GstVideoFrame * dst_frame,
-                                                      CUstream cuda_stream);
+                                                      CUstream cuda_stream,
+                                                      gboolean * synchronized);
 
 G_END_DECLS
 

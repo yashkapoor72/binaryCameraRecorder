@@ -148,6 +148,11 @@ check_caps (GstCaps * caps, const gchar * profile, gint profile_id)
   fail_unless (!strcmp (caps_profile, profile));
 }
 
+static const GstVideoFormat formats_420_8_and_400_8[] =
+    { GST_VIDEO_FORMAT_I420, GST_VIDEO_FORMAT_YV12, GST_VIDEO_FORMAT_NV12,
+  GST_VIDEO_FORMAT_GRAY8, GST_VIDEO_FORMAT_UNKNOWN
+};
+
 static const GstVideoFormat formats_420_8[] =
     { GST_VIDEO_FORMAT_I420, GST_VIDEO_FORMAT_YV12, GST_VIDEO_FORMAT_NV12,
   GST_VIDEO_FORMAT_UNKNOWN
@@ -276,7 +281,7 @@ test_video_profile (const gchar * profile, gint profile_id,
     switch (i) {
       case 0:
       {
-        gint nsize, npos, j, type, next_type;
+        gint nsize, npos, type, next_type;
         GstMapInfo map;
         const guint8 *data;
         gsize size;
@@ -286,7 +291,6 @@ test_video_profile (const gchar * profile, gint profile_id,
         size = map.size;
 
         npos = 0;
-        j = 0;
         /* need SPS first */
         next_type = 7;
         /* loop through NALs */
@@ -311,7 +315,6 @@ test_video_profile (const gchar * profile, gint profile_id,
               default:
                 break;
             }
-            j++;
           }
           npos += nsize + 4;
         }
@@ -360,8 +363,8 @@ GST_START_TEST (test_video_high)
 {
   gint i;
 
-  for (i = 0; formats_420_8[i] != GST_VIDEO_FORMAT_UNKNOWN; i++)
-    test_video_profile ("high", 0x64, formats_420_8, i);
+  for (i = 0; formats_420_8_and_400_8[i] != GST_VIDEO_FORMAT_UNKNOWN; i++)
+    test_video_profile ("high", 0x64, formats_420_8_and_400_8, i);
 }
 
 GST_END_TEST;

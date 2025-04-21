@@ -5,6 +5,11 @@ __pycache__
 prefix/
 .gdbinit
 
+# Editor/IDE spcific
+.helix/
+.vscode/
+.vscode-server/
+
 # Symlinks
 /gstreamer
 /gst-plugins-base
@@ -18,16 +23,22 @@ prefix/
 /gst-integration-testsuites
 /gst-editing-services
 /gstreamer-vaapi
-/gst-omx
 /gstreamer-sharp
 /pygobject
 /gst-python
 /gst-examples
 /gst-plugins-rs
 
-# Because of unwanted diff caused by redirect wrap files 
-# https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/1140
-subprojects/*.wrap
+# Automatic meson redirect wrap files
+subprojects/gobject-introspection.wrap
+subprojects/gtest.wrap
+subprojects/gvdb.wrap
+subprojects/libepoxy.wrap
+subprojects/libsass.wrap
+subprojects/libtiff.wrap
+subprojects/sassc.wrap
+subprojects/abseil-cpp.wrap
+subprojects/sysprof.wrap
 
 subprojects/*/
 !subprojects/gst-devtools
@@ -36,7 +47,6 @@ subprojects/*/
 !subprojects/gst-examples
 !subprojects/gst-integration-testsuites
 !subprojects/gst-libav
-!subprojects/gst-omx
 !subprojects/gst-plugins-bad
 !subprojects/gst-plugins-base
 !subprojects/gst-plugins-good
@@ -49,3 +59,18 @@ subprojects/*/
 !subprojects/macos-bison-binary
 !subprojects/win-flex-bison-binaries
 !subprojects/win-nasm
+!subprojects/packagefiles
+
+# VSCode integration
+# launch.json will be modified by users depending on the pipeline to test
+# We keep these files in the ignore list so they do not appear as modified
+.vscode/*
+
+# clangd integration
+.cache/*
+
+# apk files from CI (or following its commands)
+*.apk
+
+# Cache files (from emacs)
+*~

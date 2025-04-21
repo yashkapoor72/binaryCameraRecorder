@@ -59,6 +59,8 @@ struct _GstRTSPMediaFactoryPrivate
   GstRTSPProfile profiles;
   GstRTSPLowerTrans protocols;
   guint buffer_size;
+  gboolean ensure_keyunit_on_start;
+  guint ensure_keyunit_on_start_timeout;
   gint dscp_qos;
   GstRTSPAddressPool *pool;
   GstRTSPTransportMode transport_mode;
@@ -90,6 +92,8 @@ struct _GstRTSPMediaFactoryPrivate
 #define DEFAULT_PROTOCOLS       GST_RTSP_LOWER_TRANS_UDP | GST_RTSP_LOWER_TRANS_UDP_MCAST | \
                                         GST_RTSP_LOWER_TRANS_TCP
 #define DEFAULT_BUFFER_SIZE     0x80000
+#define DEFAULT_ENSURE_KEYUNIT_ON_START FALSE
+#define DEFAULT_ENSURE_KEYUNIT_ON_START_TIMEOUT 100
 #define DEFAULT_LATENCY         200
 #define DEFAULT_MAX_MCAST_TTL   255
 #define DEFAULT_BIND_MCAST_ADDRESS FALSE
@@ -109,6 +113,8 @@ enum
   PROP_PROFILES,
   PROP_PROTOCOLS,
   PROP_BUFFER_SIZE,
+  PROP_ENSURE_KEYUNIT_ON_START,
+  PROP_ENSURE_KEYUNIT_ON_START_TIMEOUT,
   PROP_LATENCY,
   PROP_TRANSPORT_MODE,
   PROP_STOP_ON_DISCONNECT,
@@ -214,6 +220,48 @@ gst_rtsp_media_factory_class_init (GstRTSPMediaFactoryClass * klass)
           "The kernel UDP buffer size to use", 0, G_MAXUINT,
           DEFAULT_BUFFER_SIZE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  /**
+   * GstRTSPMediaFactory:ensure-keyunit-on-start:
+   *
+   * If media from this factory should ensure a key unit when a client connects.
+   *
+   * This property will ensure that the stream always starts on a key unit
+   * instead of a delta unit which the client would not be able to decode.
+   *
+   * Note that this will only affect non-shared medias for now.
+   *
+   * Since: 1.24
+   */
+  g_object_class_install_property (gobject_class, PROP_ENSURE_KEYUNIT_ON_START,
+      g_param_spec_boolean ("ensure-keyunit-on-start",
+          "Ensure keyunit on start",
+          "If media from this factory should ensure a key unit when a client "
+          "connects.",
+          DEFAULT_ENSURE_KEYUNIT_ON_START,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstRTSPMediaFactory:ensure-keyunit-on-start-timeout:
+   *
+   * Timeout in milliseconds used to determine if a keyunit should be discarded
+   * when a client connects.
+   *
+   * If the timeout has been reached a new keyframe will be forced, otherwise
+   * the currently blocking keyframe will be used.
+   *
+   * This options is only relevant when ensure-keyunit-on-start is enabled.
+   *
+   * Since: 1.24
+   */
+  g_object_class_install_property (gobject_class,
+      PROP_ENSURE_KEYUNIT_ON_START_TIMEOUT,
+      g_param_spec_uint ("ensure-keyunit-on-start-timeout",
+          "Timeout for discarding old keyunit on start",
+          "Timeout in milliseconds used to determine if a keyunit should be "
+          "discarded when a client connects.", 0, G_MAXUINT,
+          DEFAULT_ENSURE_KEYUNIT_ON_START_TIMEOUT,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_LATENCY,
       g_param_spec_uint ("latency", "Latency",
           "Latency used for receiving media in milliseconds", 0, G_MAXUINT,
@@ -304,6 +352,9 @@ gst_rtsp_media_factory_init (GstRTSPMediaFactory * factory)
   priv->profiles = DEFAULT_PROFILES;
   priv->protocols = DEFAULT_PROTOCOLS;
   priv->buffer_size = DEFAULT_BUFFER_SIZE;
+  priv->ensure_keyunit_on_start = DEFAULT_ENSURE_KEYUNIT_ON_START;
+  priv->ensure_keyunit_on_start_timeout =
+      DEFAULT_ENSURE_KEYUNIT_ON_START_TIMEOUT;
   priv->latency = DEFAULT_LATENCY;
   priv->transport_mode = DEFAULT_TRANSPORT_MODE;
   priv->stop_on_disconnect = DEFAULT_STOP_ON_DISCONNECT;
@@ -373,6 +424,14 @@ gst_rtsp_media_factory_get_property (GObject * object, guint propid,
       g_value_set_uint (value,
           gst_rtsp_media_factory_get_buffer_size (factory));
       break;
+    case PROP_ENSURE_KEYUNIT_ON_START:
+      g_value_set_boolean (value,
+          gst_rtsp_media_factory_get_ensure_keyunit_on_start (factory));
+      break;
+    case PROP_ENSURE_KEYUNIT_ON_START_TIMEOUT:
+      g_value_set_uint (value,
+          gst_rtsp_media_factory_get_ensure_keyunit_on_start_timeout (factory));
+      break;
     case PROP_LATENCY:
       g_value_set_uint (value, gst_rtsp_media_factory_get_latency (factory));
       break;
@@ -436,6 +495,14 @@ gst_rtsp_media_factory_set_property (GObject * object, guint propid,
       break;
     case PROP_BUFFER_SIZE:
       gst_rtsp_media_factory_set_buffer_size (factory,
+          g_value_get_uint (value));
+      break;
+    case PROP_ENSURE_KEYUNIT_ON_START:
+      gst_rtsp_media_factory_set_ensure_keyunit_on_start (factory,
+          g_value_get_boolean (value));
+      break;
+    case PROP_ENSURE_KEYUNIT_ON_START_TIMEOUT:
+      gst_rtsp_media_factory_set_ensure_keyunit_on_start_timeout (factory,
           g_value_get_uint (value));
       break;
     case PROP_LATENCY:
@@ -848,6 +915,111 @@ gst_rtsp_media_factory_get_buffer_size (GstRTSPMediaFactory * factory)
 
   GST_RTSP_MEDIA_FACTORY_LOCK (factory);
   result = priv->buffer_size;
+  GST_RTSP_MEDIA_FACTORY_UNLOCK (factory);
+
+  return result;
+}
+
+/**
+ * gst_rtsp_media_factory_set_ensure_keyunit_on_start:
+ * @factory: a #GstRTSPMediaFactory
+ * @ensure_keyunit_on_start: the new value
+ *
+ * If media from this factory should ensure a key unit when a client connects.
+ *
+ * Since: 1.24
+ */
+void
+gst_rtsp_media_factory_set_ensure_keyunit_on_start (GstRTSPMediaFactory *
+    factory, gboolean ensure_keyunit_on_start)
+{
+  GstRTSPMediaFactoryPrivate *priv;
+
+  g_return_if_fail (GST_IS_RTSP_MEDIA_FACTORY (factory));
+
+  priv = factory->priv;
+
+  GST_RTSP_MEDIA_FACTORY_LOCK (factory);
+  priv->ensure_keyunit_on_start = ensure_keyunit_on_start;
+  GST_RTSP_MEDIA_FACTORY_UNLOCK (factory);
+}
+
+/**
+ * gst_rtsp_media_factory_get_ensure_keyunit_on_start:
+ * @factory: a #GstRTSPMediaFactory
+ *
+ * Get ensure-keyunit-on-start flag.
+ *
+ * Returns: The ensure-keyunit-on-start flag.
+ *
+ * Since: 1.24
+ */
+gboolean
+gst_rtsp_media_factory_get_ensure_keyunit_on_start (GstRTSPMediaFactory *
+    factory)
+{
+  GstRTSPMediaFactoryPrivate *priv;
+  gboolean result;
+
+  g_return_val_if_fail (GST_IS_RTSP_MEDIA_FACTORY (factory), FALSE);
+
+  priv = factory->priv;
+
+  GST_RTSP_MEDIA_FACTORY_LOCK (factory);
+  result = priv->ensure_keyunit_on_start;
+  GST_RTSP_MEDIA_FACTORY_UNLOCK (factory);
+
+  return result;
+}
+
+/**
+ * gst_rtsp_media_factory_set_ensure_keyunit_on_start_timeout:
+ * @factory: a #GstRTSPMediaFactory
+ * @timeout: the new value
+ *
+ * Configures medias from this factory to consider keyunits older than timeout
+ * to be expired. Expired keyunits will be discarded.
+ *
+ * Since: 1.24
+ */
+void
+gst_rtsp_media_factory_set_ensure_keyunit_on_start_timeout (GstRTSPMediaFactory
+    * factory, guint timeout)
+{
+  GstRTSPMediaFactoryPrivate *priv;
+
+  g_return_if_fail (GST_IS_RTSP_MEDIA_FACTORY (factory));
+
+  priv = factory->priv;
+
+  GST_RTSP_MEDIA_FACTORY_LOCK (factory);
+  priv->ensure_keyunit_on_start_timeout = timeout;
+  GST_RTSP_MEDIA_FACTORY_UNLOCK (factory);
+}
+
+/**
+ * gst_rtsp_media_factory_get_ensure_keyunit_on_start_timeout:
+ * @factory: a #GstRTSPMediaFactory
+ *
+ * Get ensure-keyunit-on-start-timeout time.
+ *
+ * Returns: The ensure-keyunit-on-start-timeout time.
+ *
+ * Since: 1.24
+ */
+guint
+gst_rtsp_media_factory_get_ensure_keyunit_on_start_timeout (GstRTSPMediaFactory
+    * factory)
+{
+  GstRTSPMediaFactoryPrivate *priv;
+  guint result;
+
+  g_return_val_if_fail (GST_IS_RTSP_MEDIA_FACTORY (factory), FALSE);
+
+  priv = factory->priv;
+
+  GST_RTSP_MEDIA_FACTORY_LOCK (factory);
+  result = priv->ensure_keyunit_on_start_timeout;
   GST_RTSP_MEDIA_FACTORY_UNLOCK (factory);
 
   return result;
@@ -1347,7 +1519,7 @@ media_unprepared (GstRTSPMedia * media, GWeakRef * ref)
 static GWeakRef *
 weak_ref_new (gpointer obj)
 {
-  GWeakRef *ref = g_slice_new (GWeakRef);
+  GWeakRef *ref = g_new (GWeakRef, 1);
 
   g_weak_ref_init (ref, obj);
   return ref;
@@ -1357,7 +1529,7 @@ static void
 weak_ref_free (GWeakRef * ref)
 {
   g_weak_ref_clear (ref);
-  g_slice_free (GWeakRef, ref);
+  g_free (ref);
 }
 
 /**
@@ -1375,6 +1547,8 @@ weak_ref_free (GWeakRef * ref)
  * After the media is constructed, it can be configured and then prepared
  * with gst_rtsp_media_prepare ().
  *
+ * The returned media will be locked and must be unlocked afterwards.
+ *
  * Returns: (transfer full) (nullable): a new #GstRTSPMedia if the media could be prepared.
  */
 GstRTSPMedia *
@@ -1383,7 +1557,7 @@ gst_rtsp_media_factory_construct (GstRTSPMediaFactory * factory,
 {
   GstRTSPMediaFactoryPrivate *priv;
   gchar *key;
-  GstRTSPMedia *media;
+  GstRTSPMedia *media = NULL;
   GstRTSPMediaFactoryClass *klass;
 
   g_return_val_if_fail (GST_IS_RTSP_MEDIA_FACTORY (factory), NULL);
@@ -1403,45 +1577,65 @@ gst_rtsp_media_factory_construct (GstRTSPMediaFactory * factory,
   if (key) {
     /* we have a key, see if we find a cached media */
     media = g_hash_table_lookup (priv->medias, key);
-    if (media)
-      g_object_ref (media);
-  } else
-    media = NULL;
-
-  if (media == NULL) {
-    /* nothing cached found, try to create one */
-    if (klass->construct) {
-      media = klass->construct (factory, url);
-      if (media)
-        g_signal_emit (factory,
-            gst_rtsp_media_factory_signals[SIGNAL_MEDIA_CONSTRUCTED], 0, media,
-            NULL);
-    } else
-      media = NULL;
-
     if (media) {
-      /* configure the media */
-      if (klass->configure)
-        klass->configure (factory, media);
+      g_object_ref (media);
+      g_mutex_unlock (&priv->medias_lock);
 
+      /* now need to check if the media is curently in the process of being
+       * unprepared. That always happens while the lock is taken, so take it
+       * here now and then check if we can really use the media */
+      gst_rtsp_media_lock (media);
+      if (!gst_rtsp_media_can_be_shared (media)) {
+        gst_rtsp_media_unlock (media);
+        g_object_unref (media);
+        media = NULL;
+      }
+
+      if (media) {
+        if (key)
+          g_free (key);
+
+        GST_INFO ("reusing cached media %p for url %s", media, url->abspath);
+
+        return media;
+      }
+
+      g_mutex_lock (&priv->medias_lock);
+    }
+  }
+
+  /* nothing cached found, try to create one */
+  if (klass->construct) {
+    media = klass->construct (factory, url);
+    if (media)
       g_signal_emit (factory,
-          gst_rtsp_media_factory_signals[SIGNAL_MEDIA_CONFIGURE], 0, media,
+          gst_rtsp_media_factory_signals[SIGNAL_MEDIA_CONSTRUCTED], 0, media,
           NULL);
+  }
 
-      /* check if we can cache this media */
-      if (gst_rtsp_media_is_shared (media) && key) {
-        /* insert in the hashtable, takes ownership of the key */
-        g_object_ref (media);
-        g_hash_table_insert (priv->medias, key, media);
-        key = NULL;
-      }
-      if (!gst_rtsp_media_is_reusable (media)) {
-        /* when not reusable, connect to the unprepare signal to remove the item
-         * from our cache when it gets unprepared */
-        g_signal_connect_data (media, "unprepared",
-            (GCallback) media_unprepared, weak_ref_new (factory),
-            (GClosureNotify) weak_ref_free, 0);
-      }
+  if (media) {
+    gst_rtsp_media_lock (media);
+
+    /* configure the media */
+    if (klass->configure)
+      klass->configure (factory, media);
+
+    g_signal_emit (factory,
+        gst_rtsp_media_factory_signals[SIGNAL_MEDIA_CONFIGURE], 0, media, NULL);
+
+    /* check if we can cache this media */
+    if (gst_rtsp_media_is_shared (media) && key) {
+      /* insert in the hashtable, takes ownership of the key */
+      g_object_ref (media);
+      g_hash_table_insert (priv->medias, key, media);
+      key = NULL;
+    }
+    if (!gst_rtsp_media_is_reusable (media)) {
+      /* when not reusable, connect to the unprepare signal to remove the item
+       * from our cache when it gets unprepared */
+      g_signal_connect_data (media, "unprepared",
+          (GCallback) media_unprepared, weak_ref_new (factory),
+          (GClosureNotify) weak_ref_free, 0);
     }
   }
   g_mutex_unlock (&priv->medias_lock);
@@ -1856,6 +2050,8 @@ default_construct (GstRTSPMediaFactory * factory, const GstRTSPUrl * url)
 
   /* We need to call this prior to collecting streams */
   gst_rtsp_media_set_enable_rtcp (media, enable_rtcp);
+  gst_rtsp_media_set_ensure_keyunit_on_start (media,
+      gst_rtsp_media_factory_get_ensure_keyunit_on_start (factory));
 
   gst_rtsp_media_collect_streams (media);
 
@@ -1906,6 +2102,8 @@ default_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media)
   GstRTSPMediaFactoryPrivate *priv = factory->priv;
   gboolean shared, eos_shutdown, stop_on_disconnect;
   guint size;
+  gboolean ensure_keyunit_on_start;
+  guint ensure_keyunit_on_start_timeout;
   gint dscp_qos;
   GstRTSPSuspendMode suspend_mode;
   GstRTSPProfile profiles;
@@ -1927,6 +2125,8 @@ default_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media)
   shared = priv->shared;
   eos_shutdown = priv->eos_shutdown;
   size = priv->buffer_size;
+  ensure_keyunit_on_start = priv->ensure_keyunit_on_start;
+  ensure_keyunit_on_start_timeout = priv->ensure_keyunit_on_start_timeout;
   dscp_qos = priv->dscp_qos;
   profiles = priv->profiles;
   protocols = priv->protocols;
@@ -1944,6 +2144,9 @@ default_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media)
   gst_rtsp_media_set_shared (media, shared);
   gst_rtsp_media_set_eos_shutdown (media, eos_shutdown);
   gst_rtsp_media_set_buffer_size (media, size);
+  gst_rtsp_media_set_ensure_keyunit_on_start (media, ensure_keyunit_on_start);
+  gst_rtsp_media_set_ensure_keyunit_on_start_timeout (media,
+      ensure_keyunit_on_start_timeout);
   gst_rtsp_media_set_dscp_qos (media, dscp_qos);
   gst_rtsp_media_set_profiles (media, profiles);
   gst_rtsp_media_set_protocols (media, protocols);

@@ -64,9 +64,6 @@ struct _GstV4l2BufferPool
 
   GstV4l2Object *obj;        /* the v4l2 object */
   gint video_fd;             /* a dup(2) of the v4l2object's video_fd */
-  GstPoll *poll;             /* a poll for video_fd */
-  GstPollFD pollfd;
-  gboolean can_poll_device;
 
   gboolean empty;
   GCond empty_cond;
@@ -79,6 +76,7 @@ struct _GstV4l2BufferPool
   GstBufferPool *other_pool;
   guint size;
   GstVideoInfo caps_info;   /* Default video information */
+  gboolean have_dma_drm_caps; /* If the configured caps have memory:DMABuf */
 
   gboolean add_videometa;    /* set if video meta should be added */
   gboolean enable_copy_threshold; /* If copy_threshold should be set */
@@ -118,9 +116,9 @@ void                gst_v4l2_buffer_pool_set_other_pool (GstV4l2BufferPool * poo
 void                gst_v4l2_buffer_pool_copy_at_threshold (GstV4l2BufferPool * pool,
                                                             gboolean copy);
 
-gboolean            gst_v4l2_buffer_pool_flush   (GstBufferPool *pool);
+GstFlowReturn       gst_v4l2_buffer_pool_flush   (GstV4l2Object * v4l2object);
 
-gboolean            gst_v4l2_buffer_pool_orphan  (GstBufferPool ** pool);
+gboolean            gst_v4l2_buffer_pool_orphan  (GstV4l2Object * v4l2object);
 
 void                gst_v4l2_buffer_pool_enable_resolution_change (GstV4l2BufferPool *self);
 

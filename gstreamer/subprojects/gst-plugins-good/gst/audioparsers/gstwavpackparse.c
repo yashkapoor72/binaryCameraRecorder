@@ -175,18 +175,24 @@ gst_wavpack_get_default_channel_mask (gint nchannels)
     case 11:
       channel_mask |= 0x00400;
       channel_mask |= 0x00200;
+      /* FALLTHROUGH */
     case 9:
       channel_mask |= 0x00100;
+      /* FALLTHROUGH */
     case 8:
       channel_mask |= 0x00080;
       channel_mask |= 0x00040;
+      /* FALLTHROUGH */
     case 6:
       channel_mask |= 0x00020;
       channel_mask |= 0x00010;
+      /* FALLTHROUGH */
     case 4:
       channel_mask |= 0x00008;
+      /* FALLTHROUGH */
     case 3:
       channel_mask |= 0x00004;
+      /* FALLTHROUGH */
     case 2:
       channel_mask |= 0x00002;
       channel_mask |= 0x00001;
@@ -206,24 +212,24 @@ static const struct
   const GstAudioChannelPosition gst_pos;
 } layout_mapping[] = {
   {
-  0x00001, GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT}, {
-  0x00002, GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT}, {
-  0x00004, GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER}, {
-  0x00008, GST_AUDIO_CHANNEL_POSITION_LFE1}, {
-  0x00010, GST_AUDIO_CHANNEL_POSITION_REAR_LEFT}, {
-  0x00020, GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT}, {
-  0x00040, GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER}, {
-  0x00080, GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER}, {
-  0x00100, GST_AUDIO_CHANNEL_POSITION_REAR_CENTER}, {
-  0x00200, GST_AUDIO_CHANNEL_POSITION_SIDE_LEFT}, {
-  0x00400, GST_AUDIO_CHANNEL_POSITION_SIDE_RIGHT}, {
-  0x00800, GST_AUDIO_CHANNEL_POSITION_TOP_CENTER}, {
-  0x01000, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_LEFT}, {
-  0x02000, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_CENTER}, {
-  0x04000, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_RIGHT}, {
-  0x08000, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_LEFT}, {
-  0x10000, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_CENTER}, {
-  0x20000, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_RIGHT}
+      0x00001, GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT}, {
+      0x00002, GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT}, {
+      0x00004, GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER}, {
+      0x00008, GST_AUDIO_CHANNEL_POSITION_LFE1}, {
+      0x00010, GST_AUDIO_CHANNEL_POSITION_REAR_LEFT}, {
+      0x00020, GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT}, {
+      0x00040, GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER}, {
+      0x00080, GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER}, {
+      0x00100, GST_AUDIO_CHANNEL_POSITION_REAR_CENTER}, {
+      0x00200, GST_AUDIO_CHANNEL_POSITION_SIDE_LEFT}, {
+      0x00400, GST_AUDIO_CHANNEL_POSITION_SIDE_RIGHT}, {
+      0x00800, GST_AUDIO_CHANNEL_POSITION_TOP_CENTER}, {
+      0x01000, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_LEFT}, {
+      0x02000, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_CENTER}, {
+      0x04000, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_RIGHT}, {
+      0x08000, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_LEFT}, {
+      0x10000, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_CENTER}, {
+      0x20000, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_RIGHT}
 };
 
 #define MAX_CHANNEL_POSITIONS G_N_ELEMENTS (layout_mapping)
@@ -308,7 +314,7 @@ gst_wavpack_parse_frame_metadata (GstWavpackParse * parse, GstBuffer * buf,
 
   /* need to dig metadata blocks for some more */
   while (gst_byte_reader_get_remaining (&br)) {
-    gint size = 0;
+    guint32 size = 0;
     guint16 size2 = 0;
     guint8 c, id;
     const guint8 *data;
@@ -322,8 +328,11 @@ gst_wavpack_parse_frame_metadata (GstWavpackParse * parse, GstBuffer * buf,
     size <<= 8;
     size += c;
     size <<= 1;
-    if (id & ID_ODD_SIZE)
+    if (id & ID_ODD_SIZE) {
+      if (size == 0)
+        goto read_failed;
       size--;
+    }
 
     CHECK (gst_byte_reader_get_data (&br, size + (size & 1), &data));
     gst_byte_reader_init (&mbr, data, size);
@@ -337,6 +346,7 @@ gst_wavpack_parse_frame_metadata (GstWavpackParse * parse, GstBuffer * buf,
         break;
       case ID_WV_BITSTREAM:
       case ID_WVX_BITSTREAM:
+      case ID_WVX_NEW_BITSTREAM:
         break;
       case ID_SAMPLE_RATE:
         if (size == 3) {

@@ -99,14 +99,14 @@ GST_START_TEST (test_unit_sizes)
       gint width, height;
     } sizes_to_try[] = {
       {
-      160, 120}, {
-      161, 120}, {
-      160, 121}, {
-      161, 121}, {
-      159, 120}, {
-      160, 119}, {
-      159, 119}, {
-      159, 121}
+          160, 120}, {
+          161, 120}, {
+          160, 121}, {
+          161, 121}, {
+          159, 120}, {
+          160, 119}, {
+          159, 119}, {
+          159, 121}
     };
     GstStructure *s;
     GstCaps *caps;
@@ -406,14 +406,14 @@ GST_START_TEST (test_cropping)
     gint width, height;
   } sizes_to_try[] = {
     {
-    160, 160}, {
-    161, 160}, {
-    160, 161}, {
-    161, 161}, {
-    159, 160}, {
-    160, 159}, {
-    159, 159}, {
-    159, 161}
+        160, 160}, {
+        161, 160}, {
+        160, 161}, {
+        161, 161}, {
+        159, 160}, {
+        160, 159}, {
+        159, 159}, {
+        159, 161}
   };
   GList *caps_list, *node;
   gint i;
@@ -815,7 +815,7 @@ get_featured_caps (void)
   GstCaps *caps;
   GstCapsFeatures *features;
 
-  features = gst_caps_features_new ("memory:DMABuf", NULL);
+  features = gst_caps_features_new_static_str ("memory:DMABuf", NULL);
   caps = gst_caps_new_simple ("video/x-raw",
       "format", G_TYPE_STRING, "NV12",
       "framerate", GST_TYPE_FRACTION, 1, 1,

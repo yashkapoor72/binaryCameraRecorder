@@ -19,6 +19,22 @@ namespace Gst.Base {
 		}
 
 		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern void gst_base_src_set_automatic_eos(IntPtr raw, bool automatic_eos);
+
+		[GLib.Property ("automatic-eos")]
+		public bool AutomaticEos {
+			get {
+				GLib.Value val = GetProperty ("automatic-eos");
+				bool ret = (bool) val;
+				val.Dispose ();
+				return ret;
+			}
+			set  {
+				gst_base_src_set_automatic_eos(Handle, value);
+			}
+		}
+
+		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern uint gst_base_src_get_blocksize(IntPtr raw);
 
 		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
@@ -374,7 +390,7 @@ namespace Gst.Base {
 			try {
 				BaseSrc __obj = GLib.Object.GetObject (inst, false) as BaseSrc;
 				Gst.Caps __result;
-				__result = __obj.OnFixate (caps == IntPtr.Zero ? null : (Gst.Caps) GLib.Opaque.GetOpaque (caps, typeof (Gst.Caps), false));
+				__result = __obj.OnFixate (caps == IntPtr.Zero ? null : (Gst.Caps) GLib.Opaque.GetOpaque (caps, typeof (Gst.Caps), true));
 				return __result == null ? IntPtr.Zero : __result.OwnedCopy;
 			} catch (Exception e) {
 				GLib.ExceptionManager.RaiseUnhandledException (e, true);
@@ -398,6 +414,7 @@ namespace Gst.Base {
 			}
 			if (unmanaged == null) return null;
 
+			caps.Owned = false;
 			IntPtr __result = unmanaged (this.Handle, caps == null ? IntPtr.Zero : caps.Handle);
 			return __result == IntPtr.Zero ? null : (Gst.Caps) GLib.Opaque.GetOpaque (__result, typeof (Gst.Caps), true);
 		}
@@ -712,14 +729,14 @@ namespace Gst.Base {
 		}
 
 		[UnmanagedFunctionPointer (CallingConvention.Cdecl)]
-		delegate bool GetSizeNativeDelegate (IntPtr inst, ulong size);
+		delegate bool GetSizeNativeDelegate (IntPtr inst, out ulong size);
 
-		static bool GetSize_cb (IntPtr inst, ulong size)
+		static bool GetSize_cb (IntPtr inst, out ulong size)
 		{
 			try {
 				BaseSrc __obj = GLib.Object.GetObject (inst, false) as BaseSrc;
 				bool __result;
-				__result = __obj.OnGetSize (size);
+				__result = __obj.OnGetSize (out size);
 				return __result;
 			} catch (Exception e) {
 				GLib.ExceptionManager.RaiseUnhandledException (e, true);
@@ -729,21 +746,21 @@ namespace Gst.Base {
 		}
 
 		[GLib.DefaultSignalHandler(Type=typeof(Gst.Base.BaseSrc), ConnectionMethod="OverrideGetSize")]
-		protected virtual bool OnGetSize (ulong size)
+		protected virtual bool OnGetSize (out ulong size)
 		{
-			return InternalGetSize (size);
+			return InternalGetSize (out size);
 		}
 
-		private bool InternalGetSize (ulong size)
+		private bool InternalGetSize (out ulong size)
 		{
 			GetSizeNativeDelegate unmanaged = null;
 			unsafe {
 				IntPtr* raw_ptr = (IntPtr*)(((long) this.LookupGType().GetThresholdType().GetClassPtr()) + (long) class_abi.GetFieldOffset("get_size"));
 				unmanaged = (GetSizeNativeDelegate) Marshal.GetDelegateForFunctionPointer(*raw_ptr, typeof(GetSizeNativeDelegate));
 			}
-			if (unmanaged == null) return false;
+			if (unmanaged == null) throw new InvalidOperationException ("No base method to invoke");
 
-			bool __result = unmanaged (this.Handle, size);
+			bool __result = unmanaged (this.Handle, out size);
 			return __result;
 		}
 
@@ -1180,15 +1197,15 @@ namespace Gst.Base {
 		}
 
 		[UnmanagedFunctionPointer (CallingConvention.Cdecl)]
-		delegate int CreateNativeDelegate (IntPtr inst, ulong offset, uint size, out IntPtr buf);
+		delegate int CreateNativeDelegate (IntPtr inst, ulong offset, uint size, ref IntPtr buf);
 
-		static int Create_cb (IntPtr inst, ulong offset, uint size, out IntPtr buf)
+		static int Create_cb (IntPtr inst, ulong offset, uint size, ref IntPtr buf)
 		{
 			try {
 				BaseSrc __obj = GLib.Object.GetObject (inst, false) as BaseSrc;
 				Gst.FlowReturn __result;
-				Gst.Buffer mybuf;
-				__result = __obj.OnCreate (offset, size, out mybuf);
+				Gst.Buffer mybuf = buf == IntPtr.Zero ? null : (Gst.Buffer) GLib.Opaque.GetOpaque (buf, typeof (Gst.Buffer), true);
+				__result = __obj.OnCreate (offset, size, ref mybuf);
 				buf = mybuf == null ? IntPtr.Zero : mybuf.Handle;
 				return (int) __result;
 			} catch (Exception e) {
@@ -1199,22 +1216,22 @@ namespace Gst.Base {
 		}
 
 		[GLib.DefaultSignalHandler(Type=typeof(Gst.Base.BaseSrc), ConnectionMethod="OverrideCreate")]
-		protected virtual Gst.FlowReturn OnCreate (ulong offset, uint size, out Gst.Buffer buf)
+		protected virtual Gst.FlowReturn OnCreate (ulong offset, uint size, ref Gst.Buffer buf)
 		{
-			return InternalCreate (offset, size, out buf);
+			return InternalCreate (offset, size, ref buf);
 		}
 
-		private Gst.FlowReturn InternalCreate (ulong offset, uint size, out Gst.Buffer buf)
+		private Gst.FlowReturn InternalCreate (ulong offset, uint size, ref Gst.Buffer buf)
 		{
 			CreateNativeDelegate unmanaged = null;
 			unsafe {
 				IntPtr* raw_ptr = (IntPtr*)(((long) this.LookupGType().GetThresholdType().GetClassPtr()) + (long) class_abi.GetFieldOffset("create"));
 				unmanaged = (CreateNativeDelegate) Marshal.GetDelegateForFunctionPointer(*raw_ptr, typeof(CreateNativeDelegate));
 			}
-			if (unmanaged == null) throw new InvalidOperationException ("No base method to invoke");
+			if (unmanaged == null) return (Gst.FlowReturn) 0;
 
-			IntPtr native_buf;
-			int __result = unmanaged (this.Handle, offset, size, out native_buf);
+			IntPtr native_buf = buf == null ? IntPtr.Zero : buf.Handle ;
+			int __result = unmanaged (this.Handle, offset, size, ref native_buf);
 			buf = native_buf == IntPtr.Zero ? null : (Gst.Buffer) GLib.Opaque.GetOpaque (native_buf, typeof (Gst.Buffer), true);
 			return (Gst.FlowReturn) __result;
 		}
@@ -1242,14 +1259,16 @@ namespace Gst.Base {
 		}
 
 		[UnmanagedFunctionPointer (CallingConvention.Cdecl)]
-		delegate int AllocNativeDelegate (IntPtr inst, ulong offset, uint size, IntPtr buf);
+		delegate int AllocNativeDelegate (IntPtr inst, ulong offset, uint size, out IntPtr buf);
 
-		static int Alloc_cb (IntPtr inst, ulong offset, uint size, IntPtr buf)
+		static int Alloc_cb (IntPtr inst, ulong offset, uint size, out IntPtr buf)
 		{
 			try {
 				BaseSrc __obj = GLib.Object.GetObject (inst, false) as BaseSrc;
 				Gst.FlowReturn __result;
-				__result = __obj.OnAlloc (offset, size, buf == IntPtr.Zero ? null : (Gst.Buffer) GLib.Opaque.GetOpaque (buf, typeof (Gst.Buffer), false));
+				Gst.Buffer mybuf;
+				__result = __obj.OnAlloc (offset, size, out mybuf);
+				buf = mybuf == null ? IntPtr.Zero : mybuf.Handle;
 				return (int) __result;
 			} catch (Exception e) {
 				GLib.ExceptionManager.RaiseUnhandledException (e, true);
@@ -1259,21 +1278,23 @@ namespace Gst.Base {
 		}
 
 		[GLib.DefaultSignalHandler(Type=typeof(Gst.Base.BaseSrc), ConnectionMethod="OverrideAlloc")]
-		protected virtual Gst.FlowReturn OnAlloc (ulong offset, uint size, Gst.Buffer buf)
+		protected virtual Gst.FlowReturn OnAlloc (ulong offset, uint size, out Gst.Buffer buf)
 		{
-			return InternalAlloc (offset, size, buf);
+			return InternalAlloc (offset, size, out buf);
 		}
 
-		private Gst.FlowReturn InternalAlloc (ulong offset, uint size, Gst.Buffer buf)
+		private Gst.FlowReturn InternalAlloc (ulong offset, uint size, out Gst.Buffer buf)
 		{
 			AllocNativeDelegate unmanaged = null;
 			unsafe {
 				IntPtr* raw_ptr = (IntPtr*)(((long) this.LookupGType().GetThresholdType().GetClassPtr()) + (long) class_abi.GetFieldOffset("alloc"));
 				unmanaged = (AllocNativeDelegate) Marshal.GetDelegateForFunctionPointer(*raw_ptr, typeof(AllocNativeDelegate));
 			}
-			if (unmanaged == null) return (Gst.FlowReturn) 0;
+			if (unmanaged == null) throw new InvalidOperationException ("No base method to invoke");
 
-			int __result = unmanaged (this.Handle, offset, size, buf == null ? IntPtr.Zero : buf.Handle);
+			IntPtr native_buf;
+			int __result = unmanaged (this.Handle, offset, size, out native_buf);
+			buf = native_buf == IntPtr.Zero ? null : (Gst.Buffer) GLib.Opaque.GetOpaque (native_buf, typeof (Gst.Buffer), true);
 			return (Gst.FlowReturn) __result;
 		}
 
@@ -1598,6 +1619,17 @@ namespace Gst.Base {
 		}
 
 		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
+		static extern bool gst_base_src_push_segment(IntPtr raw, IntPtr segment);
+
+		public bool PushSegment(Gst.Segment segment) {
+			IntPtr native_segment = GLib.Marshaller.StructureToPtrAlloc (segment);
+			bool raw_ret = gst_base_src_push_segment(Handle, native_segment);
+			bool ret = raw_ret;
+			Marshal.FreeHGlobal (native_segment);
+			return ret;
+		}
+
+		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
 		static extern bool gst_base_src_query_latency(IntPtr raw, out bool live, out ulong min_latency, out ulong max_latency);
 
 		public bool QueryLatency(out bool live, out ulong min_latency, out ulong max_latency) {
@@ -1612,15 +1644,6 @@ namespace Gst.Base {
 		public bool Async { 
 			set {
 				gst_base_src_set_async(Handle, value);
-			}
-		}
-
-		[DllImport("gstbase-1.0-0.dll", CallingConvention = CallingConvention.Cdecl)]
-		static extern void gst_base_src_set_automatic_eos(IntPtr raw, bool automatic_eos);
-
-		public bool AutomaticEos { 
-			set {
-				gst_base_src_set_automatic_eos(Handle, value);
 			}
 		}
 

@@ -40,6 +40,9 @@ struct _GESSourcePrivate
   GstElement *last_converter;
   GstPad *ghostpad;
 
+  GList *sub_element_probes;
+  GMutex sub_element_lock;
+
   gboolean is_rendering_smartly;
 };
 
@@ -77,13 +80,48 @@ link_elements (GstElement * bin, GPtrArray * elements)
   return prev;
 }
 
+typedef struct
+{
+  GstPad *pad;
+  gulong probe_id;
+} ProbeData;
+
+static GstPadProbeReturn
+pad_probe_cb (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
+{
+  return GST_PAD_PROBE_OK;
+}
+
+static void
+_release_probe_data (ProbeData * pdata)
+{
+  gst_pad_remove_probe (pdata->pad, pdata->probe_id);
+  gst_object_unref (pdata->pad);
+  g_free (pdata);
+}
+
+static void
+_no_more_pads_cb (GstElement * element, GESSource * self)
+{
+  GESSourcePrivate *priv = self->priv;
+
+  GST_DEBUG_OBJECT (self,
+      "Unblocking after no more pads from sub_element %" GST_PTR_FORMAT,
+      element);
+  g_mutex_lock (&priv->sub_element_lock);
+  g_list_free_full (priv->sub_element_probes,
+      (GDestroyNotify) _release_probe_data);
+  priv->sub_element_probes = NULL;
+  g_mutex_unlock (&priv->sub_element_lock);
+}
+
 static void
 _set_ghost_pad_target (GESSource * self, GstPad * srcpad, GstElement * element)
 {
   GstPadLinkReturn link_return;
   GESSourcePrivate *priv = self->priv;
   GESSourceClass *source_klass = GES_SOURCE_GET_CLASS (self);
-  gboolean use_converter = ! !priv->first_converter;
+  gboolean use_converter = !!priv->first_converter;
 
   if (source_klass->select_pad && !source_klass->select_pad (self, srcpad)) {
     GST_INFO_OBJECT (self, "Ignoring pad %" GST_PTR_FORMAT, srcpad);
@@ -131,8 +169,26 @@ _set_ghost_pad_target (GESSource * self, GstPad * srcpad, GstElement * element)
     if (!gst_ghost_pad_set_target (GST_GHOST_PAD (priv->ghostpad), srcpad))
       GST_ERROR_OBJECT (self, "Could not set ghost target");
   }
+}
 
-  gst_element_no_more_pads (element);
+static void
+_pad_added_cb (GstElement * element, GstPad * srcpad, GESSource * self)
+{
+  GESSourcePrivate *priv = self->priv;
+  ProbeData *pdata = g_new0 (ProbeData, 1);
+
+  GST_LOG_OBJECT (self, "blocking sub_element srcpad %" GST_PTR_FORMAT, srcpad);
+
+  pdata->probe_id = gst_pad_add_probe (srcpad,
+      GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM,
+      (GstPadProbeCallback) pad_probe_cb, NULL, NULL);
+  pdata->pad = gst_object_ref (srcpad);
+
+  g_mutex_lock (&priv->sub_element_lock);
+  priv->sub_element_probes = g_list_append (priv->sub_element_probes, pdata);
+  g_mutex_unlock (&priv->sub_element_lock);
+
+  _set_ghost_pad_target (self, srcpad, element);
 }
 
 /* @elements: (transfer-full) */
@@ -175,8 +231,10 @@ ges_source_create_topbin (GESSource * source, const gchar * bin_name,
     gst_object_unref (sub_srcpad);
   } else {
     GST_INFO_OBJECT (source, "Waiting for pad added");
-    g_signal_connect_swapped (sub_element, "pad-added",
-        G_CALLBACK (_set_ghost_pad_target), source);
+    g_signal_connect (sub_element, "pad-added",
+        G_CALLBACK (_pad_added_cb), source);
+    g_signal_connect (sub_element, "no-more-pads",
+        G_CALLBACK (_no_more_pads_cb), source);
   }
   g_ptr_array_free (elements, TRUE);
 
@@ -208,6 +266,36 @@ ges_source_get_rendering_smartly (GESSource * source)
   return source->priv->is_rendering_smartly;
 }
 
+static GstElement *
+ges_source_create_nle_object (GESTrackElement * self)
+{
+  GParamSpec *pspec;
+  GstElement *nleobject;
+
+  nleobject =
+      GES_TRACK_ELEMENT_CLASS (ges_source_parent_class)->create_gnl_object
+      (self);
+
+  if (!nleobject)
+    return NULL;
+
+  pspec =
+      g_object_class_find_property (G_OBJECT_GET_CLASS (nleobject), "reverse");
+  g_assert (pspec);
+
+
+  if (!ges_timeline_element_add_child_property_full (GES_TIMELINE_ELEMENT
+          (self), NULL, pspec, G_OBJECT (nleobject),
+          GES_TIMELINE_ELEMENT_CHILD_PROP_FLAG_SET_ON_ALL_INSTANCES))
+    GST_ERROR_OBJECT (self,
+        "Could not register the child property 'reverse' for %" GST_PTR_FORMAT,
+        nleobject);
+
+  g_param_spec_unref (pspec);
+
+  return nleobject;
+}
+
 static void
 ges_source_dispose (GObject * object)
 {
@@ -217,6 +305,9 @@ ges_source_dispose (GObject * object)
   gst_clear_object (&priv->last_converter);
   gst_clear_object (&priv->topbin);
   gst_clear_object (&priv->ghostpad);
+  g_list_free_full (priv->sub_element_probes,
+      (GDestroyNotify) _release_probe_data);
+  g_mutex_clear (&priv->sub_element_lock);
 
   G_OBJECT_CLASS (ges_source_parent_class)->dispose (object);
 }
@@ -229,6 +320,7 @@ ges_source_class_init (GESSourceClass * klass)
 
   track_class->nleobject_factorytype = "nlesource";
   track_class->create_element = NULL;
+  track_class->create_gnl_object = ges_source_create_nle_object;
   object_class->dispose = ges_source_dispose;
 
   GES_TRACK_ELEMENT_CLASS_DEFAULT_HAS_INTERNAL_SOURCE (klass) = TRUE;
@@ -238,4 +330,5 @@ static void
 ges_source_init (GESSource * self)
 {
   self->priv = ges_source_get_instance_private (self);
+  g_mutex_init (&self->priv->sub_element_lock);
 }

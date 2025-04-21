@@ -410,11 +410,11 @@ GST_START_TEST (test_parse_bin_from_description)
     const gchar *pad_names;
   } bin_tests[] = {
     {
-    "identity", "identity0/sink,identity0/src"}, {
-    "identity ! identity ! identity", "identity1/sink,identity3/src"}, {
-    "identity ! fakesink", "identity4/sink"}, {
-    "fakesrc ! identity", "identity5/src"}, {
-    "fakesrc ! fakesink", ""}
+        "identity", "identity0/sink,identity0/src"}, {
+        "identity ! identity ! identity", "identity1/sink,identity3/src"}, {
+        "identity ! fakesink", "identity4/sink"}, {
+        "fakesrc ! identity", "identity5/src"}, {
+        "fakesrc ! fakesink", ""}
   };
   gint i;
 
@@ -1621,6 +1621,7 @@ testpadreqsink_peer_query (GstPad * pad, GstObject * parent, GstQuery * query)
         res = TRUE;
         break;
       }
+      /* FALLTHROUGH */
     default:
       res = gst_pad_query_default (pad, parent, query);
       break;
@@ -1894,6 +1895,41 @@ static const GstClockTime times4[] = {
   60, 100
 };
 
+static const GstClockTime times5[] = {
+  3097492530135419, 3097492507369715,
+  3097492729101770, 3097492707369715,
+  3097493128807704, 3097493107369715,
+  3097493328386576, 3097493307369715,
+  3097493728105969, 3097493707369715,
+  3097494207585880, 3097494187369715,
+  3097495048016903, 3097495027369715,
+  3097496287625601, 3097496267369715,
+  3097497447848684, 3097497427369715,
+  3097498888090268, 3097498867369715,
+  3097499128283739, 3097499107369715,
+  3097501168351161, 3097501147369715,
+  3097502448473187, 3097502427369715,
+  3097502729226046, 3097502707369715,
+  3097503009343256, 3097502987369715,
+  3097503089910694, 3097503067369715,
+  3097503131675320, 3097503107369715,
+  3097503179587096, 3097503147369715,
+  3097504741040566, 3097504707369715,
+  3097504941855342, 3097504907369715,
+  3097506820823108, 3097506787369715,
+  3097508259718567, 3097508227369715,
+  3097508421611551, 3097508387369715,
+  3097509422069495, 3097509387369715,
+  3097511460842652, 3097511427369715,
+  3097511740612276, 3097511707369715,
+  3097513169836240, 3097513147369715,
+  3097514020101841, 3097513987369715,
+  3097515540180269, 3097515507369715,
+  3097516618966664, 3097516587369715,
+  3097518098778648, 3097518067369715,
+  3097518938513564, 3097518907369715
+};
+
 struct test_entry
 {
   gint n;
@@ -1904,15 +1940,17 @@ struct test_entry
   guint64 expect_denom;
 } times[] = {
   {
-  32, times1, 257154512360784, 120670380469753, 4052622913376634109,
-        4052799313904261962}, {
-  64, times1, 257359198881356, 120875054227405, 2011895759027682422,
-        2012014931360215503}, {
-  32, times2, 291705506022294, 162134297192792, 2319535707505209857,
-        2321009753483354451}, {
-  32, times3, 291922315691409, 162234934150296, 1370930728180888261,
-        4392719527011673456}, {
-  6, times4, 60, 100, 2, 1}
+        32, times1, 257154512360784, 120670380469753, 4052622913376634109,
+      4052799313904261962}, {
+        64, times1, 257359198881356, 120875054227405, 2011895759027682422,
+      2012014931360215503}, {
+        32, times2, 291705506022294, 162134297192792, 2319535707505209857,
+      2321009753483354451}, {
+        32, times3, 291922315691409, 162234934150296, 1370930728180888261,
+      4392719527011673456}, {
+      6, times4, 60, 100, 2, 1},
+  {G_N_ELEMENTS (times5) / 2, times5, 3097518938513564, 3097518903890035,
+      7927902279407500000, 7932215807091104881},
 };
 
 GST_START_TEST (test_regression)
@@ -1948,6 +1986,21 @@ GST_START_TEST (test_regression)
         "Regression params %d fail. external %" G_GUINT64_FORMAT
         " != expected %" G_GUINT64_FORMAT, i, external,
         times[i].expect_external);
+  }
+}
+
+GST_END_TEST;
+
+// 10 Values
+static const int ceil_log2_values[] = {
+  -1, 0, 1, 2, 2, 3, 3, 3, 3, 4
+};
+
+GST_START_TEST (test_ceil_log2)
+{
+  int i;
+  for (i = 1; i < 10; i++) {
+    fail_unless_equals_int (gst_util_ceil_log2 (i), ceil_log2_values[i]);
   }
 }
 
@@ -2015,6 +2068,8 @@ gst_utils_suite (void)
   tcase_add_test (tc_chain, test_regression);
 
   tcase_add_test (tc_chain, test_mark_as_plugin_api);
+
+  tcase_add_test (tc_chain, test_ceil_log2);
 
   return s;
 }

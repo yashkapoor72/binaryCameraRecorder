@@ -1699,6 +1699,22 @@ GST_START_TEST (test_rtcp_buffer_xr_voipmtrx)
 
 GST_END_TEST;
 
+GST_START_TEST (test_rtcp_utils)
+{
+  /* Make sure conversion from NTP doesn't incur precision loss */
+  GstClockTime orig_ts = gst_util_get_timestamp ();
+  guint64 ntp_ts = gst_rtcp_unix_to_ntp (orig_ts);
+  GstClockTime new_ts = gst_rtcp_ntp_to_unix (ntp_ts);
+  fail_unless_equals_clocktime (orig_ts, new_ts);
+
+  GstClockTime hardcoded_ts = 185774825249347;
+  ntp_ts = gst_rtcp_unix_to_ntp (hardcoded_ts);
+  new_ts = gst_rtcp_ntp_to_unix (ntp_ts);
+  fail_unless_equals_clocktime (hardcoded_ts, new_ts);
+}
+
+GST_END_TEST;
+
 GST_START_TEST (test_rtp_ntp64_extension)
 {
   GstBuffer *buf;
@@ -2186,7 +2202,7 @@ create_feedback_buffer (gboolean with_padding)
 }
 
 static GstBuffer *
-create_remb_buffer ()
+create_remb_buffer (void)
 {
   guint8 remb_buffer[20] = {
     0x8f, 0xce, 0x00, 0x04,
@@ -2234,11 +2250,11 @@ GST_START_TEST (test_rtcp_compound_padding)
   rtcp_buffer = gst_rtcp_buffer_new (1400);
 
   fail_unless (gst_rtcp_buffer_map (rtcp_buffer, GST_MAP_READWRITE, &rtcp));
-  rtcp_packet = g_slice_new0 (GstRTCPPacket);
+  rtcp_packet = g_new0 (GstRTCPPacket, 1);
   fail_unless (gst_rtcp_buffer_add_packet (&rtcp, GST_RTCP_TYPE_RR,
           rtcp_packet));
   gst_rtcp_packet_rr_set_ssrc (rtcp_packet, 1);
-  g_slice_free (GstRTCPPacket, rtcp_packet);
+  g_free (rtcp_packet);
   gst_rtcp_buffer_unmap (&rtcp);
 
   fail_unless (gst_rtcp_buffer_validate (rtcp_buffer));
@@ -2357,6 +2373,7 @@ rtp_suite (void)
   tcase_add_test (tc_chain, test_rtcp_buffer_xr_dlrr);
   tcase_add_test (tc_chain, test_rtcp_buffer_xr_ssumm);
   tcase_add_test (tc_chain, test_rtcp_buffer_xr_voipmtrx);
+  tcase_add_test (tc_chain, test_rtcp_utils);
 
   tcase_add_test (tc_chain, test_rtp_ntp64_extension);
   tcase_add_test (tc_chain, test_rtp_ntp56_extension);

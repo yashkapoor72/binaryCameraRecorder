@@ -156,6 +156,10 @@ gst_plugin_finalize (GObject * object)
     gst_structure_free (plugin->priv->cache_data);
   }
 
+  if (plugin->priv->status_info) {
+    gst_structure_free (plugin->priv->status_info);
+  }
+
   G_OBJECT_CLASS (gst_plugin_parent_class)->finalize (object);
 }
 
@@ -311,6 +315,10 @@ _priv_gst_plugin_initialize (void)
 
   _gst_plugin_inited = TRUE;
 
+  _priv_gst_plugin_api_quark = g_quark_from_static_string ("plugin-api");
+  _priv_gst_plugin_api_flags_quark =
+      g_quark_from_static_string ("plugin-api-flags");
+
   whitelist = g_getenv ("GST_PLUGIN_LOADING_WHITELIST");
   if (whitelist != NULL && *whitelist != '\0') {
     _plugin_loading_whitelist = g_strsplit (whitelist,
@@ -345,7 +353,8 @@ _priv_gst_plugin_initialize (void)
  *   plugin1,plugin2 or
  *   source-package@pathprefix or
  *   source-package@* or just
- *   source-package
+ *   source-package or
+ *   *
  *
  * ie. the bit before the path will be checked against both the plugin
  * name and the plugin's source package name, to keep the format simple.
@@ -360,6 +369,9 @@ gst_plugin_desc_matches_whitelist_entry (const GstPluginDesc * desc,
 
   GST_LOG ("Whitelist pattern '%s', plugin: %s of %s@%s", pattern, desc->name,
       desc->source, GST_STR_NULL (filename));
+
+  if (strcmp (pattern, "*") == 0)
+    return TRUE;
 
   /* do we have a path prefix? */
   sep = strchr (pattern, '@');
@@ -1183,8 +1195,16 @@ gboolean
 gst_plugin_is_loaded (GstPlugin * plugin)
 {
   g_return_val_if_fail (plugin != NULL, FALSE);
+  gboolean ret;
 
-  return (plugin->module != NULL || plugin->filename == NULL);
+  if (plugin->filename == NULL)
+    return TRUE;                /* Static plugin */
+
+  g_mutex_lock (&gst_plugin_loading_mutex);
+  ret = (plugin->module != NULL);
+  g_mutex_unlock (&gst_plugin_loading_mutex);
+
+  return ret;
 }
 
 /**
@@ -1406,22 +1426,27 @@ gst_plugin_load_by_name (const gchar * name)
 
   GST_DEBUG ("looking up plugin %s in default registry", name);
   plugin = gst_registry_find_plugin (gst_registry_get (), name);
-  if (plugin) {
-    GST_DEBUG ("loading plugin %s from file %s", name, plugin->filename);
-    newplugin = gst_plugin_load_file (plugin->filename, &error);
-    gst_object_unref (plugin);
-
-    if (!newplugin) {
-      GST_WARNING ("load_plugin error: %s", error->message);
-      g_error_free (error);
-      return NULL;
-    }
-    /* newplugin was reffed by load_file */
-    return newplugin;
+  if (plugin == NULL) {
+    GST_DEBUG ("Could not find plugin %s in registry", name);
+    return NULL;
   }
 
-  GST_DEBUG ("Could not find plugin %s in registry", name);
-  return NULL;
+  if (gst_plugin_is_loaded (plugin)) {
+    GST_DEBUG ("plugin %s already loaded", name);
+    return plugin;
+  }
+
+  GST_DEBUG ("loading plugin %s from file %s", name, plugin->filename);
+  newplugin = gst_plugin_load_file (plugin->filename, &error);
+  gst_object_unref (plugin);
+
+  if (!newplugin) {
+    GST_WARNING ("load_plugin error: %s", error->message);
+    g_error_free (error);
+    return NULL;
+  }
+  /* newplugin was reffed by load_file */
+  return newplugin;
 }
 
 /**
@@ -1606,8 +1631,9 @@ gst_plugin_ext_dep_extract_env_vars_paths (GstPlugin * plugin,
         gchar *full_path;
 
         if (!g_path_is_absolute (arr[i])) {
-          GST_INFO_OBJECT (plugin, "ignoring environment variable content '%s'"
-              ": either not an absolute path or not a path at all", arr[i]);
+          GST_INFO_OBJECT (plugin, "ignoring environment variable '%s' with "
+              "content #%u '%s': either not an absolute path or not a path at all",
+              components[0], i, arr[i]);
           continue;
         }
 
@@ -1689,7 +1715,7 @@ gst_plugin_ext_dep_scan_dir_and_match_names (GstPlugin * plugin,
   GDir *dir;
   guint hash = 0;
 
-  recurse_dirs = ! !(flags & GST_PLUGIN_DEPENDENCY_FLAG_RECURSE);
+  recurse_dirs = !!(flags & GST_PLUGIN_DEPENDENCY_FLAG_RECURSE);
 
   dir = g_dir_open (path, 0, &err);
   if (dir == NULL) {
@@ -1751,7 +1777,7 @@ gst_plugin_ext_dep_scan_path_with_filenames (GstPlugin * plugin,
   if (filenames == NULL || *filenames == NULL)
     filenames = empty_filenames;
 
-  recurse_into_dirs = ! !(flags & GST_PLUGIN_DEPENDENCY_FLAG_RECURSE);
+  recurse_into_dirs = !!(flags & GST_PLUGIN_DEPENDENCY_FLAG_RECURSE);
 
   if ((flags & GST_PLUGIN_DEPENDENCY_FLAG_FILE_NAME_IS_SUFFIX) ||
       (flags & GST_PLUGIN_DEPENDENCY_FLAG_FILE_NAME_IS_PREFIX))
@@ -1868,7 +1894,7 @@ gst_plugin_ext_dep_free (GstPluginDep * dep)
   g_strfreev (dep->env_vars);
   g_strfreev (dep->paths);
   g_strfreev (dep->names);
-  g_slice_free (GstPluginDep, dep);
+  g_free (dep);
 }
 
 static gboolean
@@ -1947,7 +1973,7 @@ gst_plugin_add_dependency (GstPlugin * plugin, const gchar ** env_vars,
     }
   }
 
-  dep = g_slice_new (GstPluginDep);
+  dep = g_new (GstPluginDep, 1);
 
   dep->env_vars = g_strdupv ((gchar **) env_vars);
   dep->paths = g_strdupv ((gchar **) paths);
@@ -2020,4 +2046,149 @@ gst_plugin_add_dependency_simple (GstPlugin * plugin,
     g_strfreev (a_paths);
   if (a_names)
     g_strfreev (a_names);
+}
+
+static void
+gst_plugin_add_status_message (GstPlugin * plugin, const gchar * field_name,
+    const gchar * message)
+{
+  const GValue *val = NULL;
+  GValue str_val = G_VALUE_INIT;
+
+  g_return_if_fail (GST_IS_PLUGIN (plugin));
+  g_return_if_fail (message != NULL);
+
+  g_value_init (&str_val, G_TYPE_STRING);
+  g_value_set_string (&str_val, message);
+
+  if (plugin->priv->status_info == NULL)
+    plugin->priv->status_info = gst_structure_new_empty ("plugin-status-info");
+  else
+    val = gst_structure_get_value (plugin->priv->status_info, field_name);
+
+  if (val != NULL) {
+    gst_value_list_append_and_take_value ((GValue *) val, &str_val);
+  } else {
+    GValue list_val = G_VALUE_INIT;
+
+    gst_value_list_init (&list_val, 1);
+    gst_value_list_append_and_take_value (&list_val, &str_val);
+    gst_structure_take_value (plugin->priv->status_info, field_name, &list_val);
+  }
+
+  GST_TRACE_OBJECT (plugin, "Status info now: %" GST_PTR_FORMAT,
+      plugin->priv->status_info);
+}
+
+/**
+ * gst_plugin_add_status_error:
+ * @plugin: a #GstPlugin
+ * @message: the status error message
+ *
+ * Since: 1.24
+ */
+void
+gst_plugin_add_status_error (GstPlugin * plugin, const gchar * message)
+{
+  gst_plugin_add_status_message (plugin, "error-message", message);
+}
+
+/**
+ * gst_plugin_add_status_warning:
+ * @plugin: a #GstPlugin
+ * @message: the status warning message
+ *
+ * Since: 1.24
+ */
+void
+gst_plugin_add_status_warning (GstPlugin * plugin, const gchar * message)
+{
+  gst_plugin_add_status_message (plugin, "warning-message", message);
+}
+
+/**
+ * gst_plugin_add_status_info:
+ * @plugin: a #GstPlugin
+ * @message: the status info message
+ *
+ * Since: 1.24
+ */
+void
+gst_plugin_add_status_info (GstPlugin * plugin, const gchar * message)
+{
+  gst_plugin_add_status_message (plugin, "info-message", message);
+}
+
+static gchar **
+gst_plugin_get_status_messages (GstPlugin * plugin, const gchar * field_name)
+{
+  const GValue *list_val;
+  guint n_vals, i;
+  gchar **arr;
+
+  g_return_val_if_fail (GST_IS_PLUGIN (plugin), NULL);
+
+  if (plugin->priv->status_info == NULL)
+    return NULL;
+
+  list_val = gst_structure_get_value (plugin->priv->status_info, field_name);
+
+  if (list_val == NULL)
+    return NULL;
+
+  n_vals = gst_value_list_get_size (list_val);
+
+  if (n_vals == 0)
+    return NULL;
+
+  arr = g_new0 (gchar *, n_vals + 1);
+
+  for (i = 0; i < n_vals; ++i) {
+    const GValue *str_val = gst_value_list_get_value (list_val, i);
+    arr[i] = g_value_dup_string (str_val);
+  }
+
+  return arr;
+}
+
+/**
+ * gst_plugin_get_status_errors:
+ * @plugin: a #GstPlugin
+ *
+ * Returns: (transfer full) (nullable): an array of plugin status error messages, or NULL
+ *
+ * Since: 1.24
+ */
+gchar **
+gst_plugin_get_status_errors (GstPlugin * plugin)
+{
+  return gst_plugin_get_status_messages (plugin, "error-message");
+}
+
+/**
+ * gst_plugin_get_status_warnings:
+ * @plugin: a #GstPlugin
+ *
+ * Returns: (transfer full) (nullable): an array of plugin status warning messages, or NULL
+ *
+ * Since: 1.24
+ */
+gchar **
+gst_plugin_get_status_warnings (GstPlugin * plugin)
+{
+  return gst_plugin_get_status_messages (plugin, "warning-message");
+}
+
+/**
+ * gst_plugin_get_status_infos:
+ * @plugin: a #GstPlugin
+ *
+ * Returns: (transfer full) (nullable): an array of plugin status info messages, or NULL
+ *
+ * Since: 1.24
+ */
+gchar **
+gst_plugin_get_status_infos (GstPlugin * plugin)
+{
+  return gst_plugin_get_status_messages (plugin, "info-message");
 }

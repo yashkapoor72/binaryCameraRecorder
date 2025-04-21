@@ -46,6 +46,10 @@
 #include <gst/va/gstva.h>
 #endif
 
+#ifdef HAVE_GST_D3D12
+#include <gst/d3d12/gstd3d12.h>
+#endif
+
 GST_DEBUG_CATEGORY_STATIC (gst_qsv_av1_enc_debug);
 #define GST_CAT_DEFAULT gst_qsv_av1_enc_debug
 
@@ -83,11 +87,10 @@ gst_qsv_av1_enc_rate_control_get_type (void)
     {0, nullptr, nullptr}
   };
 
-  if (g_once_init_enter (&rate_control_type)) {
-    GType type =
+  GST_QSV_CALL_ONCE_BEGIN {
+    rate_control_type =
         g_enum_register_static ("GstQsvAV1EncRateControl", rate_controls);
-    g_once_init_leave (&rate_control_type, type);
-  }
+  } GST_QSV_CALL_ONCE_END;
 
   return rate_control_type;
 }
@@ -117,12 +120,13 @@ enum
 
 #define DOC_SINK_CAPS \
     "video/x-raw(memory:D3D11Memory), " DOC_SINK_CAPS_COMM "; " \
+    "video/x-raw(memory:D3D12Memory), " DOC_SINK_CAPS_COMM "; " \
     "video/x-raw(memory:VAMemory), " DOC_SINK_CAPS_COMM "; " \
     "video/x-raw, " DOC_SINK_CAPS_COMM
 
 #define DOC_SRC_CAPS \
     "video/x-av1, width = (int) [ 16, 8192 ], height = (int) [ 16, 8192 ], " \
-    "alignment = (string) tu"
+    "stream-format = (string) obu-stream, alignment = (string) tu"
 
 typedef struct _GstQsvAV1EncClassData
 {
@@ -132,6 +136,7 @@ typedef struct _GstQsvAV1EncClassData
   gint64 adapter_luid;
   gchar *display_path;
   gchar *description;
+  gboolean d3d12_interop;
 } GstQsvAV1EncClassData;
 
 typedef struct _GstQsvAV1Enc
@@ -196,6 +201,7 @@ gst_qsv_av1_enc_class_init (GstQsvAV1EncClass * klass, gpointer data)
   qsvenc_class->impl_index = cdata->impl_index;
   qsvenc_class->adapter_luid = cdata->adapter_luid;
   qsvenc_class->display_path = cdata->display_path;
+  qsvenc_class->d3d12_interop = cdata->d3d12_interop;
 
   object_class->finalize = gst_qsv_av1_enc_finalize;
   object_class->set_property = gst_qsv_av1_enc_set_property;
@@ -317,13 +323,11 @@ gst_qsv_av1_enc_check_update_uint (GstQsvAV1Enc * self, guint * old_val,
   if (*old_val == new_val)
     return;
 
-  g_mutex_lock (&self->prop_lock);
   *old_val = new_val;
   if (is_bitrate_param)
     self->bitrate_updated = TRUE;
   else
     self->property_updated = TRUE;
-  g_mutex_unlock (&self->prop_lock);
 }
 
 static void
@@ -333,10 +337,8 @@ gst_qsv_av1_enc_check_update_enum (GstQsvAV1Enc * self, mfxU16 * old_val,
   if (*old_val == (mfxU16) new_val)
     return;
 
-  g_mutex_lock (&self->prop_lock);
   *old_val = (mfxU16) new_val;
   self->property_updated = TRUE;
-  g_mutex_unlock (&self->prop_lock);
 }
 
 static void
@@ -345,6 +347,7 @@ gst_qsv_av1_enc_set_property (GObject * object, guint prop_id,
 {
   GstQsvAV1Enc *self = GST_QSV_AV1_ENC (object);
 
+  g_mutex_lock (&self->prop_lock);
   switch (prop_id) {
     case PROP_QP_I:
       gst_qsv_av1_enc_check_update_uint (self, &self->qp_i,
@@ -378,6 +381,7 @@ gst_qsv_av1_enc_set_property (GObject * object, guint prop_id,
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
   }
+  g_mutex_unlock (&self->prop_lock);
 }
 
 static void
@@ -386,6 +390,7 @@ gst_qsv_av1_enc_get_property (GObject * object, guint prop_id, GValue * value,
 {
   GstQsvAV1Enc *self = GST_QSV_AV1_ENC (object);
 
+  g_mutex_lock (&self->prop_lock);
   switch (prop_id) {
     case PROP_QP_I:
       g_value_set_uint (value, self->qp_i);
@@ -412,6 +417,7 @@ gst_qsv_av1_enc_get_property (GObject * object, guint prop_id, GValue * value,
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
   }
+  g_mutex_unlock (&self->prop_lock);
 }
 
 static void
@@ -460,6 +466,7 @@ gst_qsv_av1_enc_set_format (GstQsvEncoder * encoder,
   mfxFrameInfo *frame_info;
   mfxExtAV1BitstreamParam *bs_param;
   mfxExtAV1ResolutionParam *res_param;
+  GstVideoFormat format;
 
   frame_info = &param->mfx.FrameInfo;
 
@@ -482,24 +489,15 @@ gst_qsv_av1_enc_set_format (GstQsvEncoder * encoder,
   frame_info->AspectRatioW = GST_VIDEO_INFO_PAR_N (info);
   frame_info->AspectRatioH = GST_VIDEO_INFO_PAR_D (info);
 
-  switch (GST_VIDEO_INFO_FORMAT (info)) {
+  format = GST_VIDEO_INFO_FORMAT (info);
+  switch (format) {
     case GST_VIDEO_FORMAT_NV12:
-      frame_info->ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-      frame_info->FourCC = MFX_FOURCC_NV12;
-      frame_info->BitDepthLuma = 8;
-      frame_info->BitDepthChroma = 8;
-      frame_info->Shift = 0;
-      break;
     case GST_VIDEO_FORMAT_P010_10LE:
-      frame_info->ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-      frame_info->FourCC = MFX_FOURCC_P010;
-      frame_info->BitDepthLuma = 10;
-      frame_info->BitDepthChroma = 10;
-      frame_info->Shift = 1;
+      gst_qsv_frame_info_set_format (frame_info, format);
       break;
     default:
       GST_ERROR_OBJECT (self, "Unexpected format %s",
-          gst_video_format_to_string (GST_VIDEO_INFO_FORMAT (info)));
+          gst_video_format_to_string (format));
       return FALSE;
   }
 
@@ -561,7 +559,7 @@ gst_qsv_av1_enc_set_output_state (GstQsvEncoder * encoder,
   }
 
   caps = gst_caps_from_string ("video/x-av1, profile = (string) main, "
-      "alignment= (string) tu");
+      "stream-format = (string) obu-stream, alignment= (string) tu");
   out_state = gst_video_encoder_set_output_state (GST_VIDEO_ENCODER (encoder),
       caps, state);
   gst_video_codec_state_unref (out_state);
@@ -628,7 +626,7 @@ done:
 
 void
 gst_qsv_av1_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
-    GstObject * device, mfxSession session)
+    GstObject * device, mfxSession session, gboolean d3d12_interop)
 {
   mfxVideoParam param;
   mfxInfoMFX *mfx;
@@ -678,21 +676,11 @@ gst_qsv_av1_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
   resolution_param.FrameHeight = 240;
 
   /* MAIN profile covers NV12 and P010 */
-  mfx->FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-  mfx->FrameInfo.FourCC = MFX_FOURCC_NV12;
-  mfx->FrameInfo.BitDepthLuma = 8;
-  mfx->FrameInfo.BitDepthChroma = 8;
-  mfx->FrameInfo.Shift = 0;
-
+  gst_qsv_frame_info_set_format (&mfx->FrameInfo, GST_VIDEO_FORMAT_NV12);
   if (MFXVideoENCODE_Query (session, &param, &param) == MFX_ERR_NONE)
     supported_formats.push_back ("NV12");
 
-  mfx->FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-  mfx->FrameInfo.FourCC = MFX_FOURCC_P010;
-  mfx->FrameInfo.BitDepthLuma = 10;
-  mfx->FrameInfo.BitDepthChroma = 10;
-  mfx->FrameInfo.Shift = 1;
-
+  gst_qsv_frame_info_set_format (&mfx->FrameInfo, GST_VIDEO_FORMAT_P010_10LE);
   if (MFXVideoENCODE_Query (session, &param, &param) == MFX_ERR_NONE)
     supported_formats.push_back ("P010_10LE");
 
@@ -701,11 +689,7 @@ gst_qsv_av1_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
     return;
   }
 
-  mfx->FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
-  mfx->FrameInfo.FourCC = MFX_FOURCC_NV12;
-  mfx->FrameInfo.BitDepthLuma = 8;
-  mfx->FrameInfo.BitDepthChroma = 8;
-  mfx->FrameInfo.Shift = 0;
+  gst_qsv_frame_info_set_format (&mfx->FrameInfo, GST_VIDEO_FORMAT_NV12);
 
   /* Check max-resolution */
   for (guint i = 0; i < G_N_ELEMENTS (gst_qsv_resolutions); i++) {
@@ -725,6 +709,9 @@ gst_qsv_av1_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
     max_resolution.width = gst_qsv_resolutions[i].width;
     max_resolution.height = gst_qsv_resolutions[i].height;
   }
+
+  if (max_resolution.width == 0 || max_resolution.height == 0)
+    return;
 
   GST_INFO ("Maximum supported resolution: %dx%d",
       max_resolution.width, max_resolution.height);
@@ -764,21 +751,30 @@ gst_qsv_av1_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
 #ifdef G_OS_WIN32
   GstCaps *d3d11_caps = gst_caps_copy (sink_caps);
   GstCapsFeatures *caps_features =
-      gst_caps_features_new (GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY, nullptr);
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_D3D11_MEMORY,
+      nullptr);
   gst_caps_set_features_simple (d3d11_caps, caps_features);
+#ifdef HAVE_GST_D3D12
+  auto d3d12_caps = gst_caps_copy (sink_caps);
+  auto d3d12_feature =
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_D3D12_MEMORY,
+      nullptr);
+  gst_caps_set_features_simple (d3d12_caps, d3d12_feature);
+  gst_caps_append (d3d11_caps, d3d12_caps);
+#endif
   gst_caps_append (d3d11_caps, sink_caps);
   sink_caps = d3d11_caps;
 #else
   GstCaps *va_caps = gst_caps_copy (sink_caps);
   GstCapsFeatures *caps_features =
-      gst_caps_features_new (GST_CAPS_FEATURE_MEMORY_VA, nullptr);
+      gst_caps_features_new_static_str (GST_CAPS_FEATURE_MEMORY_VA, nullptr);
   gst_caps_set_features_simple (va_caps, caps_features);
   gst_caps_append (va_caps, sink_caps);
   sink_caps = va_caps;
 #endif
 
   std::string src_caps_str = "video/x-av1, profile = (string) main, "
-      "alignment = (string) tu";
+      "stream-format = (string) obu-stream, alignment = (string) tu";
   src_caps_str += ", width=(int) [ 16, " + std::to_string (resolution) + " ]";
   src_caps_str += ", height=(int) [ 16, " + std::to_string (resolution) + " ]";
 
@@ -791,6 +787,7 @@ gst_qsv_av1_enc_register (GstPlugin * plugin, guint rank, guint impl_index,
   cdata->sink_caps = sink_caps;
   cdata->src_caps = src_caps;
   cdata->impl_index = impl_index;
+  cdata->d3d12_interop = d3d12_interop;
 
 #ifdef G_OS_WIN32
   g_object_get (device, "adapter-luid", &cdata->adapter_luid,

@@ -109,6 +109,7 @@ enum
 
   PROP_FD,
   PROP_TIMEOUT,
+  PROP_IS_LIVE,
 
   PROP_LAST
 };
@@ -120,7 +121,7 @@ static void gst_fd_src_uri_handler_init (gpointer g_iface, gpointer iface_data);
   GST_DEBUG_CATEGORY_INIT (gst_fd_src_debug, "fdsrc", 0, "fdsrc element");
 #define gst_fd_src_parent_class parent_class
 G_DEFINE_TYPE_WITH_CODE (GstFdSrc, gst_fd_src, GST_TYPE_PUSH_SRC, _do_init);
-#if defined(HAVE_SYS_SOCKET_H) || defined(_MSC_VER)
+#if defined(HAVE_SYS_SOCKET_H) || defined(G_OS_WIN32)
 GST_ELEMENT_REGISTER_DEFINE (fdsrc, "fdsrc", GST_RANK_NONE, GST_TYPE_FD_SRC);
 #endif
 
@@ -171,6 +172,17 @@ gst_fd_src_class_init (GstFdSrcClass * klass)
           "Post a message after timeout microseconds (0 = disabled)", 0,
           G_MAXUINT64, DEFAULT_TIMEOUT,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstFdSrc:is-live
+   *
+   * Act like a live source if set to %TRUE.
+   *
+   * Since: 1.26
+   */
+  g_object_class_install_property (gobject_class, PROP_IS_LIVE,
+      g_param_spec_boolean ("is-live", "is-live", "Act like a live source",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gst_element_class_set_static_metadata (gstelement_class,
       "Filedescriptor Source",
@@ -362,6 +374,10 @@ gst_fd_src_set_property (GObject * object, guint prop_id, const GValue * value,
       GST_DEBUG_OBJECT (src, "poll timeout set to %" GST_TIME_FORMAT,
           GST_TIME_ARGS (src->timeout));
       break;
+    case PROP_IS_LIVE:
+      GST_DEBUG_OBJECT (src, "live set to %d", g_value_get_boolean (value));
+      gst_base_src_set_live (GST_BASE_SRC (src), g_value_get_boolean (value));
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -381,6 +397,9 @@ gst_fd_src_get_property (GObject * object, guint prop_id, GValue * value,
     case PROP_TIMEOUT:
       g_value_set_uint64 (value, src->timeout);
       break;
+    case PROP_IS_LIVE:
+      g_value_set_boolean (value, gst_base_src_is_live (GST_BASE_SRC (src)));
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -396,7 +415,7 @@ gst_fd_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
   guint blocksize;
   GstMapInfo info;
 
-#ifndef HAVE_WIN32
+#ifndef G_OS_WIN32
   GstClockTime timeout;
   gboolean try_again;
   gint retval;
@@ -404,7 +423,7 @@ gst_fd_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
 
   src = GST_FD_SRC (psrc);
 
-#ifndef HAVE_WIN32
+#ifndef G_OS_WIN32
   if (src->timeout > 0) {
     timeout = src->timeout * GST_USECOND;
   } else {
@@ -450,10 +469,16 @@ gst_fd_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
   if (!gst_buffer_map (buf, &info, GST_MAP_WRITE))
     goto buffer_read_error;
 
+#ifdef G_OS_WIN32
+  int cur_mode = _setmode (src->fd, O_BINARY);
+#endif
   do {
     readbytes = read (src->fd, info.data, blocksize);
     GST_LOG_OBJECT (src, "read %" G_GSSIZE_FORMAT, readbytes);
   } while (readbytes == -1 && errno == EINTR);  /* retry if interrupted */
+#ifdef G_OS_WIN32
+  _setmode (src->fd, cur_mode);
+#endif
 
   if (readbytes < 0)
     goto read_error;
@@ -476,7 +501,7 @@ gst_fd_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
   return GST_FLOW_OK;
 
   /* ERRORS */
-#ifndef HAVE_WIN32
+#ifndef G_OS_WIN32
 poll_error:
   {
     GST_ELEMENT_ERROR (src, RESOURCE, READ, (NULL),

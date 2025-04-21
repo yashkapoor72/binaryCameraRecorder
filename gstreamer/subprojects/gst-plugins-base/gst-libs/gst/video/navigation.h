@@ -44,7 +44,11 @@ typedef struct _GstNavigationInterface GstNavigationInterface;
  * GstNavigationModifierType:
  * @GST_NAVIGATION_MODIFIER_SHIFT_MASK: the Shift key.
  * @GST_NAVIGATION_MODIFIER_CONTROL_MASK: the Control key.
- * @GST_NAVIGATION_MODIFIER_ALT_MASK: the fourth modifier key
+ * @GST_NAVIGATION_MODIFIER_MOD1_MASK: the third modifier key
+ * @GST_NAVIGATION_MODIFIER_MOD2_MASK: the fourth modifier key
+ * @GST_NAVIGATION_MODIFIER_MOD3_MASK: the fifth modifier key
+ * @GST_NAVIGATION_MODIFIER_MOD4_MASK: the sixth modifier key
+ * @GST_NAVIGATION_MODIFIER_MOD5_MASK: the seventh modifier key
  * @GST_NAVIGATION_MODIFIER_BUTTON1_MASK: the first mouse button (usually the left button).
  * @GST_NAVIGATION_MODIFIER_BUTTON2_MASK: the second mouse button (usually the right button).
  * @GST_NAVIGATION_MODIFIER_BUTTON3_MASK: the third mouse button (usually the mouse wheel button or middle button).
@@ -69,7 +73,12 @@ typedef enum
   GST_NAVIGATION_MODIFIER_SHIFT_MASK    = 1 << 0,
   GST_NAVIGATION_MODIFIER_LOCK_MASK     = 1 << 1,
   GST_NAVIGATION_MODIFIER_CONTROL_MASK  = 1 << 2,
-  GST_NAVIGATION_MODIFIER_ALT_MASK      = 1 << 3,
+
+  GST_NAVIGATION_MODIFIER_MOD1_MASK  = 1 << 3,
+  GST_NAVIGATION_MODIFIER_MOD2_MASK  = 1 << 4,
+  GST_NAVIGATION_MODIFIER_MOD3_MASK  = 1 << 5,
+  GST_NAVIGATION_MODIFIER_MOD4_MASK  = 1 << 6,
+  GST_NAVIGATION_MODIFIER_MOD5_MASK  = 1 << 7,
 
   GST_NAVIGATION_MODIFIER_BUTTON1_MASK  = 1 << 8,
   GST_NAVIGATION_MODIFIER_BUTTON2_MASK  = 1 << 9,
@@ -86,7 +95,11 @@ typedef enum
     GST_NAVIGATION_MODIFIER_SHIFT_MASK    |
     GST_NAVIGATION_MODIFIER_LOCK_MASK     |
     GST_NAVIGATION_MODIFIER_CONTROL_MASK  |
-    GST_NAVIGATION_MODIFIER_ALT_MASK      |
+    GST_NAVIGATION_MODIFIER_MOD1_MASK      |
+    GST_NAVIGATION_MODIFIER_MOD2_MASK      |
+    GST_NAVIGATION_MODIFIER_MOD3_MASK      |
+    GST_NAVIGATION_MODIFIER_MOD4_MASK      |
+    GST_NAVIGATION_MODIFIER_MOD5_MASK      |
     GST_NAVIGATION_MODIFIER_BUTTON1_MASK  |
     GST_NAVIGATION_MODIFIER_BUTTON2_MASK  |
     GST_NAVIGATION_MODIFIER_BUTTON3_MASK  |
@@ -358,6 +371,9 @@ gboolean        gst_navigation_message_parse_event          (GstMessage *message
  * of simultaneous touch events. (Since: 1.22)
  * @GST_NAVIGATION_EVENT_TOUCH_CANCEL: An event cancelling all currently active
  * touch points. (Since: 1.22)
+ * @GST_NAVIGATION_EVENT_MOUSE_DOUBLE_CLICK: A mouse button double click event. Use
+ * gst_navigation_event_parse_mouse_button_event() to extract the details from the
+ * event. (Since: 1.26)
  *
  * Enum values for the various events that an element implementing the
  * GstNavigation interface might send up the pipeline. Touch events have been
@@ -434,6 +450,17 @@ typedef enum {
    * Since: 1.22
    */
   GST_NAVIGATION_EVENT_TOUCH_CANCEL               = 12,
+
+  /**
+   * GST_NAVIGATION_EVENT_MOUSE_DOUBLE_CLICK:
+   *
+   * A mouse button double click event.
+   * Use gst_navigation_event_parse_mouse_button_event() to extract the details
+   * from the event.
+   *
+   * Since: 1.26
+   */
+  GST_NAVIGATION_EVENT_MOUSE_DOUBLE_CLICK         = 13,
 } GstNavigationEventType;
 
 GST_VIDEO_API
@@ -449,6 +476,11 @@ GstEvent*       gst_navigation_event_new_key_release          (const gchar * key
 
 GST_VIDEO_API
 GstEvent*       gst_navigation_event_new_mouse_button_press   (gint button, gdouble x,
+                                                               gdouble y,
+                                                               GstNavigationModifierType state) G_GNUC_MALLOC;
+
+GST_VIDEO_API
+GstEvent*       gst_navigation_event_new_mouse_double_click   (gint button, gdouble x,
                                                                gdouble y,
                                                                GstNavigationModifierType state) G_GNUC_MALLOC;
 

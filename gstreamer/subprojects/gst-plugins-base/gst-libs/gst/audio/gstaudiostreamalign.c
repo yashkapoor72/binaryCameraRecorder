@@ -370,6 +370,7 @@ gst_audio_stream_align_process (GstAudioStreamAlign * align,
     discont = TRUE;
   } else {
     guint64 diff, max_sample_diff;
+    GstClockTime expected_time;
 
     /* Check discont */
     if (align->rate > 0) {
@@ -378,15 +379,26 @@ gst_audio_stream_align_process (GstAudioStreamAlign * align,
       diff = ABSDIFF (end_offset, align->next_offset);
     }
 
-    max_sample_diff =
+    expected_time =
+        gst_util_uint64_scale (align->next_offset, GST_SECOND,
+        ABS (align->rate));
+
+    max_sample_diff = MAX (1,
         gst_util_uint64_scale_int (align->alignment_threshold,
-        ABS (align->rate), GST_SECOND);
+            ABS (align->rate), GST_SECOND));
 
     /* Discont! */
     if (G_UNLIKELY (diff >= max_sample_diff)) {
       if (align->discont_wait > 0) {
         if (align->discont_time == GST_CLOCK_TIME_NONE) {
-          align->discont_time = align->rate > 0 ? start_time : end_time;
+          if (align->rate > 0
+              && ABSDIFF (expected_time, start_time) >= align->discont_wait)
+            discont = TRUE;
+          else if (align->rate < 0
+              && ABSDIFF (expected_time, end_time) >= align->discont_wait)
+            discont = TRUE;
+          else
+            align->discont_time = expected_time;
         } else if ((align->rate > 0
                 && ABSDIFF (start_time,
                     align->discont_time) >= align->discont_wait)

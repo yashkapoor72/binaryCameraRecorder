@@ -1043,7 +1043,7 @@ gst_egl_image_export_dmabuf (GstEGLImage * image, int *fd, gint * stride,
   EGLint egl_stride = 0;
   EGLint egl_offset = 0;
   int fourcc;
-  EGLuint64KHR modifier;
+  EGLuint64KHR modifier[GST_VIDEO_MAX_PLANES] = { 0, };
 
   gst_eglExportDMABUFImageQueryMESA =
       gst_gl_context_get_proc_address (image->context,
@@ -1069,16 +1069,20 @@ gst_egl_image_export_dmabuf (GstEGLImage * image, int *fd, gint * stride,
   gst_object_unref (display_egl);
 
   if (!gst_eglExportDMABUFImageQueryMESA (egl_display, image->image,
-          &fourcc, &num_planes, &modifier))
+          &fourcc, &num_planes, modifier))
     return FALSE;
 
   /* Don't allow multi-plane dmabufs */
-  if (num_planes > 1)
+  if (num_planes > 1) {
+    GST_WARNING ("Multi plane DMAbufs are not allowed to export");
     return FALSE;
+  }
 
   /* FIXME We don't support modifiers */
-  if (modifier != DRM_FORMAT_MOD_LINEAR)
+  if (modifier[0] != DRM_FORMAT_MOD_LINEAR) {
+    GST_WARNING ("Non-linear DMAbufs are not allowed to export");
     return FALSE;
+  }
 
   if (!gst_eglExportDMABUFImageMESA (egl_display, image->image, &egl_fd,
           &egl_stride, &egl_offset))
@@ -1086,7 +1090,7 @@ gst_egl_image_export_dmabuf (GstEGLImage * image, int *fd, gint * stride,
 
   GST_DEBUG_OBJECT (image->context, "Export DMABuf with fourcc %"
       GST_FOURCC_FORMAT ", modififers %" G_GUINT64_FORMAT
-      ", stride %i and offset %i", GST_FOURCC_ARGS (fourcc), modifier,
+      ", stride %i and offset %i", GST_FOURCC_ARGS (fourcc), modifier[0],
       egl_stride, egl_offset);
 
   *fd = egl_fd;

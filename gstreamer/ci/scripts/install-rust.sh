@@ -3,8 +3,8 @@
 set -eux
 
 # Install Rust
-RUSTUP_VERSION=1.27.1
-RUST_VERSION=1.85.0
+RUSTUP_VERSION=1.28.1
+RUST_VERSION=1.86.0
 RUST_ARCH="x86_64-unknown-linux-gnu"
 
 RUSTUP_URL=https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$RUST_ARCH/rustup-init
@@ -17,9 +17,14 @@ export PATH="/usr/local/cargo/bin:$PATH"
 chmod +x rustup-init;
 ./rustup-init -y --no-modify-path --default-toolchain $RUST_VERSION;
 rm rustup-init;
+# We are root while creating the directory, but we want it to
+# be accessible to all users
 chmod -R a+w $RUSTUP_HOME $CARGO_HOME
 
-cargo install --locked cargo-c --version 0.10.11+cargo-0.86.0
+cargo install --locked cargo-c --version 0.10.12+cargo-0.87.0
+# We don't need them in the build image and they occupy
+# 600mb of html files (athough they compress extremely well)
+rustup component remove rust-docs
 
 rustup --version
 cargo --version

@@ -339,10 +339,12 @@ gst_matroska_demux_reset (GstElement * element)
 
   demux->last_stop_end = GST_CLOCK_TIME_NONE;
   demux->seek_block = 0;
+  demux->seek_block_is_offset = FALSE;
   demux->stream_start_time = GST_CLOCK_TIME_NONE;
   demux->to_time = GST_CLOCK_TIME_NONE;
   demux->cluster_time = GST_CLOCK_TIME_NONE;
   demux->cluster_offset = 0;
+  demux->cluster_prefix = 0;
   demux->cluster_prevsize = 0;
   demux->seen_cluster_prevsize = FALSE;
   demux->next_cluster_offset = 0;
@@ -581,6 +583,8 @@ gst_matroska_demux_parse_colour (GstMatroskaDemux * demux, GstEbmlRead * ebml,
 {
   GstFlowReturn ret;
   GstVideoColorimetry colorimetry;
+  guint64 chroma_site_horz;
+  guint64 chroma_site_vert;
   guint32 id;
   guint64 num;
 
@@ -588,6 +592,9 @@ gst_matroska_demux_parse_colour (GstMatroskaDemux * demux, GstEbmlRead * ebml,
   colorimetry.matrix = GST_VIDEO_COLOR_MATRIX_UNKNOWN;
   colorimetry.transfer = GST_VIDEO_TRANSFER_UNKNOWN;
   colorimetry.primaries = GST_VIDEO_COLOR_PRIMARIES_UNKNOWN;
+  /* 0 = unknown, 1 = yes, 2 = no */
+  chroma_site_horz = 0;
+  chroma_site_vert = 0;
 
   DEBUG_ELEMENT_START (demux, ebml, "TrackVideoColour");
 
@@ -680,6 +687,22 @@ gst_matroska_demux_parse_colour (GstMatroskaDemux * demux, GstEbmlRead * ebml,
         break;
       }
 
+      case GST_MATROSKA_ID_VIDEOCHROMASITINGHORZ:{
+        if ((ret =
+                gst_ebml_read_uint (ebml, &id,
+                    &chroma_site_horz)) != GST_FLOW_OK)
+          goto beach;
+        break;
+      }
+
+      case GST_MATROSKA_ID_VIDEOCHROMASITINGVERT:{
+        if ((ret =
+                gst_ebml_read_uint (ebml, &id,
+                    &chroma_site_vert)) != GST_FLOW_OK)
+          goto beach;
+        break;
+      }
+
       default:
         GST_FIXME_OBJECT (demux, "Unsupported subelement 0x%x in Colour", id);
         ret = gst_ebml_read_skip (ebml);
@@ -689,6 +712,15 @@ gst_matroska_demux_parse_colour (GstMatroskaDemux * demux, GstEbmlRead * ebml,
 
   memcpy (&video_context->colorimetry, &colorimetry,
       sizeof (GstVideoColorimetry));
+
+  if (chroma_site_horz == 1 && chroma_site_vert == 1)
+    video_context->chroma_site = GST_VIDEO_CHROMA_SITE_COSITED;
+  else if (chroma_site_horz == 1 && chroma_site_vert == 2)
+    video_context->chroma_site = GST_VIDEO_CHROMA_SITE_H_COSITED;
+  else if (chroma_site_horz == 2 && chroma_site_vert == 1)
+    video_context->chroma_site = GST_VIDEO_CHROMA_SITE_V_COSITED;
+  else if (chroma_site_horz == 2 && chroma_site_vert == 2)
+    video_context->chroma_site = GST_VIDEO_CHROMA_SITE_NONE;
 
 beach:
   DEBUG_ELEMENT_STOP (demux, ebml, "TrackVideoColour", ret);
@@ -2226,16 +2258,19 @@ gst_matroska_demux_move_to_entry (GstMatroskaDemux * demux,
     demux->next_cluster_offset = 0;
 
     GST_DEBUG_OBJECT (demux,
-        "Seeked to offset %" G_GUINT64_FORMAT ", block %d, " "time %"
+        "Seeked to offset %" G_GUINT64_FORMAT ", %s %d, " "time %"
         GST_TIME_FORMAT, entry->pos + demux->common.ebml_segment_start,
-        entry->block, GST_TIME_ARGS (entry->time));
+        entry->relative ? "relative offset" : "block",
+        entry->relative ? entry->offset : entry->block,
+        GST_TIME_ARGS (entry->time));
 
     /* update the time */
     gst_matroska_read_common_reset_streams (&demux->common, entry->time, TRUE);
     gst_flow_combiner_reset (demux->flowcombiner);
     demux->common.segment.position = entry->time;
-    demux->seek_block = entry->block;
-    demux->seek_first = TRUE;
+    demux->seek_block = entry->relative ? entry->offset : entry->block;
+    demux->seek_block_is_offset = entry->relative;
+    demux->seek_first = !entry->relative;
     demux->last_stop_end = GST_CLOCK_TIME_NONE;
   }
 
@@ -5372,6 +5407,28 @@ gst_matroska_demux_seek_block (GstMatroskaDemux * demux)
   }
 }
 
+/* returns TRUE if we've seeked and should exit */
+static inline gboolean
+gst_matroska_demux_seek_offset (GstMatroskaDemux * demux)
+{
+  guint64 next_off;
+
+  if (G_LIKELY (!demux->seek_block_is_offset))
+    return FALSE;
+
+  next_off = demux->cluster_offset + demux->cluster_prefix + demux->seek_block;
+  demux->seek_block = 0;
+  demux->seek_block_is_offset = FALSE;
+
+  if (next_off > demux->common.offset && next_off < demux->next_cluster_offset) {
+    GST_DEBUG_OBJECT (demux, "seeking to %" G_GUINT64_FORMAT, next_off);
+    demux->common.offset = next_off;
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
 static GstFlowReturn
 gst_matroska_demux_parse_contents_seekentry (GstMatroskaDemux * demux,
     GstEbmlRead * ebml)
@@ -5965,17 +6022,22 @@ gst_matroska_demux_parse_id (GstMatroskaDemux * demux, guint32 id,
           }
           demux->cluster_time = GST_CLOCK_TIME_NONE;
           demux->cluster_offset = demux->common.offset;
+          demux->cluster_prefix = needed;
           demux->cluster_prevsize = 0;
-          if (G_UNLIKELY (!demux->seek_first && demux->seek_block)) {
-            GST_DEBUG_OBJECT (demux, "seek target block %" G_GUINT64_FORMAT
+          if (G_UNLIKELY (!demux->seek_first && !demux->seek_block_is_offset
+                  && demux->seek_block)) {
+            GST_DEBUG_OBJECT (demux,
+                "seek target block %" G_GUINT64_FORMAT
                 " not found in Cluster, trying next Cluster's first block instead",
                 demux->seek_block);
             demux->seek_block = 0;
           }
           demux->seek_first = FALSE;
-          /* record next cluster for recovery */
+          /* record next cluster for recovery, set to 0 if offset isn't known. */
           if (read != G_MAXUINT64)
             demux->next_cluster_offset = demux->cluster_offset + read;
+          else
+            demux->next_cluster_offset = 0;
           /* eat cluster prefix */
           gst_matroska_demux_flush (demux, needed);
           break;
@@ -6013,7 +6075,9 @@ gst_matroska_demux_parse_id (GstMatroskaDemux * demux, guint32 id,
           break;
         }
         case GST_MATROSKA_ID_BLOCKGROUP:
-          if (!gst_matroska_demux_seek_block (demux))
+          if (gst_matroska_demux_seek_offset (demux))
+            break;
+          else if (!gst_matroska_demux_seek_block (demux))
             goto skip;
           GST_READ_CHECK (gst_matroska_demux_take (demux, read, &ebml));
           DEBUG_ELEMENT_START (demux, &ebml, "BlockGroup");
@@ -6024,7 +6088,9 @@ gst_matroska_demux_parse_id (GstMatroskaDemux * demux, guint32 id,
           DEBUG_ELEMENT_STOP (demux, &ebml, "BlockGroup", ret);
           break;
         case GST_MATROSKA_ID_SIMPLEBLOCK:
-          if (!gst_matroska_demux_seek_block (demux))
+          if (gst_matroska_demux_seek_offset (demux))
+            break;
+          else if (!gst_matroska_demux_seek_block (demux))
             goto skip;
           GST_READ_CHECK (gst_matroska_demux_take (demux, read, &ebml));
           DEBUG_ELEMENT_START (demux, &ebml, "SimpleBlock");
@@ -6498,6 +6564,7 @@ gst_matroska_demux_handle_sink_event (GstPad * pad, GstObject * parent,
       demux->common.segment.position = GST_CLOCK_TIME_NONE;
       demux->cluster_time = GST_CLOCK_TIME_NONE;
       demux->cluster_offset = 0;
+      demux->cluster_prefix = 0;
       demux->cluster_prevsize = 0;
       demux->need_segment = TRUE;
       demux->segment_seqnum = gst_event_get_seqnum (event);
@@ -6551,6 +6618,7 @@ gst_matroska_demux_handle_sink_event (GstPad * pad, GstObject * parent,
       demux->common.segment.duration = dur;
       demux->cluster_time = GST_CLOCK_TIME_NONE;
       demux->cluster_offset = 0;
+      demux->cluster_prefix = 0;
       demux->cluster_prevsize = 0;
       GST_OBJECT_UNLOCK (demux);
     }
@@ -7113,6 +7181,14 @@ gst_matroska_demux_video_caps (GstMatroskaTrackVideoContext *
           (&videocontext->content_light_level, caps)) {
         GST_WARNING ("couldn't set content light level to caps");
       }
+    }
+
+    if (videocontext->chroma_site != GST_VIDEO_CHROMA_SITE_UNKNOWN) {
+      gchar *chroma =
+          gst_video_chroma_site_to_string (videocontext->chroma_site);
+      gst_caps_set_simple (caps, "chroma-site", G_TYPE_STRING, chroma, NULL);
+      GST_DEBUG ("setting chroma site to %s", chroma);
+      g_free (chroma);
     }
 
     caps = gst_caps_simplify (caps);

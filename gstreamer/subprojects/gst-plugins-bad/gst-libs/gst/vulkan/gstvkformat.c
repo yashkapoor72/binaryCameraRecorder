@@ -460,6 +460,7 @@ const static GstVulkanFormatMap vk_formats_map[] = {
   { GST_VIDEO_FORMAT_Y41B, VK_FORMAT_UNDEFINED, { VK_FORMAT_R8_UNORM, } },
   { GST_VIDEO_FORMAT_I420, VK_FORMAT_UNDEFINED, { VK_FORMAT_R8_UNORM, } },
   { GST_VIDEO_FORMAT_YV12, VK_FORMAT_UNDEFINED, { VK_FORMAT_R8_UNORM, } },
+  {GST_VIDEO_FORMAT_P010_10LE, VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16, { VK_FORMAT_R16_UNORM, VK_FORMAT_R16G16_UNORM } }
 };
 /* *INDENT-ON* */
 
@@ -614,13 +615,18 @@ _get_feature_flags (GstVulkanDevice * device, gpointer func,
 #endif
 
     gst_vkGetPhysicalDeviceFormatProperties2 (gpu, format, &prop2);
-    if (supports_KHR_format_feature_flags2 (device))
+    if (supports_KHR_format_feature_flags2 (device)) {
+#if defined (VK_KHR_format_feature_flags2)
       return tiling == VK_IMAGE_TILING_LINEAR ?
           prop3.linearTilingFeatures : prop3.optimalTilingFeatures;
-    else
+#else
+      g_assert_not_reached ();
+#endif
+    } else {
       return tiling == VK_IMAGE_TILING_LINEAR ?
           prop2.formatProperties.linearTilingFeatures :
           prop2.formatProperties.optimalTilingFeatures;
+    }
   }
 #endif /* defined (VK_KHR_get_physical_device_properties2) */
 

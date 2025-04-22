@@ -182,6 +182,7 @@ gst_webrtc_ice_set_local_credentials (GstWebRTCICE * ice,
  * gst_webrtc_ice_gather_candidates:
  * @ice: The #GstWebRTCICE
  * @stream: The #GstWebRTCICEStream
+ *
  * Returns: FALSE on error, TRUE otherwise
  *
  * Since: 1.22
@@ -215,6 +216,7 @@ gst_webrtc_ice_set_is_controller (GstWebRTCICE * ice, gboolean controller)
 /**
  * gst_webrtc_ice_get_is_controller:
  * @ice: The #GstWebRTCICE
+ *
  * Returns: TRUE if set as controller, FALSE otherwise
  *
  * Since: 1.22
@@ -267,7 +269,8 @@ gst_webrtc_ice_set_tos (GstWebRTCICE * ice, GstWebRTCICEStream * stream,
  * gst_webrtc_ice_get_local_candidates:
  * @ice: The #GstWebRTCICE
  * @stream: The #GstWebRTCICEStream
- * Returns: (transfer full)(array zero-terminated=1): List of local candidates
+ *
+ * Returns: (transfer full) (array zero-terminated=1): List of local candidates
  *
  * Since: 1.22
  */
@@ -286,6 +289,7 @@ gst_webrtc_ice_get_local_candidates (GstWebRTCICE * ice,
  * gst_webrtc_ice_get_remote_candidates:
  * @ice: The #GstWebRTCICE
  * @stream: The #GstWebRTCICEStream
+ *
  * Returns: (transfer full) (array zero-terminated=1): List of remote candidates
  *
  * Since: 1.22
@@ -337,6 +341,9 @@ gst_webrtc_ice_candidate_stats_free (GstWebRTCICECandidateStats * stats)
   if (stats) {
     g_free (stats->ipaddr);
     g_free (stats->url);
+    g_free (stats->ABI.abi.foundation);
+    g_free (stats->ABI.abi.related_address);
+    g_free (stats->ABI.abi.username_fragment);
   }
 
   g_free (stats);
@@ -360,6 +367,9 @@ gst_webrtc_ice_candidate_stats_copy (GstWebRTCICECandidateStats * stats)
 
   copy->ipaddr = g_strdup (stats->ipaddr);
   copy->url = g_strdup (stats->url);
+  copy->ABI.abi.foundation = g_strdup (stats->ABI.abi.foundation);
+  copy->ABI.abi.related_address = g_strdup (stats->ABI.abi.related_address);
+  copy->ABI.abi.username_fragment = g_strdup (stats->ABI.abi.username_fragment);
 
   return copy;
 }

@@ -3065,11 +3065,9 @@ _pick_rtx_payload_types (GstWebRTCBin * webrtc, WebRTCTransceiver * trans,
 {
   gboolean ret = TRUE;
 
-  if (trans->local_rtx_ssrc_map)
-    gst_structure_free (trans->local_rtx_ssrc_map);
-
-  trans->local_rtx_ssrc_map =
-      gst_structure_new_empty ("application/x-rtp-ssrc-map");
+  if (!trans->local_rtx_ssrc_map)
+    trans->local_rtx_ssrc_map =
+        gst_structure_new_empty ("application/x-rtp-ssrc-map");
 
   if (trans->do_nack) {
     struct media_payload_map_item *item;
@@ -3640,8 +3638,9 @@ sdp_media_from_transceiver (GstWebRTCBin * webrtc, GstSDPMedia * media,
 
   gst_clear_structure (&extmap);
 
-  {
-    const GstStructure *s = gst_caps_get_structure (caps, 0);
+  // create rtx entry for each format type
+  for (i = 0; i < gst_caps_get_size (caps); i++) {
+    const GstStructure *s = gst_caps_get_structure (caps, i);
     gint clockrate = -1;
     gint rtx_target_pt;
     guint rtx_target_ssrc = -1;
@@ -4541,8 +4540,6 @@ _create_answer_task (GstWebRTCBin * webrtc, const GstStructure * options,
     }
 
     mid = gst_sdp_media_get_attribute_val (media, "mid");
-    /* XXX: not strictly required but a lot of functionality requires a mid */
-    g_assert (mid);
 
     /* set the a=setup: attribute */
     offer_setup = _get_dtls_setup_from_media (offer_media);
@@ -4604,12 +4601,22 @@ _create_answer_task (GstWebRTCBin * webrtc, const GstStructure * options,
 
       _remove_optional_offer_fields (offer_caps);
 
-      rtp_trans = _find_transceiver_for_mid (webrtc, mid);
-      if (!rtp_trans) {
-        g_set_error (error, GST_WEBRTC_ERROR, GST_WEBRTC_ERROR_INVALID_STATE,
-            "Transceiver for media with mid %s not found", mid);
-        gst_caps_unref (offer_caps);
-        goto rejected;
+      if (mid) {
+        rtp_trans = _find_transceiver_for_mid (webrtc, mid);
+        if (!rtp_trans) {
+          g_set_error (error, GST_WEBRTC_ERROR, GST_WEBRTC_ERROR_INVALID_STATE,
+              "Transceiver for media with mid %s not found", mid);
+          gst_caps_unref (offer_caps);
+          goto rejected;
+        }
+      } else {
+        rtp_trans = _find_transceiver_for_mline (webrtc, i);
+        if (!rtp_trans) {
+          g_set_error (error, GST_WEBRTC_ERROR, GST_WEBRTC_ERROR_INVALID_STATE,
+              "Transceiver for media with mline %u not found", i);
+          gst_caps_unref (offer_caps);
+          goto rejected;
+        }
       }
       GstCaps *current_caps =
           _find_codec_preferences (webrtc, rtp_trans, i, error);
@@ -4624,7 +4631,8 @@ _create_answer_task (GstWebRTCBin * webrtc, const GstStructure * options,
         const gchar *last_mid =
             gst_sdp_media_get_attribute_val (last_media, "mid");
         /* FIXME: assumes no shenanigans with recycling transceivers */
-        g_assert (g_strcmp0 (mid, last_mid) == 0);
+        if (mid != last_mid)
+          g_assert (g_strcmp0 (mid, last_mid) == 0);
         if (!current_caps)
           current_caps = _rtp_caps_from_media (last_media);
       }
@@ -6434,11 +6442,10 @@ _create_and_associate_transceivers_from_sdp (GstWebRTCBin * webrtc,
     mid = gst_sdp_media_get_attribute_val (media, "mid");
     direction = _get_direction_from_media (media);
 
-    /* XXX: not strictly required but a lot of functionality requires a mid */
-    if (!mid) {
-      g_set_error (error, GST_WEBRTC_ERROR, GST_WEBRTC_ERROR_SDP_SYNTAX_ERROR,
-          "Missing mid attribute in media");
-      goto out;
+    if (mid) {
+      trans = _find_transceiver_for_mid (webrtc, mid);
+    } else {
+      trans = _find_transceiver_for_mline (webrtc, i);
     }
 
     if (bundled)
@@ -6446,7 +6453,6 @@ _create_and_associate_transceivers_from_sdp (GstWebRTCBin * webrtc,
     else
       transport_idx = i;
 
-    trans = _find_transceiver_for_mid (webrtc, mid);
 
     if (sd->source == SDP_LOCAL) {
       /* If the media description was not yet associated with an RTCRtpTransceiver object then run the following steps: */
@@ -6470,8 +6476,10 @@ _create_and_associate_transceivers_from_sdp (GstWebRTCBin * webrtc,
         }
         trans->mline = i;
         /* Set transceiver.[[Mid]] to transceiver.[[JsepMid]] */
-        g_free (trans->mid);
-        trans->mid = g_strdup (mid);
+        g_clear_pointer (&trans->mid, g_free);
+        if (mid) {
+          trans->mid = g_strdup (mid);
+        }
         g_object_notify (G_OBJECT (trans), "mid");
         /* If transceiver.[[Stopped]] is true, abort these sub steps */
         if (trans->stopped)
@@ -6510,19 +6518,27 @@ _create_and_associate_transceivers_from_sdp (GstWebRTCBin * webrtc,
           if (trans_caps) {
             GstCaps *offer_caps = _rtp_caps_from_media (media);
             GstCaps *caps = gst_caps_intersect (offer_caps, trans_caps);
-            gst_caps_unref (offer_caps);
-            gst_caps_unref (trans_caps);
             if (caps) {
               if (!gst_caps_is_empty (caps)) {
                 GST_LOG_OBJECT (webrtc,
                     "found compatible transceiver %" GST_PTR_FORMAT
                     " for offer media %u", trans, i);
                 gst_caps_unref (caps);
+                gst_caps_unref (offer_caps);
+                gst_caps_unref (trans_caps);
                 break;
+              } else {
+                GST_LOG_OBJECT (webrtc,
+                    "tried but failed to intersect caps from"
+                    " offer for m-line %d (%" GST_PTR_FORMAT
+                    ") with caps from codec preferences and transceiver %"
+                    GST_PTR_FORMAT, i, offer_caps, trans_caps);
               }
               gst_caps_unref (caps);
               caps = NULL;
             }
+            gst_caps_unref (offer_caps);
+            gst_caps_unref (trans_caps);
           }
           trans = NULL;
         }
@@ -9240,6 +9256,11 @@ gst_webrtc_bin_class_init (GstWebRTCBinClass * klass)
    *  "protocol"             G_TYPE_STRING              Either "udp" or "tcp". Based on the "transport" defined in RFC 5245
    *  "relay-protocol"       G_TYPE_STRING              protocol used by the endpoint to communicate with the TURN server. Only present for local candidates. Either "udp", "tcp" or "tls"
    *  "url"                  G_TYPE_STRING              URL of the ICE server from which the candidate was obtained. Only present for local candidates
+   * "foundation"            G_TYPE_STRING              ICE foundation as defined in RFC 5245 section 15.1 (Since: 1.28)
+   * "related-address"       G_TYPE_STRING              ICE rel-addr as defined in RFC 5245 section 15.1. Only set for server-reflexive, peer-reflexive and relay candidates (Since: 1.28)
+   * "related-port"          G_TYPE_UINT                ICE rel-port as defined in RFC 5245 section 15.1. Only set for serverreflexive, peer-reflexive and relay candidates (Since: 1.28)
+   * "username-fragment"     G_TYPE_STRING              ICE username fragment as defined in RFC 5245 section 7.1.2.3 (Since: 1.28)
+   * "tcp-type"              G_TYPE_STRING              ICE candidate TCP type as defined in RTCIceTcpCandidateType (Since: 1.28)
    *
    * RTCIceCandidatePairStats supported fields (https://www.w3.org/TR/webrtc-stats/#candidatepair-dict*) (Since: 1.22)
    *

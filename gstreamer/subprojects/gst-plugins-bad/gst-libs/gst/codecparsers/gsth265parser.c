@@ -2762,6 +2762,7 @@ gst_h265_parser_parse_slice_hdr (GstH265Parser * parser,
     return err;
   }
 
+  slice->pps_id = pps_id;
   slice->pps = pps;
   sps = pps->sps;
   if (!sps) {
@@ -3403,18 +3404,13 @@ gst_h265_parser_update_sps (GstH265Parser * parser, GstH265SPS * sps)
     return GST_H265_PARSER_ERROR;
   }
 
-  if (sps->vps) {
-    GstH265VPS *vps = gst_h265_parser_get_vps (parser, sps->vps->id);
-    if (!vps || vps != sps->vps) {
-      GST_WARNING ("Linked VPS is not identical to internal VPS");
-      return GST_H265_PARSER_BROKEN_LINK;
-    }
-  }
-
   GST_DEBUG ("Updating sequence parameter set with id: %d", sps->id);
 
   parser->sps[sps->id] = *sps;
   parser->last_sps = &parser->sps[sps->id];
+
+  if (sps->vps)
+    parser->sps[sps->id].vps = gst_h265_parser_get_vps (parser, sps->vps->id);
 
   return GST_H265_PARSER_OK;
 }
@@ -3434,8 +3430,6 @@ gst_h265_parser_update_sps (GstH265Parser * parser, GstH265SPS * sps)
 GstH265ParserResult
 gst_h265_parser_update_pps (GstH265Parser * parser, GstH265PPS * pps)
 {
-  GstH265SPS *sps;
-
   g_return_val_if_fail (parser != NULL, GST_H265_PARSER_ERROR);
   g_return_val_if_fail (pps != NULL, GST_H265_PARSER_ERROR);
   g_return_val_if_fail (pps->id < GST_H265_MAX_PPS_COUNT,
@@ -3446,21 +3440,13 @@ gst_h265_parser_update_pps (GstH265Parser * parser, GstH265PPS * pps)
     return GST_H265_PARSER_ERROR;
   }
 
-  if (!pps->sps) {
-    GST_WARNING ("No linked SPS struct");
-    return GST_H265_PARSER_BROKEN_LINK;
-  }
-
-  sps = gst_h265_parser_get_sps (parser, pps->sps->id);
-  if (!sps || sps != pps->sps) {
-    GST_WARNING ("Linked SPS is not identical to internal SPS");
-    return GST_H265_PARSER_BROKEN_LINK;
-  }
-
   GST_DEBUG ("Updating picture parameter set with id: %d", pps->id);
 
   parser->pps[pps->id] = *pps;
   parser->last_pps = &parser->pps[pps->id];
+
+  if (pps->sps)
+    parser->pps[pps->id].sps = gst_h265_parser_get_sps (parser, pps->sps->id);
 
   return GST_H265_PARSER_OK;
 }
@@ -5147,4 +5133,46 @@ error:
 #undef READ_CONFIG_UINT8
 #undef READ_CONFIG_UINT16
 #undef SKIP_CONFIG_BITS
+}
+
+/**
+ * gst_h265_parser_link_slice_hdr:
+ * @parser: a #GstH265Parser
+ * @slice: The #GstH265SliceHdr to fill.
+ *
+ * Link SPS and PPS of @parser to @slice. @slice must be valid and parsed
+ * already by @parser or other #GstH265Parser
+ *
+ * Returns: a #GstH265ParserResult
+ *
+ * Since: 1.28
+ */
+GstH265ParserResult
+gst_h265_parser_link_slice_hdr (GstH265Parser * parser, GstH265SliceHdr * slice)
+{
+  GstH265ParserResult ret;
+  GstH265PPS *pps;
+
+  g_return_val_if_fail (parser, GST_H265_PARSER_ERROR);
+  g_return_val_if_fail (slice, GST_H265_PARSER_ERROR);
+  g_return_val_if_fail (slice->pps_id < GST_H265_MAX_PPS_COUNT,
+      GST_H265_PARSER_ERROR);
+
+  pps = gst_h265_parser_get_pps (parser, slice->pps_id);
+  if (!pps) {
+    GST_WARNING
+        ("couldn't find associated picture parameter set with id: %d",
+        slice->pps_id);
+    return GST_H265_PARSER_BROKEN_LINK;
+  }
+
+  ret = gst_h265_parser_fill_pps (parser, pps);
+  if (ret != GST_H265_PARSER_OK) {
+    GST_WARNING ("couldn't fill pps id: %d", slice->pps_id);
+    return ret;
+  }
+
+  slice->pps = pps;
+
+  return GST_H265_PARSER_OK;
 }

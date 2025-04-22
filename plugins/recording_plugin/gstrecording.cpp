@@ -171,7 +171,7 @@ bool GstRecording::createPipeline(const std::string& outputPath,
     // Configure video source
     g_object_set(video_src,
                 "do-timestamp", TRUE,
-                "device-index", 1,
+                "device-unique-id","0x100000046d085e",
                 "capture-screen", FALSE,
                 NULL);
 
@@ -182,6 +182,12 @@ bool GstRecording::createPipeline(const std::string& outputPath,
                                             "height", G_TYPE_INT, output_height,
                                             "framerate", GST_TYPE_FRACTION, 30, 1,
                                             NULL);
+    // GstCaps* video_caps = gst_caps_new_simple("video/x-raw",
+    //     "format", G_TYPE_STRING, "NV12",
+    //     "width", GST_TYPE_INT_RANGE, 640, 1920,
+    //     "height", GST_TYPE_INT_RANGE, 480, 1080,
+    //     "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
+    //     NULL);
     g_object_set(video_capsfilter, "caps", video_caps, NULL);
     gst_caps_unref(video_caps);
 

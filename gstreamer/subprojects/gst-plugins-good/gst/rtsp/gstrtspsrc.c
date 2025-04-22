@@ -1842,6 +1842,10 @@ gst_rtspsrc_finalize (GObject * object)
   g_free (rtspsrc->user_pw);
   g_free (rtspsrc->multi_iface);
   g_free (rtspsrc->user_agent);
+  g_free (rtspsrc->prop_proxy_id);
+  g_free (rtspsrc->prop_proxy_pw);
+  g_free (rtspsrc->proxy_user);
+  g_free (rtspsrc->proxy_passwd);
 
   if (rtspsrc->sdp) {
     gst_sdp_message_free (rtspsrc->sdp);
@@ -2841,6 +2845,7 @@ gst_rtspsrc_cleanup (GstRTSPSrc * src)
   src->streams = NULL;
   g_mutex_lock (&src->flow_combiner_lock);
   gst_flow_combiner_reset (src->flow_combiner);
+  src->emitted_no_more_pads = FALSE;
   g_mutex_unlock (&src->flow_combiner_lock);
   if (src->manager) {
     if (src->manager_sig_id) {
@@ -3479,6 +3484,11 @@ gst_rtspsrc_handle_src_sink_chain (GstPad * pad, GstObject * parent,
   ret =
       gst_flow_combiner_update_pad_flow (stream->parent->flow_combiner,
       stream->srcpad, ret);
+  if (ret == GST_FLOW_NOT_LINKED && !stream->parent->emitted_no_more_pads) {
+    // Ignore not-linked errors until we've added all pads,
+    // as downstream might only link one pad they are interested in.
+    ret = GST_FLOW_OK;
+  }
   g_mutex_unlock (&stream->parent->flow_combiner_lock);
 
   return ret;
@@ -3498,6 +3508,11 @@ gst_rtspsrc_handle_src_sink_chain_list (GstPad * pad, GstObject * parent,
   ret =
       gst_flow_combiner_update_pad_flow (stream->parent->flow_combiner,
       stream->srcpad, ret);
+  if (ret == GST_FLOW_NOT_LINKED && !stream->parent->emitted_no_more_pads) {
+    // Ignore  not-linked errors until we've added all pads,
+    // as downstream might only link one pad they are interested in.
+    ret = GST_FLOW_OK;
+  }
   g_mutex_unlock (&stream->parent->flow_combiner_lock);
 
   return ret;
@@ -3895,25 +3910,6 @@ new_manager_pad (GstElement * manager, GstPad * pad, GstRTSPSrc * src)
 
   /* save SSRC */
   stream->ssrc = ssrc;
-
-  /* we'll add it later see below */
-  stream->added = TRUE;
-
-  /* check if we added all streams */
-  all_added = TRUE;
-  for (ostreams = src->streams; ostreams; ostreams = g_list_next (ostreams)) {
-    GstRTSPStream *ostream = (GstRTSPStream *) ostreams->data;
-
-    GST_DEBUG_OBJECT (src, "stream %p, container %d, added %d, setup %d",
-        ostream, ostream->container, ostream->added, ostream->setup);
-
-    /* if we find a stream for which we did a setup that is not added, we
-     * need to wait some more */
-    if (ostream->setup && !ostream->added) {
-      all_added = FALSE;
-      break;
-    }
-  }
   GST_RTSP_STATE_UNLOCK (src);
 
   /* create a new pad we will use to stream to */
@@ -3952,11 +3948,37 @@ new_manager_pad (GstElement * manager, GstPad * pad, GstRTSPSrc * src)
     gst_element_add_pad (GST_ELEMENT_CAST (src), stream->srcpad);
   }
 
+  GST_RTSP_STATE_LOCK (src);
+  /* Setting added after gst_element_add_pad will make
+     sure callbacks for signal 'pad-added' will always
+     finish before signal 'no-more-pads' is executed. */
+  stream->added = TRUE;
+
+  /* check if we added all streams */
+  all_added = TRUE;
+  for (ostreams = src->streams; ostreams; ostreams = g_list_next (ostreams)) {
+    GstRTSPStream *ostream = (GstRTSPStream *) ostreams->data;
+
+    GST_DEBUG_OBJECT (src, "stream %p, container %d, added %d, setup %d",
+        ostream, ostream->container, ostream->added, ostream->setup);
+
+    /* if we find a stream for which we did a setup that is not added, we
+     * need to wait some more */
+    if (ostream->setup && !ostream->added) {
+      all_added = FALSE;
+      break;
+    }
+  }
+  GST_RTSP_STATE_UNLOCK (src);
+
   if (all_added) {
     GST_DEBUG_OBJECT (src, "We added all streams");
     /* when we get here, all stream are added and we can fire the no-more-pads
      * signal. */
     gst_element_no_more_pads (GST_ELEMENT_CAST (src));
+    g_mutex_lock (&src->flow_combiner_lock);
+    src->emitted_no_more_pads = TRUE;
+    g_mutex_unlock (&src->flow_combiner_lock);
   }
 
   return;

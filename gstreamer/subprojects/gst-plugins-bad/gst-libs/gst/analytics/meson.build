@@ -4,7 +4,8 @@ analytics_sources = files( 'gstanalyticsmeta.c',
                               'gstanalyticsobjecttrackingmtd.c',
                               'gstanalyticssegmentationmtd.c',
                               'gsttensormeta.c',
-                              'gsttensor.c')
+                              'gsttensor.c',
+                              'gstanalytics_image_util.c')
 
 analytics_headers = files(    'analytics.h',
                               'gstanalyticsmeta.h',
@@ -14,7 +15,9 @@ analytics_headers = files(    'analytics.h',
                               'gstanalyticsobjecttrackingmtd.h',
                               'gstanalyticssegmentationmtd.h',
                               'gsttensormeta.h',
-                              'gsttensor.h')
+                              'gsttensor.h',
+                              'gstanalytics_image_util.h')
+
 install_headers(analytics_headers, subdir : 'gstreamer-1.0/gst/analytics')
 
 doc_sources = []
@@ -39,7 +42,7 @@ gstanalytics = library('gstanalytics-' + api_version,
   link_args : ['-lm'])
 
 pkgconfig.generate(gstanalytics,
-  libraries : [gst_dep, gstbase_dep, '-lm'],
+  libraries : [gst_dep, gstbase_dep, gstvideo_dep, '-lm'],
   variables : pkgconfig_variables,
   subdirs : pkgconfig_subdirs,
   name : pkg_name,

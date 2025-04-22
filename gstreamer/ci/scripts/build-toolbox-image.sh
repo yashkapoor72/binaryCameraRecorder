@@ -102,22 +102,21 @@ build_container() {
   buildah run $build_cntr dnf clean all
   buildah run $build_cntr rm -rf /var/lib/cache/dnf
 
-  # random uid
-  uid="10043"
-  name="containeruser"
-  buildah run $build_cntr -- groupadd $name -g $uid
-  buildah run $build_cntr -- useradd -u $uid -g $uid -ms /bin/bash $name
+  buildah config \
+    --env RUSTUP_HOME="/usr/local/rustup" \
+    --env CARGO_HOME="/usr/local/cargo/" \
+    --env PATH="$PATH:/usr/local/cargo/bin/" \
+    $build_cntr
 
-  buildah run $build_cntr -- usermod -aG wheel $name
-  buildah run $build_cntr -- bash -c "echo $name ALL=\(ALL\) NOPASSWD:ALL > /etc/sudoers.d/$name"
-  buildah run $build_cntr -- chmod 0440 /etc/sudoers.d/$name
+  # Install rust-analyzer so it can be used with IDEs and devcontainer
+  buildah run $build_cntr rustup component add rust-analyzer rust-src
 
   # Remove the hardcoded HOME env var that ci-templates adds
   # https://gitlab.freedesktop.org/gstreamer/gstreamer/-/issues/2433#note_2243222
   # Also add the OCI labels that toolbox expects, to advertize that image is compatible
   # Additionally add a non-root default user
   buildah config --env HOME- \
-    --user $name \
+    --user containeruser \
     --label com.github.containers.toolbox=true \
     --label org.opencontainers.image.base.name=$BASE_CI_IMAGE \
     $build_cntr
@@ -147,9 +146,13 @@ if ! check_image_base; then
   build_container
 
   podman push "$TOOLBOX_IMAGE"
-  podman push "$TOOLBOX_LATEST"
+  if [ "$GST_UPSTREAM_BRANCH" == "$CI_COMMIT_BRANCH" ]; then
+    podman push "$TOOLBOX_LATEST"
+  fi
 fi
 
 echo "Create your toolbox with either of the following commands"
-echo "     $ toolbox create gst-toolbox --image $TOOLBOX_LATEST"
-echo "     $ toolbox create gst-toolbox-$TOOLBOX_BRANCH --image $TOOLBOX_IMAGE"
+echo "     $ toolbox create gst-$TOOLBOX_BRANCH --image $TOOLBOX_IMAGE"
+if [ "$GST_UPSTREAM_BRANCH" == "$CI_COMMIT_BRANCH" ]; then
+  echo "     $ toolbox create gst-$GST_UPSTREAM_BRANCH --image $TOOLBOX_LATEST"
+fi

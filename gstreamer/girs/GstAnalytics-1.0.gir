@@ -1481,6 +1481,25 @@ smaller than #GstTensorMeta.num_tensors</doc>
           </parameter>
         </parameters>
       </method>
+      <method name="get_by_id" c:identifier="gst_tensor_meta_get_by_id" version="1.28">
+        <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gsttensormeta.c">Get the first tensor from the #GstTensorMeta identified by @id.</doc>
+        <source-position filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gsttensormeta.h"/>
+        <return-value transfer-ownership="none" nullable="1">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gsttensormeta.c">a GstTensor with id matching @id.
+Otherwise NULL will be returned.</doc>
+          <type name="Tensor" c:type="const GstTensor*"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="tmeta" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gsttensormeta.c">A #GstTensorMeta</doc>
+            <type name="TensorMeta" c:type="GstTensorMeta*"/>
+          </instance-parameter>
+          <parameter name="id" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gsttensormeta.c">A #GQuark identifying tensor-encoding</doc>
+            <type name="GLib.Quark" c:type="GQuark"/>
+          </parameter>
+        </parameters>
+      </method>
       <method name="get_index_from_id" c:identifier="gst_tensor_meta_get_index_from_id" version="1.26">
         <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gsttensormeta.c">Finds the first tensor with the requsted ID in the meta</doc>
         <source-position filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gsttensormeta.h"/>
@@ -1724,6 +1743,94 @@ desired to track an object across many frames. This type of metadata holds
 information about the tracking, for example, it can be used alongside a
 #GstAnalyticsODMtd to track an object.</doc>
     </docsection>
+    <function name="image_util_iou_float" c:identifier="gst_analytics_image_util_iou_float" version="1.28">
+      <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Calculate the intersection over the union (IoU) of the two areas defined by
+the bounding box 1 and bounding box 2. IoU is a measure of how much two
+regions overlap.</doc>
+      <source-position filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.h"/>
+      <return-value transfer-ownership="none">
+        <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">IoU of bb1 and bb2.</doc>
+        <type name="gfloat" c:type="gfloat"/>
+      </return-value>
+      <parameters>
+        <parameter name="bb1_x" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, X coordinate</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+        <parameter name="bb1_y" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, Y coordinate</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+        <parameter name="bb1_w" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, width</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+        <parameter name="bb1_h" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, height</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+        <parameter name="bb2_x" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, X coordinate</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+        <parameter name="bb2_y" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, Y coordinate</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+        <parameter name="bb2_w" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, width</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+        <parameter name="bb2_h" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, height</doc>
+          <type name="gfloat" c:type="gfloat"/>
+        </parameter>
+      </parameters>
+    </function>
+    <function name="image_util_iou_int" c:identifier="gst_analytics_image_util_iou_int" version="1.28">
+      <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Calculate the intersection over the union (IoU) of the two areas defined by
+the bounding box 1 and bounding box 2. IoU is a measure of how much two
+regions overlap.</doc>
+      <source-position filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.h"/>
+      <return-value transfer-ownership="none">
+        <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">IoU of bb1 and bb2.</doc>
+        <type name="gfloat" c:type="gfloat"/>
+      </return-value>
+      <parameters>
+        <parameter name="bb1_x" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, X coordinate</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+        <parameter name="bb1_y" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, Y coordinate</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+        <parameter name="bb1_w" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, width</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+        <parameter name="bb1_h" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 1, height</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+        <parameter name="bb2_x" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, X coordinate</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+        <parameter name="bb2_y" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, Y coordinate</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+        <parameter name="bb2_w" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, width</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+        <parameter name="bb2_h" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalytics_image_util.c">Bounding box 2, height</doc>
+          <type name="gint" c:type="gint"/>
+        </parameter>
+      </parameters>
+    </function>
     <function name="mtd_type_get_name" c:identifier="gst_analytics_mtd_type_get_name" moved-to="Mtd.type_get_name" version="1.24">
       <doc xml:space="preserve" filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalyticsmeta.c">Gets the string version of the name of this type of analytics data</doc>
       <source-position filename="../subprojects/gst-plugins-bad/gst-libs/gst/analytics/gstanalyticsmeta.h"/>

@@ -63,6 +63,9 @@
         "type_traits": "cpp",
         "utility": "cpp",
         "format": "cpp",
-        "thread": "cpp"
+        "thread": "cpp",
+        "regex": "cpp",
+        "chrono": "cpp",
+        "span": "cpp"
     }
 }

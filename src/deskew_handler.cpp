@@ -96,8 +96,8 @@ bool DeskewHandler::setupPipeline(std::string camIndex, int audioIndex) {
     // Set flexible caps that work with most cameras
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "NV12",
-        "width", GST_TYPE_INT_RANGE, 640, 1920,
-        "height", GST_TYPE_INT_RANGE, 480, 1080,
+        "width", GST_TYPE_INT_RANGE, 640, 1280,
+        "height", GST_TYPE_INT_RANGE, 480, 720,
         "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
         NULL);
     g_object_set(capsFilter, "caps", caps, NULL);
@@ -243,9 +243,6 @@ void DeskewHandler::updateSettings(const std::vector<std::pair<double, double>>&
         return;
     }
 
-    const int output_width = 1280;
-    const int output_height = 720;
-
     // Destination points - these should be the coordinates you want to map TO
     std::vector<cv::Point2f> dst_points = {
         cv::Point2f(static_cast<float>(points[0].first), static_cast<float>(points[0].second)),
@@ -257,9 +254,9 @@ void DeskewHandler::updateSettings(const std::vector<std::pair<double, double>>&
     // Source points - these should be the full frame coordinates you're mapping FROM
     std::vector<cv::Point2f> src_points = {
         cv::Point2f(0.0f, 0.0f),
-        cv::Point2f(static_cast<float>(output_width - 1), 0.0f),
-        cv::Point2f(static_cast<float>(output_width - 1), static_cast<float>(output_height - 1)),
-        cv::Point2f(0.0f, static_cast<float>(output_height - 1))
+        cv::Point2f(static_cast<float>(1280 - 1), 0.0f),
+        cv::Point2f(static_cast<float>(1280 - 1), static_cast<float>(720 - 1)),
+        cv::Point2f(0.0f, static_cast<float>(720 - 1))
     };
 
     // Get the transformation matrix

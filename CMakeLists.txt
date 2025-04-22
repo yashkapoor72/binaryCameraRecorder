@@ -50,28 +50,6 @@ link_directories(
     /opt/homebrew/lib
 )
 
-# Build the OpenCV perspective plugin
-add_library(opencvperspective MODULE
-    plugins/recording_plugin/gstopencvperspective.cpp
-)
-target_link_libraries(opencvperspective
-    ${GST_LIBRARIES}
-    ${OpenCV_LIBS}
-)
-set_target_properties(opencvperspective PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-    PREFIX ""
-    OUTPUT_NAME "opencvperspective"
-)
-
-if(APPLE)
-    set_target_properties(opencvperspective PROPERTIES
-        SUFFIX ".dylib"
-        MACOSX_RPATH ON
-        INSTALL_RPATH "@loader_path"
-    )
-endif()
-
 # Build main application
 add_executable(recording_app
     src/main.cpp
@@ -103,12 +81,11 @@ endif()
 
 # Installation
 install(TARGETS recording_app DESTINATION bin)
-install(TARGETS opencvperspective DESTINATION lib/gstreamer-1.0)
 
 # Post-build verification
 add_custom_command(TARGET recording_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "Verifying plugin registration..."
-    COMMAND sh -c "ffmpeg -f avfoundation -list_devices true -i \"\" 2>&1 | sed -n '/AVFoundation video devices:/,/AVFoundation audio devices:/p;/AVFoundation audio devices:/,/^$/p' | grep -v 'Error\\|WARNING\\|^$' || true"
+    COMMAND sh -c "system_profiler SPCameraDataType"
     VERBATIM
     #COMMAND sh -c "GST_DEBUG=3 ./recording_app --gst-plugin-path=${GST_PLUGIN_PATH} --gst-disable-registry-fork --version"
     #COMMENT "Running basic plugin verification"

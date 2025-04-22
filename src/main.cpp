@@ -6,7 +6,6 @@
 #include "deskew_handler.h"
 #include <gst/gst.h>
 #include <gst/gstmacos.h>
-#include "gstopencvperspective.h"
 
 // Global variables for device indices (set once at startup)
 static std::string g_camDevIndex = "null";
@@ -211,13 +210,5 @@ int main(int argc, char* argv[]) {
     GstRegistry* registry = gst_registry_get();
     gst_registry_scan_path(registry, build_dir.c_str());
 
-    GstPluginFeature* feature = gst_registry_lookup_feature(registry, "opencvperspective");
-    if (!feature) {
-        std::cerr << "ERROR: Plugin registration failed. Tried paths: " << plugin_path << std::endl;
-        std::cerr << "Built plugin should be at: " << build_dir << "/opencvperspective.dylib" << std::endl;
-        return 1;
-    }
-    
-    gst_object_unref(feature);
     return gst_macos_main((GstMainFunc)run_app, argc, argv, nullptr);
 }

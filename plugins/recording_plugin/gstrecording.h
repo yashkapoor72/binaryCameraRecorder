@@ -7,6 +7,7 @@
 #include <mutex>
 #include <vector>
 #include <utility> // for std::pair
+#include <glib-object.h>
 
 class GstRecording {
 public:
@@ -20,6 +21,7 @@ public:
                       const std::string& flip_mode = "none");
     
     bool stopRecording(const std::string& outputPath);
+    void int_to_gvalue(int value, GValue *gval);
 
 private:
 struct RecordingSession {

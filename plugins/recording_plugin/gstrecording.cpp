@@ -83,6 +83,11 @@ bool GstRecording::stopRecording(const std::string& outputPath) {
     return true;
 }
 
+void int_to_gvalue(int value, GValue *gval) {
+    g_value_init(gval, G_TYPE_INT);
+    g_value_set_int(gval, value);
+}
+
 bool GstRecording::createPipeline(const std::string& outputPath,
                                 const std::vector<std::pair<double, double>>& points,
                                 int output_width,
@@ -113,10 +118,10 @@ bool GstRecording::createPipeline(const std::string& outputPath,
     GstElement* src = gst_element_factory_make("avfvideosrc", "source");
     GstElement* capsfilter = gst_element_factory_make("capsfilter", "capsfilter");
     GstElement* convert1 = gst_element_factory_make("videoconvert", "convert1");
-    GstElement* videoscale = gst_element_factory_make("videoscale", "scaler");
     GstElement* perspective = gst_element_factory_make("perspective", "perspective");
     GstElement* flip = gst_element_factory_make("videoflip", "flipper");
     GstElement* convert2 = gst_element_factory_make("videoconvert", "convert2");
+    GstElement* videoscale = gst_element_factory_make("videoscale", "scaler");
     GstElement* videobox = gst_element_factory_make("videobox", "box");
     GstElement* capsink = gst_element_factory_make("capsfilter", "capsink");
     GstElement* queue = gst_element_factory_make("queue", "queue");
@@ -187,34 +192,41 @@ bool GstRecording::createPipeline(const std::string& outputPath,
 
     g_object_set(flip, "method", flip_methods.at(flip_mode), NULL);
 
-    // Calculate scaling and padding
-    double width_ratio = 1280.0 / output_width;
-    double height_ratio = 720.0 / output_height;
-    double scale = std::min(width_ratio, height_ratio);
+    // // Calculate scaling and padding
+    // double width_ratio = 1280.0 / output_width;
+    // double height_ratio = 720.0 / output_height;
+    // double scale = std::min(width_ratio, height_ratio);
     
-    int scaled_width = static_cast<int>(output_width * scale);
-    int scaled_height = static_cast<int>(output_height * scale);
+    // int scaled_width = static_cast<int>(output_width * scale);
+    // int scaled_height = static_cast<int>(output_height * scale);
     
-    int pad_left = (1280 - scaled_width) / 2;
-    int pad_right = 1280 - scaled_width - pad_left;
-    int pad_top = (720 - scaled_height) / 2;
-    int pad_bottom = 720 - scaled_height - pad_top;
+    int pad_left = (1280 - output_width) / 2;
+    int pad_right = 1280 - output_height - pad_left;
 
     // Configure videobox for padding
+    // g_object_set(videobox,
+    //     "border-alpha", 1.0,
+    //     "fill", 0,  // Black borders
+    //     "left", pad_left,
+    //     "right", pad_right,
+    //     "top", pad_top,
+    //     "bottom", pad_bottom,
+    //     NULL);
+
     g_object_set(videobox,
         "border-alpha", 1.0,
         "fill", 0,  // Black borders
         "left", pad_left,
         "right", pad_right,
-        "top", pad_top,
-        "bottom", pad_bottom,
         NULL);
 
-    // Configure output caps
+    gtypeint -> convert -> gtypeint output width    
+
+
     GstCaps* out_caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "I420",
-        "width", G_TYPE_INT, 1280,
-        "height", G_TYPE_INT, 720,
+        "width", G_TYPE_INT, gtypeint_output_width ,
+        "height", G_TYPE_INT, gtypeint_output_height,
         "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
         NULL);
     g_object_set(capsink, "caps", out_caps, NULL);
@@ -241,16 +253,16 @@ bool GstRecording::createPipeline(const std::string& outputPath,
 
     // Build the pipeline
     gst_bin_add_many(GST_BIN(session.pipeline),
-        src, capsfilter, convert1, videoscale, perspective,
-        flip, convert2, videobox, capsink, queue, encoder,
+        src, capsfilter, convert1, perspective,
+        flip, convert2, videoscale, videobox, capsink, queue, encoder,
         audio_src, audio_convert, audio_resample, audio_encoder, audio_queue,
         muxer, session.filesink,
         NULL);
 
     // Link video elements
     if (!gst_element_link_many(
-        src, capsfilter, convert1, videoscale, perspective,
-        flip, convert2, videobox, capsink, queue, encoder, NULL)) {
+        src, capsfilter, convert1, perspective,
+        flip, convert2, videoscale, videobox, capsink, queue, encoder, NULL)) {
         std::cerr << "Failed to link video elements" << std::endl;
         return false;
     }

@@ -21,7 +21,19 @@ Prerequisites
 Installation
 ------------
 1. Install GStreamer:
-   brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
+   cd gstreamer
+   meson setup builddir --prefix=$HOME/custom-gst
+   ninja -C builddir
+   ninja -C builddir install
+   nano ~/.zshrc
+   export GST_PLUGIN_PATH=$HOME/custom-gst/lib/gstreamer-1.0
+   export GST_PLUGIN_SYSTEM_PATH=$GST_PLUGIN_PATH
+   export PATH=$HOME/custom-gst/bin:$PATH
+   export PKG_CONFIG_PATH=$HOME/custom-gst/lib/pkgconfig:$PKG_CONFIG_PATH
+   source ~/.zshrc
+
+
+
 
 2. Clone this repository or create the project structure using the provided script.
 

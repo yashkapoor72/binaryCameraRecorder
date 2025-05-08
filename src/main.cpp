@@ -7,10 +7,15 @@
 #include <gst/gst.h>
 #include <gst/gstmacos.h>
 
-// Global variables for device indices (set once at startup)
+// Global variables (set once at startup)
 static std::string g_camDevIndex = "null";
-static int g_audioDevIndex = -1;
+static std::string g_audioDevIndex = "null";
 
+// 👇 Global width & height (initialized to -1)
+static int g_width = -1;
+static int g_height = -1;
+
+// Split command into arguments (handles quotes and parentheses)
 static std::vector<std::string> splitArguments(const std::string& input) {
     std::vector<std::string> args;
     bool inQuotes = false;
@@ -38,6 +43,7 @@ static std::vector<std::string> splitArguments(const std::string& input) {
     return args;
 }
 
+// Parse and execute a command (uses global width/height)
 static void parseAndExecuteCommand(const std::string& command, CommandHandler& cmdHandler, DeskewHandler& deskewHandler) {
     auto args = splitArguments(command);
     
@@ -45,8 +51,6 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
     std::string outputPath;
     std::vector<std::pair<double, double>> points;
     std::string flipMethod = "none";
-    int width = -1;
-    int height = -1;
     
     for (const auto& arg : args) {
         if (arg.find("--CamDevIndex=") == 0) {
@@ -107,10 +111,12 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             flipMethod = arg.substr(13);
         }
         else if (arg.find("--width=") == 0) {
-            width = std::stoi(arg.substr(8));
+            g_width = std::stoi(arg.substr(8));  // ✅ Update global width
+            std::cout << "Set width: " << g_width << std::endl;
         }
         else if (arg.find("--height=") == 0) {
-            height = std::stoi(arg.substr(9));
+            g_height = std::stoi(arg.substr(9));  // ✅ Update global height
+            std::cout << "Set height: " << g_height << std::endl;
         }
     }
     
@@ -123,7 +129,8 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Error: Exactly 4 points (p1-p4) are required for quadrilateral cropping" << std::endl;
             return;
         }
-        if (!cmdHandler.startRecording(outputPath, points, width, height, flipMethod)) {
+        // ✅ Use global width/height
+        if (!cmdHandler.startRecording(outputPath, points, g_width, g_height, flipMethod, g_camDevIndex, g_audioDevIndex)) {
             std::cerr << "Failed to start recording: " << outputPath << std::endl;
         }
         deskewHandler.updateSettings(points, flipMethod);
@@ -133,7 +140,8 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Error: outputPath is required for stop-recording" << std::endl;
             return;
         }
-        if (!cmdHandler.stopRecording(outputPath)) {
+        // ✅ Use global width/height
+        if (!cmdHandler.stopRecording(outputPath, g_width, g_height)) {
             std::cerr << "Failed to stop recording: " << outputPath << std::endl;
         }
     }
@@ -142,6 +150,7 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
     }
 }
 
+// Parse device indices at startup
 static bool parseDeviceIndices(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -149,27 +158,28 @@ static bool parseDeviceIndices(int argc, char* argv[]) {
             g_camDevIndex = arg.substr(14);
         }
         else if (arg.find("--AudioDevIndex=") == 0) {
-            g_audioDevIndex = std::stoi(arg.substr(16));
+            g_audioDevIndex = arg.substr(16);  // Changed from stoi() to direct string assignment
         }
     }
     
-    if (g_camDevIndex == "null" || g_audioDevIndex == -1) {
+    if (g_camDevIndex == "null" || g_audioDevIndex == "null") {
         std::cerr << "Error: Both --CamDevIndex and --AudioDevIndex must be specified" << std::endl;
         return false;
     }
     return true;
 }
 
+// Main app loop
 static int run_app(int argc, char* argv[]) {
     CommandHandler cmdHandler;
-    DeskewHandler deskewHandler(g_camDevIndex,g_audioDevIndex);  // Modified to take camera index
-    std::cout<<"This is unique id: "<<g_camDevIndex<<std::endl;
-    if (!deskewHandler.setupPipeline(g_camDevIndex,g_audioDevIndex)) {
+    DeskewHandler deskewHandler(g_camDevIndex, g_audioDevIndex);
+    
+    if (!deskewHandler.setupPipeline(g_camDevIndex, g_audioDevIndex)) {
         std::cerr << "Failed to setup preview pipeline!" << std::endl;
         return 1;
     }
     
-    // Check if command line arguments were provided directly
+    // Check if command-line args were provided directly
     if (argc > 1) {
         std::string command;
         for (int i = 1; i < argc; i++) {
@@ -191,13 +201,14 @@ static int run_app(int argc, char* argv[]) {
     return 0;
 }
 
+// Main entry point
 int main(int argc, char* argv[]) {
     // First parse and validate device indices
     if (!parseDeviceIndices(argc, argv)) {
         return 1;
     }
     
-    // Set paths to include both system locations and our build directory
+    // Set GStreamer plugin paths
     std::string build_dir = g_get_current_dir();
     std::string plugin_path = "/usr/local/lib/gstreamer-1.0:/opt/homebrew/lib/gstreamer-1.0:" + build_dir;
     setenv("GST_PLUGIN_PATH", plugin_path.c_str(), 1);

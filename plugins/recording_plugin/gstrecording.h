@@ -8,6 +8,8 @@
 #include <vector>
 #include <utility> // for std::pair
 #include <glib-object.h>
+#include <filesystem>
+#include <sys/wait.h>
 
 class GstRecording {
 public:
@@ -18,10 +20,11 @@ public:
                       const std::vector<std::pair<double, double>>& points,
                       int output_width,
                       int output_height,
-                      const std::string& flip_mode = "none");
+                      const std::string& flip_mode = "none",
+                      std::string g_camDevIndex = "null", std::string g_audioDevIndex = "null");
     
-    bool stopRecording(const std::string& outputPath);
-    void int_to_gvalue(int value, GValue *gval);
+    bool stopRecording(const std::string& outputPath, int output_width, int output_height);
+    bool resizeVideoWithFFmpeg(const std::string& filePath, int output_width, int output_height);
 
 private:
 struct RecordingSession {
@@ -71,7 +74,8 @@ struct RecordingSession {
                       const std::vector<std::pair<double, double>>& points,
                       int output_width,
                       int output_height,
-                      const std::string& flip_mode);
+                      const std::string& flip_mode,
+                      std::string g_camDevIndex = "null", std::string g_audioDevIndex = "null");
 };
 
 #endif // GSTRECORDING_H

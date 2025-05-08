@@ -86,6 +86,7 @@ install(TARGETS recording_app DESTINATION bin)
 add_custom_command(TARGET recording_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "Verifying plugin registration..."
     COMMAND sh -c "system_profiler SPCameraDataType"
+    COMMAND sh -c "gst-device-monitor-1.0 Audio"
     VERBATIM
     #COMMAND sh -c "GST_DEBUG=3 ./recording_app --gst-plugin-path=${GST_PLUGIN_PATH} --gst-disable-registry-fork --version"
     #COMMENT "Running basic plugin verification"

@@ -10,10 +10,11 @@ class CommandHandler {
 public:
     bool startRecording(const std::string& outputPath,
                       const std::vector<std::pair<double, double>>& points,
-                      int output_width,
-                      int output_height,
-                      const std::string& flip_mode = "none");
-    bool stopRecording(const std::string& outputPath);
+                      int output_width = 1280,
+                      int output_height = 720,
+                      const std::string& flip_mode = "none",
+                      std::string g_camDevIndex = "null", std::string g_audioDevIndex = "null");
+    bool stopRecording(const std::string& outputPath, int output_width = 1280, int output_height = 720);
 };
 
 #endif

@@ -5,7 +5,7 @@ static GstRecording recorder;
 
 bool CommandHandler::startRecording(const std::string& outputPath,
     const std::vector<std::pair<double, double>>& points,int width, int height,
-    const std::string& flip_mode) {
+    const std::string& flip_mode, std::string g_camDevIndex, std::string g_audioDevIndex) {
     // Verify we have exactly 4 points
     if (points.size() != 4) {
         std::cerr << "Error: Exactly 4 points required" << std::endl;
@@ -29,9 +29,9 @@ bool CommandHandler::startRecording(const std::string& outputPath,
         return false;
     }
 
-    return recorder.startRecording(outputPath, points, width, height, flip_mode);
+    return recorder.startRecording(outputPath, points, width, height, flip_mode, g_camDevIndex, g_audioDevIndex);
 }
 
-bool CommandHandler::stopRecording(const std::string& outputPath) {
-    return recorder.stopRecording(outputPath);
+bool CommandHandler::stopRecording(const std::string& outputPath, int width, int height) {
+    return recorder.stopRecording(outputPath, width, height);
 }

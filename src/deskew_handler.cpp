@@ -4,7 +4,7 @@
 #include <opencv2/imgproc.hpp>
 #include <glib.h> 
 
-DeskewHandler::DeskewHandler(std::string camIndex, int audioIndex) {
+DeskewHandler::DeskewHandler(std::string camIndex, std::string audioIndex) {
     gst_init(nullptr, nullptr); 
     pipeline = nullptr;
     perspective = nullptr;
@@ -29,7 +29,7 @@ void DeskewHandler::stopPipeline() {
     }
 }
 
-bool DeskewHandler::setupPipeline(std::string camIndex, int audioIndex) {
+bool DeskewHandler::setupPipeline(std::string camIndex, std::string audioIndex) {
     // Cleanup if already running
     stopPipeline();
 
@@ -96,8 +96,8 @@ bool DeskewHandler::setupPipeline(std::string camIndex, int audioIndex) {
     // Set flexible caps that work with most cameras
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "NV12",
-        "width", GST_TYPE_INT_RANGE, 640, 1280,
-        "height", GST_TYPE_INT_RANGE, 480, 720,
+        "width", G_TYPE_INT, 1280,
+        "height", G_TYPE_INT, 720,
         "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
         NULL);
     g_object_set(capsFilter, "caps", caps, NULL);

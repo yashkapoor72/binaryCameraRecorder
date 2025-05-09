@@ -39,29 +39,31 @@ bool GstRecording::stopRecording(const std::string& outputPath, int output_width
         std::cerr << "No active recording found for: " << outputPath << std::endl;
         return false;
     }
-
     RecordingSession& session = it->second;
     
-    // 1. Stop the pipeline (same as before)
+    if (!session.pipeline || !GST_IS_ELEMENT(session.pipeline)) {
+        std::cerr << "Invalid pipeline for: " << outputPath << std::endl;
+        recordings.erase(it);
+        return false;
+    }
+    // Send EOS
     if (!gst_element_send_event(session.pipeline, gst_event_new_eos())) {
         std::cerr << "Failed to send EOS event" << std::endl;
     }
-
+    // Wait for EOS
     GstBus* bus = gst_element_get_bus(session.pipeline);
-    bool pipeline_stopped = false;
     if (bus) {
         GstMessage* msg = gst_bus_timed_pop_filtered(bus, 
             GST_CLOCK_TIME_NONE,
             static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
         
         if (msg) {
-            if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_EOS) {
-                pipeline_stopped = true;
-            } else if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
+            if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
                 GError* err = nullptr;
                 gchar* debug = nullptr;
                 gst_message_parse_error(msg, &err, &debug);
-                std::cerr << "Pipeline error: " << err->message << std::endl;
+                std::cerr << "Error while stopping: " << err->message << std::endl;
+                if (debug) std::cerr << "Debug: " << debug << std::endl;
                 g_error_free(err);
                 g_free(debug);
             }
@@ -69,62 +71,16 @@ bool GstRecording::stopRecording(const std::string& outputPath, int output_width
         }
         gst_object_unref(bus);
     }
-
-    // 2. Clean up GStreamer resources
+    // Stop pipeline
     gst_element_set_state(session.pipeline, GST_STATE_NULL);
-    gst_object_unref(session.pipeline);
+    g_usleep(500000); // 500ms delay to ensure proper shutdown
+    
+    // Remove from map
     recordings.erase(it);
-
-    // 3. Only proceed with FFmpeg if pipeline completed successfully
-    if (!pipeline_stopped) {
-        std::cerr << "Recording pipeline didn't complete properly" << std::endl;
-        return false;
-    }
-
-    // 4. Process with FFmpeg (directly overwriting original file)
-    if (!resizeVideoWithFFmpeg(outputPath, output_width, output_height)) {
-        std::cerr << "Failed to process recording: " << outputPath << std::endl;
-        return false;
-    }
-
-    std::cout << "Successfully processed and saved recording: " << outputPath << std::endl;
+    std::cout << "Successfully stopped recording: " << outputPath << std::endl;
     return true;
 }
 
-bool GstRecording::resizeVideoWithFFmpeg(const std::string& filePath,
-                                         int output_width,
-                                         int output_height) {
-    namespace fs = std::filesystem;
-    fs::path originalPath(filePath);
-    std::string finalName = "final_" + originalPath.filename().string();
-    std::string outputPath = (originalPath.parent_path() / finalName).string();
-
-    // Step 1: Force ffmpeg to decode video frame-by-frame
-    std::ostringstream cmd;
-    cmd << "ffmpeg -y -i \"" << filePath << "\""
-        << " -vf \"scale=" << output_width << ":" << output_height
-        << ",setsar=1,setdar=" << static_cast<float>(output_width) / output_height << "\""
-        << " -metadata:s:v rotate=0 -c:a copy \"" << outputPath << "\""
-        << " && sync";
-
-    std::string command = cmd.str();
-    std::cout << "Executing: " << command << std::endl;
-
-    int ret = system(command.c_str());
-    if (ret == -1) {
-        std::cerr << "Failed to execute ffmpeg command.\n";
-        return false;
-    }
-
-    int exitCode = WEXITSTATUS(ret);
-    if (exitCode != 0) {
-        std::cerr << "FFmpeg failed with code " << exitCode << std::endl;
-        fs::remove(outputPath);
-        return false;
-    }
-
-    return true;
-}
 
 bool GstRecording::createPipeline(const std::string& outputPath,
                                 const std::vector<std::pair<double, double>>& points,
@@ -240,8 +196,9 @@ bool GstRecording::createPipeline(const std::string& outputPath,
 
     GstCaps* out_caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "I420",
-        "width", G_TYPE_INT, 1280 ,
-        "height", G_TYPE_INT, 720,
+        "width", G_TYPE_INT, output_width,
+        "height", G_TYPE_INT, output_height,
+        "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
         "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
         NULL);
     g_object_set(capsink, "caps", out_caps, NULL);

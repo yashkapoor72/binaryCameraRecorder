@@ -20,19 +20,29 @@ Prerequisites
 
 Installation
 ------------
-1. Install GStreamer:
+1. Clone this repo and in terminal switch to x86_64
+   arch -x86_64 /bin/zsh
+   uname -m #(verify)
+
+
+2. Install Underlying dependencies 
+      brew install cmake glib gobject-introspection pkg-config gtk+3 libusb v4l2loopback python3 pygobject3
+
+3. Install GStreamer:
    cd gstreamer
-   meson setup builddir --prefix=$HOME/custom-gst
+   meson setup builddir \
+   --prefix=$HOME/custom-gst \
+   -Dugly=enabled \
+   -Dgpl=enabled \
+   -Dgst-plugins-ugly:x264=enabled
+
    ninja -C builddir
    ninja -C builddir install
-   nano ~/.zshrc
-   export GST_PLUGIN_PATH=$HOME/custom-gst/lib/gstreamer-1.0
-   export GST_PLUGIN_SYSTEM_PATH=$GST_PLUGIN_PATH
-   export PATH=$HOME/custom-gst/bin:$PATH
-   export PKG_CONFIG_PATH=$HOME/custom-gst/lib/pkgconfig:$PKG_CONFIG_PATH
-   source ~/.zshrc
+   
+   cd .. 
+   source env.sh
 
-kvs
+4. KVSSINK (optional for now)
 cmake .. \
   -DBUILD_GSTREAMER_PLUGIN=ON \
   -DBUILD_JNI=FALSE \
@@ -92,6 +102,8 @@ Examples
 
 4. Stop recording:
    --action=stop-recording --outputPath=~/Desktop/recording.mp4
+5. Take-Screenshot
+   --action=take-screenshot --outputPathSs=../screenshot.jpeg
 
 Technical Details
 -----------------

@@ -32,6 +32,17 @@ Installation
    export PKG_CONFIG_PATH=$HOME/custom-gst/lib/pkgconfig:$PKG_CONFIG_PATH
    source ~/.zshrc
 
+kvs
+cmake .. \
+  -DBUILD_GSTREAMER_PLUGIN=ON \
+  -DBUILD_JNI=FALSE \
+  -DBUILD_DEPENDENCIES=OFF \
+  -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+  -DCURL_LIBRARY=/usr/local/opt/curl/lib/libcurl.dylib \
+  -DCURL_INCLUDE_DIR=/usr/local/opt/curl/include \
+  -DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3) \
+  -DCMAKE_PREFIX_PATH="/Users/mozark/custom-gst"
+
 
 
 

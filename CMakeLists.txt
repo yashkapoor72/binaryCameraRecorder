@@ -13,10 +13,21 @@ add_definitions(
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
-# Package configuration
-find_package(PkgConfig REQUIRED)
+set(CUSTOM_GST_PREFIX "$ENV{HOME}/custom-gst")
 
-# GStreamer configuration
+if(NOT EXISTS "${CUSTOM_GST_PREFIX}")
+    message(FATAL_ERROR "Custom GStreamer not found at ${CUSTOM_GST_PREFIX}. "
+        "Please build and install with:\n"
+        "  meson setup builddir --prefix=${CUSTOM_GST_PREFIX}\n"
+        "  ninja -C builddir\n"
+        "  ninja -C builddir install")
+endif()
+
+# Only search in our custom prefix
+set(CMAKE_PREFIX_PATH "${CUSTOM_GST_PREFIX}")
+set(ENV{PKG_CONFIG_PATH} "${CUSTOM_GST_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+
+find_package(PkgConfig REQUIRED)
 pkg_check_modules(GST REQUIRED
     gstreamer-1.0
     gstreamer-video-1.0
@@ -24,21 +35,19 @@ pkg_check_modules(GST REQUIRED
     gstreamer-audio-1.0
 )
 
+# Verify paths point to our custom installation
+if(NOT "${GST_INCLUDE_DIRS}" MATCHES "${CUSTOM_GST_PREFIX}")
+    message(FATAL_ERROR "GStreamer include paths don't point to custom installation: ${GST_INCLUDE_DIRS}")
+endif()
+# =============================================
+
 # OpenCV configuration
 find_package(OpenCV REQUIRED)
-if(NOT OpenCV_FOUND)
-    set(OpenCV_INCLUDE_DIRS "/opt/homebrew/Cellar/opencv/4.11.0_1/include/opencv4")
-    set(OpenCV_LIBS opencv_core opencv_imgproc opencv_videoio)
-    message(STATUS "Using fallback OpenCV paths: ${OpenCV_INCLUDE_DIRS}")
-endif()
 
 # Include directories
 include_directories(
     ${GST_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
-    /usr/local/include/gstreamer-1.0
-    /usr/local/include/glib-2.0
-    /usr/local/lib/glib-2.0/include
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/plugins/recording_plugin
 )
@@ -46,8 +55,6 @@ include_directories(
 # Link directories
 link_directories(
     ${GST_LIBRARY_DIRS}
-    /usr/local/lib
-    /opt/homebrew/lib
 )
 
 # Build main application
@@ -74,8 +81,8 @@ if(APPLE)
     )
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     
-    # Set plugin path for runtime
-    set(GST_PLUGIN_PATH "$ENV{GST_PLUGIN_PATH}:/usr/local/lib/gstreamer-1.0:/opt/homebrew/lib/gstreamer-1.0:${CMAKE_BINARY_DIR}")
+    # Use only our custom plugin path
+    set(GST_PLUGIN_PATH "${CUSTOM_GST_PREFIX}/lib/gstreamer-1.0")
     set(ENV{GST_PLUGIN_PATH} ${GST_PLUGIN_PATH})
 endif()
 
@@ -86,8 +93,7 @@ install(TARGETS recording_app DESTINATION bin)
 add_custom_command(TARGET recording_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "Verifying plugin registration..."
     COMMAND sh -c "system_profiler SPCameraDataType"
+    COMMAND ${CMAKE_COMMAND} -E echo "Verifying GStreamer plugin path: $ENV{GST_PLUGIN_PATH}"
     COMMAND sh -c "gst-device-monitor-1.0 Audio"
     VERBATIM
-    #COMMAND sh -c "GST_DEBUG=3 ./recording_app --gst-plugin-path=${GST_PLUGIN_PATH} --gst-disable-registry-fork --version"
-    #COMMENT "Running basic plugin verification"
 )

@@ -49,6 +49,7 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
     
     std::string action;
     std::string outputPath;
+    std::string outputPathSs;
     std::vector<std::pair<double, double>> points;
     std::string flipMethod = "none";
     
@@ -66,6 +67,9 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
         }
         else if (arg.find("--outputPath=") == 0) {
             outputPath = arg.substr(13);
+        }
+        else if (arg.find("--outputPathSs=") == 0) {
+            outputPathSs = arg.substr(15);
         }
         else if (arg.find("--p1=") == 0) {
             auto coords = arg.substr(5);
@@ -134,6 +138,16 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Failed to start recording: " << outputPath << std::endl;
         }
         deskewHandler.updateSettings(points, flipMethod);
+    }
+    else if (action == "take-screenshot") {
+        if (outputPathSs.empty()) {
+            std::cerr << "Error: Screenshot outputPath is required for take-screenshot" << std::endl;
+            return;
+        }
+        // ✅ Use global width/height
+        if (!cmdHandler.takeScreenshot(outputPathSs)) {
+            std::cerr << "Failed to start recording: " << outputPathSs << std::endl;
+        }
     }
     else if (action == "stop-recording") {
         if (outputPath.empty()) {

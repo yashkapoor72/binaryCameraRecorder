@@ -24,12 +24,14 @@ public:
                       std::string g_camDevIndex = "null", std::string g_audioDevIndex = "null");
     
     bool stopRecording(const std::string& outputPath, int output_width, int output_height);
-    bool resizeVideoWithFFmpeg(const std::string& filePath, int output_width, int output_height);
+
+    bool takeScreenshot(const std::string& outputPath);  // New method
 
 private:
 struct RecordingSession {
     GstElement* pipeline = nullptr;
     GstElement* filesink = nullptr;
+    GstElement* tee = nullptr;  // Added for screenshot functionality
     
     RecordingSession() = default;
 
@@ -39,9 +41,10 @@ struct RecordingSession {
     
     // Move constructor
     RecordingSession(RecordingSession&& other) noexcept 
-        : pipeline(other.pipeline), filesink(other.filesink) {
+        : pipeline(other.pipeline), filesink(other.filesink), tee(other.tee) {
         other.pipeline = nullptr;
         other.filesink = nullptr;
+        other.tee = nullptr;
     }
     
     // Move assignment
@@ -53,8 +56,10 @@ struct RecordingSession {
             }
             pipeline = other.pipeline;
             filesink = other.filesink;
+            tee = other.tee;
             other.pipeline = nullptr;
             other.filesink = nullptr;
+            other.tee = nullptr;
         }
         return *this;
     }
@@ -64,6 +69,7 @@ struct RecordingSession {
             gst_element_set_state(pipeline, GST_STATE_NULL);
             gst_object_unref(pipeline);
         }
+        // tee is part of pipeline and will be automatically unreffed
     }
 };
     

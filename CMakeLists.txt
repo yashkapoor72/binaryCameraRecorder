@@ -79,7 +79,7 @@ if(APPLE)
         ${COREVIDEO_LIBRARY}
         ${COREAUDIO_LIBRARY}
     )
-    set(CMAKE_OSX_ARCHITECTURES "arm64")
+    set(CMAKE_OSX_ARCHITECTURES "x86_64")
     
     # Use only our custom plugin path
     set(GST_PLUGIN_PATH "${CUSTOM_GST_PREFIX}/lib/gstreamer-1.0")

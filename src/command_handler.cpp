@@ -32,6 +32,10 @@ bool CommandHandler::startRecording(const std::string& outputPath,
     return recorder.startRecording(outputPath, points, width, height, flip_mode, g_camDevIndex, g_audioDevIndex);
 }
 
+bool CommandHandler::takeScreenshot(const std::string& outputPathSs) {
+    return recorder.takeScreenshot(outputPathSs);
+}
+
 bool CommandHandler::stopRecording(const std::string& outputPath, int width, int height) {
     return recorder.stopRecording(outputPath, width, height);
 }

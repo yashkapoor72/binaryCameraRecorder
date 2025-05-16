@@ -1,0 +1,90 @@
+cmake_minimum_required(VERSION 3.10)
+project(RecordingApp VERSION 1.0 LANGUAGES CXX)
+
+# Basic setup
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_OSX_ARCHITECTURES "x86_64")
+
+# Custom GStreamer setup
+set(CUSTOM_GST_PREFIX "$ENV{HOME}/custom-gst")
+set(ENV{PKG_CONFIG_PATH} "${CUSTOM_GST_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+
+# Verify installation
+if(NOT EXISTS "${CUSTOM_GST_PREFIX}/lib/libgstvideo-1.0.dylib")
+    message(FATAL_ERROR "GStreamer libraries not found in ${CUSTOM_GST_PREFIX}")
+endif()
+
+# MANUAL LIBRARY CONFIGURATION (bypass pkg-config if needed)
+set(GST_LIBRARY_DIR "${CUSTOM_GST_PREFIX}/lib")
+set(GST_INCLUDE_DIR "${CUSTOM_GST_PREFIX}/include/gstreamer-1.0")
+
+# Explicit library paths
+set(GST_LIBS
+    "${GST_LIBRARY_DIR}/libgstreamer-1.0.dylib"
+    "${GST_LIBRARY_DIR}/libgstvideo-1.0.dylib"
+    "${GST_LIBRARY_DIR}/libgstapp-1.0.dylib"
+    "${GST_LIBRARY_DIR}/libgstaudio-1.0.dylib"
+    "${GST_LIBRARY_DIR}/libglib-2.0.dylib"
+    "${GST_LIBRARY_DIR}/libgobject-2.0.dylib"
+)
+
+find_package(OpenCV REQUIRED)
+
+# Create macOS app bundle
+set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.yourname.recordingapp")
+set(CMAKE_MACOSX_BUNDLE YES)
+
+# Include directories
+include_directories(
+    ${GST_INCLUDE_DIR}
+    "${CUSTOM_GST_PREFIX}/include"
+    "${CUSTOM_GST_PREFIX}/include/glib-2.0"
+    "${CUSTOM_GST_PREFIX}/lib/glib-2.0/include"
+    ${OpenCV_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/plugins/recording_plugin
+)
+
+# Add executable
+add_executable(RecordingApp MACOSX_BUNDLE
+    src/main.cpp
+    src/command_handler.cpp
+    src/deskew_handler.cpp
+    plugins/recording_plugin/gstrecording.cpp
+)
+
+# Link libraries - DIRECT PATHS
+target_link_libraries(RecordingApp
+    ${GST_LIBS}
+    ${OpenCV_LIBS}
+    "-framework Cocoa"
+    "-framework CoreVideo"
+    "-framework CoreAudio"
+    "-framework Foundation"
+    "-framework AVFoundation"
+    "-framework CoreMedia"
+)
+
+# Post-build steps
+add_custom_command(TARGET RecordingApp POST_BUILD
+    COMMAND mkdir -p "$<TARGET_FILE_DIR:RecordingApp>/../Frameworks"
+    
+    # Copy all dependencies
+    COMMAND bash -c "cp -v ${GST_LIBS} \"$<TARGET_FILE_DIR:RecordingApp>/../Frameworks/\""
+    COMMAND bash -c "for lib in ${OpenCV_LIBS}; do cp -v \"$$lib\" \"$<TARGET_FILE_DIR:RecordingApp>/../Frameworks/\"; done"
+    
+    # Fix library paths
+    COMMAND install_name_tool -add_rpath "@executable_path/../Frameworks" "$<TARGET_FILE:RecordingApp>"
+    
+    # Fix library references
+    COMMAND bash -c "for lib in \"$<TARGET_FILE_DIR:RecordingApp>/../Frameworks\"/*.dylib; do \
+        install_name_tool -id \"@executable_path/../Frameworks/$(basename \$$lib)\" \"\$$lib\"; \
+    done"
+    
+    COMMENT "Bundling dependencies..."
+)
+
+install(TARGETS RecordingApp BUNDLE DESTINATION ".")

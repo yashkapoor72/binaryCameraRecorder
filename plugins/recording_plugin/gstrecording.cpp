@@ -81,6 +81,162 @@ bool GstRecording::stopRecording(const std::string& outputPath, int output_width
     return true;
 }
 
+bool GstRecording::startStreaming(const std::string& channelName) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (recordings.empty()) {
+        std::cerr << "No active recording to attach streaming to" << std::endl;
+        return false;
+    }
+
+    auto& session = recordings.begin()->second;
+    if (session.is_streaming) {
+        std::cerr << "Streaming already active" << std::endl;
+        return false;
+    }
+
+    // Create WebRTC elements
+    session.webrtc_sink = gst_element_factory_make("awskvswebrtcsink", "webrtc_sink");
+    GstElement* video_queue = gst_element_factory_make("queue", "video_stream_queue");
+    GstElement* audio_queue = gst_element_factory_make("queue", "audio_stream_queue");
+
+    if (!session.webrtc_sink || !video_queue || !audio_queue) {
+        std::cerr << "Failed to create streaming elements" << std::endl;
+        if (session.webrtc_sink) gst_object_unref(session.webrtc_sink);
+        if (video_queue) gst_object_unref(video_queue);
+        if (audio_queue) gst_object_unref(audio_queue);
+        return false;
+    }
+
+    // Configure WebRTC sink
+    g_object_set(session.webrtc_sink,
+        "signaller::channel-name", channelName.c_str(),
+        "video-caps", "video/x-h264",
+        "do-retransmission", TRUE,
+        "do-fec", TRUE,
+        "congestion-control", "gcc",
+        NULL);
+
+    // Add elements to pipeline
+    gst_bin_add_many(GST_BIN(session.pipeline),
+        video_queue, audio_queue, session.webrtc_sink,
+        NULL);
+
+    // Get tees
+    GstElement* video_tee = gst_bin_get_by_name(GST_BIN(session.pipeline), "video_tee");
+    GstElement* audio_tee = gst_bin_get_by_name(GST_BIN(session.pipeline), "audio_tee");
+
+    if (!video_tee || !audio_tee) {
+        std::cerr << "Failed to find tee elements" << std::endl;
+        gst_object_unref(video_tee);
+        gst_object_unref(audio_tee);
+        return false;
+    }
+
+    // Link video branch
+    GstPad* tee_video_pad = gst_element_get_request_pad(video_tee, "src_%u");
+    GstPad* queue_video_pad = gst_element_get_static_pad(video_queue, "sink");
+    if (gst_pad_link(tee_video_pad, queue_video_pad) != GST_PAD_LINK_OK) {
+        std::cerr << "Failed to link video tee to queue" << std::endl;
+        gst_object_unref(tee_video_pad);
+        gst_object_unref(queue_video_pad);
+        return false;
+    }
+
+    // Link audio branch
+    GstPad* tee_audio_pad = gst_element_get_request_pad(audio_tee, "src_%u");
+    GstPad* queue_audio_pad = gst_element_get_static_pad(audio_queue, "sink");
+    if (gst_pad_link(tee_audio_pad, queue_audio_pad) != GST_PAD_LINK_OK) {
+        std::cerr << "Failed to link audio tee to queue" << std::endl;
+        gst_object_unref(tee_audio_pad);
+        gst_object_unref(queue_audio_pad);
+        return false;
+    }
+
+    // Link queues to webrtc sink
+    if (!gst_element_link_many(video_queue, session.webrtc_sink, NULL) ||
+        !gst_element_link_many(audio_queue, session.webrtc_sink, NULL)) {
+        std::cerr << "Failed to link queues to webrtc sink" << std::endl;
+        return false;
+    }
+
+    // Sync states
+    gst_element_sync_state_with_parent(video_queue);
+    gst_element_sync_state_with_parent(audio_queue);
+    gst_element_sync_state_with_parent(session.webrtc_sink);
+
+    session.is_streaming = true;
+    return true;
+}
+
+bool GstRecording::stopStreaming() {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (recordings.empty()) {
+        std::cerr << "No active recording found" << std::endl;
+        return false;
+    }
+
+    auto& session = recordings.begin()->second;
+    if (!session.is_streaming) {
+        std::cerr << "No active streaming found" << std::endl;
+        return false;
+    }
+
+    // Remove streaming elements
+    GstElement* video_queue = gst_bin_get_by_name(GST_BIN(session.pipeline), "video_stream_queue");
+    GstElement* audio_queue = gst_bin_get_by_name(GST_BIN(session.pipeline), "audio_stream_queue");
+
+    if (video_queue && audio_queue && session.webrtc_sink) {
+        gst_element_set_state(video_queue, GST_STATE_NULL);
+        gst_element_set_state(audio_queue, GST_STATE_NULL);
+        gst_element_set_state(session.webrtc_sink, GST_STATE_NULL);
+
+        // Release tee pads
+        GstElement* video_tee = gst_bin_get_by_name(GST_BIN(session.pipeline), "video_tee");
+        GstElement* audio_tee = gst_bin_get_by_name(GST_BIN(session.pipeline), "audio_tee");
+
+        if (video_tee && audio_tee) {
+            GstPad* video_tee_pad = gst_element_get_static_pad(video_queue, "sink");
+            GstPad* audio_tee_pad = gst_element_get_static_pad(audio_queue, "sink");
+
+            if (video_tee_pad) {
+                GstPad* peer = gst_pad_get_peer(video_tee_pad);
+                if (peer) {
+                    gst_pad_unlink(peer, video_tee_pad);
+                    gst_element_release_request_pad(video_tee, peer);
+                    gst_object_unref(peer);
+                }
+                gst_object_unref(video_tee_pad);
+            }
+
+            if (audio_tee_pad) {
+                GstPad* peer = gst_pad_get_peer(audio_tee_pad);
+                if (peer) {
+                    gst_pad_unlink(peer, audio_tee_pad);
+                    gst_element_release_request_pad(audio_tee, peer);
+                    gst_object_unref(peer);
+                }
+                gst_object_unref(audio_tee_pad);
+            }
+
+            gst_object_unref(video_tee);
+            gst_object_unref(audio_tee);
+        }
+
+        // Remove elements from pipeline
+        gst_bin_remove_many(GST_BIN(session.pipeline),
+            video_queue, audio_queue, session.webrtc_sink,
+            NULL);
+
+        gst_object_unref(video_queue);
+        gst_object_unref(audio_queue);
+        gst_object_unref(session.webrtc_sink);
+        session.webrtc_sink = nullptr;
+    }
+
+    session.is_streaming = false;
+    return true;
+}
+
 bool GstRecording::takeScreenshot(const std::string& outputPathSs) {
     std::lock_guard<std::mutex> lock(mutex);
     

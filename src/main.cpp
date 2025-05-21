@@ -49,20 +49,13 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
     
     std::string action;
     std::string outputPath;
+    std::string channelName;
     std::string outputPathSs;
     std::vector<std::pair<double, double>> points;
     std::string flipMethod = "none";
     
     for (const auto& arg : args) {
-        if (arg.find("--CamDevIndex=") == 0) {
-            std::cerr << "Error: Camera device index cannot be changed after startup" << std::endl;
-            return;
-        }
-        else if (arg.find("--AudioDevIndex=") == 0) {
-            std::cerr << "Error: Audio device index cannot be changed after startup" << std::endl;
-            return;
-        }
-        else if (arg.find("--action=") == 0) {
+        if (arg.find("--action=") == 0) {
             action = arg.substr(9);
         }
         else if (arg.find("--outputPath=") == 0) {
@@ -70,6 +63,9 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
         }
         else if (arg.find("--outputPathSs=") == 0) {
             outputPathSs = arg.substr(15);
+        }
+        else if (arg.find("--channelName=") == 0) {
+            channelName = arg.substr(14);
         }
         else if (arg.find("--p1=") == 0) {
             auto coords = arg.substr(5);
@@ -115,11 +111,11 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             flipMethod = arg.substr(13);
         }
         else if (arg.find("--width=") == 0) {
-            g_width = std::stoi(arg.substr(8));  // ✅ Update global width
+            g_width = std::stoi(arg.substr(8));
             std::cout << "Set width: " << g_width << std::endl;
         }
         else if (arg.find("--height=") == 0) {
-            g_height = std::stoi(arg.substr(9));  // ✅ Update global height
+            g_height = std::stoi(arg.substr(9));
             std::cout << "Set height: " << g_height << std::endl;
         }
     }
@@ -133,9 +129,22 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Error: Exactly 4 points (p1-p4) are required for quadrilateral cropping" << std::endl;
             return;
         }
-        // ✅ Use global width/height
         if (!cmdHandler.startRecording(outputPath, points, g_width, g_height, flipMethod, g_camDevIndex, g_audioDevIndex)) {
             std::cerr << "Failed to start recording: " << outputPath << std::endl;
+        }
+        deskewHandler.updateSettings(points, flipMethod);
+    }
+    else if (action == "start-streaming") {
+        if (channelName.empty()) {
+            std::cerr << "Error: channelName is required for start-streaming" << std::endl;
+            return;
+        }
+        if (points.size() != 4) {
+            std::cerr << "Error: Exactly 4 points (p1-p4) are required for quadrilateral cropping" << std::endl;
+            return;
+        }
+        if (!cmdHandler.startStreaming(channelName, points, g_width, g_height, flipMethod, g_camDevIndex, g_audioDevIndex)) {
+            std::cerr << "Failed to start streaming: " << channelName << std::endl;
         }
         deskewHandler.updateSettings(points, flipMethod);
     }
@@ -144,7 +153,6 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Error: Screenshot outputPath is required for take-screenshot" << std::endl;
             return;
         }
-        // ✅ Use global width/height
         if (!cmdHandler.takeScreenshot(outputPathSs)) {
             std::cerr << "Failed to start recording: " << outputPathSs << std::endl;
         }
@@ -154,9 +162,17 @@ static void parseAndExecuteCommand(const std::string& command, CommandHandler& c
             std::cerr << "Error: outputPath is required for stop-recording" << std::endl;
             return;
         }
-        // ✅ Use global width/height
-        if (!cmdHandler.stopRecording(outputPath, g_width, g_height)) {
+        if (!cmdHandler.stopRecording(outputPath)) {
             std::cerr << "Failed to stop recording: " << outputPath << std::endl;
+        }
+    }
+    else if (action == "stop-streaming") {
+        if (channelName.empty()) {
+            std::cerr << "Error: channelName is required for stop-streaming" << std::endl;
+            return;
+        }
+        if (!cmdHandler.stopStreaming(channelName)) {
+            std::cerr << "Failed to stop streaming: " << std::endl;
         }
     }
     else if (!action.empty()) {

@@ -49,7 +49,8 @@ include_directories(
     ${GST_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/plugins/recording_plugin
+    ${CMAKE_SOURCE_DIR}/handlers/recording
+    ${CMAKE_SOURCE_DIR}/handlers/streaming
 )
 
 # Link directories
@@ -62,7 +63,8 @@ add_executable(recording_app
     src/main.cpp
     src/command_handler.cpp
     src/deskew_handler.cpp
-    plugins/recording_plugin/gstrecording.cpp
+    handlers/recording/gstrecording.cpp
+    handlers/streaming/gststreaming.cpp
 )
 target_link_libraries(recording_app
     ${GST_LIBRARIES}

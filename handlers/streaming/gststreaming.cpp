@@ -237,6 +237,7 @@ bool GstStreaming::createPipeline(const std::string& channelName,
         return false;
     }
 
+    // Create pipeline and elements
     StreamingSession session;
     session.pipeline = gst_pipeline_new(("streaming-pipeline-" + channelName).c_str());
     if (!session.pipeline) {
@@ -244,7 +245,7 @@ bool GstStreaming::createPipeline(const std::string& channelName,
         return false;
     }
 
-    // Create elements
+    // Video elements
     GstElement* src = gst_element_factory_make("avfvideosrc", "source");
     GstElement* capsfilter = gst_element_factory_make("capsfilter", "capsfilter");
     GstElement* convert1 = gst_element_factory_make("videoconvert", "convert1");
@@ -254,36 +255,26 @@ bool GstStreaming::createPipeline(const std::string& channelName,
     GstElement* videoscale = gst_element_factory_make("videoscale", "scaler");
     GstElement* capsink = gst_element_factory_make("capsfilter", "capsink");
     session.video_tee = gst_element_factory_make("tee", "video_tee");
-    session.audio_tee = gst_element_factory_make("tee", "audio_tee");
     GstElement* video_queue = gst_element_factory_make("queue", "video_queue");
+    
+    // Video encoding elements
+    GstElement* video_encoder = gst_element_factory_make("x264enc", "video_encoder");
+    GstElement* h264parse = gst_element_factory_make("h264parse", "h264parse");
+    
+    // Audio elements
     GstElement* audio_src = gst_element_factory_make("osxaudiosrc", "audio_src");
-    // Check current state
-    GstState state;
-    gst_element_get_state(audio_src, &state, NULL, 0);
-    std::cout << "Audio src state before setting: " << gst_element_state_get_name(state) << std::endl;
-
-    // Set property
-    g_object_set(audio_src, "unique-id", g_audioDevIndex.c_str(), NULL);
-
-    // Verify property was set
-    gchar* current_id = nullptr;
-    g_object_get(audio_src, "unique-id", &current_id, NULL);
-    std::cout << "Set unique-id to: " << (current_id ? current_id : "NULL") << std::endl;
-    g_free(current_id);
     GstElement* audio_convert = gst_element_factory_make("audioconvert", "audio_convert");
     GstElement* audio_resample = gst_element_factory_make("audioresample", "audio_resample");
     GstElement* audio_encoder = gst_element_factory_make("avenc_aac", "audio_encoder");
+    session.audio_tee = gst_element_factory_make("tee", "audio_tee");
     GstElement* audio_queue = gst_element_factory_make("queue", "audio_queue");
 
-    std::cout<<"goes till here"<<std::endl;
-
-    // Create WebRTC sink from string description
+    // Create AWS KVS WebRTC sink
     std::string sink_str = "awskvswebrtcsink name=webrtc_sink "
                           "signaller::channel-name=\"" + channelName + "\" "
                           "do-retransmission=true do-fec=true "
-                          "video-caps=\"video/x-h264\" "
                           "congestion-control=2";
-    
+
     GError* error = nullptr;
     session.webrtc_sink = gst_parse_bin_from_description(sink_str.c_str(), TRUE, &error);
     if (error) {
@@ -291,12 +282,12 @@ bool GstStreaming::createPipeline(const std::string& channelName,
         g_error_free(error);
         return false;
     }
-    std::cout<<"goes till here 2"<<std::endl;
 
+    // Verify all elements were created
     if (!src || !capsfilter || !convert1 || !videoscale || !perspective || !flip || 
-        !convert2 || !capsink || !session.video_tee || !session.audio_tee || !video_queue || 
-        !audio_src || !audio_convert || !audio_resample || !audio_encoder || !audio_queue ||
-        !session.webrtc_sink) {
+        !convert2 || !capsink || !session.video_tee || !video_queue || !video_encoder || 
+        !h264parse || !audio_src || !audio_convert || !audio_resample || !audio_encoder || 
+        !session.audio_tee || !audio_queue || !session.webrtc_sink) {
         std::cerr << "Failed to create one or more GStreamer elements" << std::endl;
         return false;
     }
@@ -308,12 +299,12 @@ bool GstStreaming::createPipeline(const std::string& channelName,
         "capture-screen", FALSE,
         NULL);
 
-    // Configure caps
+    // Configure video caps
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "NV12",
         "width", G_TYPE_INT, 1280,
         "height", G_TYPE_INT, 720,
-        "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
+        "framerate", GST_TYPE_FRACTION, 30, 1,
         NULL);
     g_object_set(capsfilter, "caps", caps, NULL);
     gst_caps_unref(caps);
@@ -350,37 +341,54 @@ bool GstStreaming::createPipeline(const std::string& channelName,
 
     g_object_set(flip, "method", flip_methods.at(flip_mode), NULL);
 
+    // Configure output caps
     GstCaps* out_caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "I420",
         "width", G_TYPE_INT, output_width,
         "height", G_TYPE_INT, output_height,
-        "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
-        "framerate", GST_TYPE_FRACTION_RANGE, 15, 1, 60, 1,
+        "framerate", GST_TYPE_FRACTION, 30, 1,
         NULL);
     g_object_set(capsink, "caps", out_caps, NULL);
     gst_caps_unref(out_caps);
 
-    
+    // Configure video encoder
+    g_object_set(video_encoder,
+        "bitrate", 2000,         // 2000 kbps
+        "speed-preset", 1,       // ultrafast
+        "tune", 4,               // zerolatency
+        "key-int-max", 30,       // keyframe interval
+        "threads", 4,            // encoding threads
+        NULL);
+
+    // Configure audio
+    g_object_set(audio_src, "unique-id", g_audioDevIndex.c_str(), NULL);
     g_object_set(audio_encoder, "bitrate", 128000, NULL);
 
     // Build the pipeline
     gst_bin_add_many(GST_BIN(session.pipeline),
         src, capsfilter, convert1, perspective,
         flip, convert2, videoscale, capsink, session.video_tee,
-        video_queue, session.webrtc_sink,
+        video_queue, video_encoder, h264parse,
         audio_src, audio_convert, audio_resample, audio_encoder, session.audio_tee, audio_queue,
+        session.webrtc_sink,
         NULL);
 
-    // Link video elements
+    // Link video pipeline
     if (!gst_element_link_many(
         src, capsfilter, convert1, perspective,
-        flip, convert2, videoscale, capsink, session.video_tee, video_queue, NULL) ||
-        !gst_element_link(video_queue, session.webrtc_sink)) {
-        std::cerr << "Failed to link video elements" << std::endl;
+        flip, convert2, videoscale, capsink, session.video_tee, NULL)) {
+        std::cerr << "Failed to link video elements before tee" << std::endl;
         return false;
     }
 
-    // Link audio elements
+    // Link video_tee → video_queue → x264enc → h264parse → awskvswebrtcsink
+    if (!gst_element_link_many(
+        video_queue, video_encoder, h264parse, session.webrtc_sink, NULL)) {
+        std::cerr << "Failed to link video encoding pipeline" << std::endl;
+        return false;
+    }
+
+    // Link audio pipeline
     if (!gst_element_link_many(
         audio_src, audio_convert, audio_resample, audio_encoder, session.audio_tee, audio_queue, NULL) ||
         !gst_element_link(audio_queue, session.webrtc_sink)) {
@@ -391,6 +399,8 @@ bool GstStreaming::createPipeline(const std::string& channelName,
     // Set up bus monitoring
     GstBus* bus = gst_element_get_bus(session.pipeline);
     gst_bus_add_watch(bus, [](GstBus* bus, GstMessage* msg, gpointer user_data) -> gboolean {
+        GstStreaming* self = static_cast<GstStreaming*>(user_data);
+        
         switch (GST_MESSAGE_TYPE(msg)) {
             case GST_MESSAGE_ERROR: {
                 GError* err = nullptr;
@@ -406,22 +416,34 @@ bool GstStreaming::createPipeline(const std::string& channelName,
                 std::cout << "End of stream" << std::endl;
                 break;
             case GST_MESSAGE_STATE_CHANGED: {
-                if (GST_MESSAGE_SRC(msg) == GST_OBJECT(user_data)) {
-                    GstState old_state, new_state, pending;
-                    gst_message_parse_state_changed(msg, &old_state, &new_state, &pending);
-                    std::cout << "Pipeline state changed from " 
-                              << gst_element_state_get_name(old_state) 
-                              << " to " << gst_element_state_get_name(new_state) 
-                              << std::endl;
-                }
+                GstState old_state, new_state, pending;
+                gst_message_parse_state_changed(msg, &old_state, &new_state, &pending);
+                std::cout << "Pipeline state changed from " 
+                          << gst_element_state_get_name(old_state) 
+                          << " to " << gst_element_state_get_name(new_state) 
+                          << std::endl;
+                break;
+            }
+            case GST_MESSAGE_WARNING: {
+                GError* err = nullptr;
+                gchar* debug = nullptr;
+                gst_message_parse_warning(msg, &err, &debug);
+                std::cerr << "Warning: " << err->message << std::endl;
+                if (debug) std::cerr << "Debug info: " << debug << std::endl;
+                g_error_free(err);
+                g_free(debug);
                 break;
             }
             default:
                 break;
         }
         return TRUE;
-    }, session.pipeline);
+    }, this);
     gst_object_unref(bus);
+
+    // Generate pipeline diagram for debugging
+    GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(GST_BIN(session.pipeline), 
+        GST_DEBUG_GRAPH_SHOW_ALL, ("pipeline-" + channelName).c_str());
 
     // Start pipeline
     GstStateChangeReturn ret = gst_element_set_state(session.pipeline, GST_STATE_PLAYING);
@@ -432,6 +454,6 @@ bool GstStreaming::createPipeline(const std::string& channelName,
 
     session.is_active = true;
     streaming_sessions.emplace(channelName, std::move(session));
-    std::cout << "Started streaming to channel: " << channelName << std::endl;
+    std::cout << "Successfully started streaming to channel: " << channelName << std::endl;
     return true;
 }
